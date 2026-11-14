@@ -4,7 +4,7 @@ This directory contains the firmware project, the host-side protocol reference, 
 
 ## Repository contents
 
-- `UwbNode/` — Arduino/PlatformIO firmware for the Seeed XIAO ESP32-C3 and DWM3000
+- `UwbNode/` — Arduino CLI firmware for the Seeed XIAO ESP32-C3 and DWM3000
 - `PROTOCOL.md` — host command, event, frame and payload reference
 - `pi_client.py` — Python command-line serial client
 - `requirements.txt` — Python host-client dependencies
