@@ -8,31 +8,25 @@ namespace UwbBle {
 static constexpr uint16_t MAX_MESSAGE_LENGTH = 496;
 static constexpr uint8_t MAX_FRAGMENTS = 46;
 static constexpr uint8_t MAX_PEERS = 8;
+static constexpr uint8_t MAX_ACTIVE_CONNECTIONS = 3; // Initial NimBLE connection budget.
 static constexpr uint16_t MAX_ATT_MTU = 256;
 static constexpr uint16_t MAX_PACKET_LENGTH = MAX_ATT_MTU - 3;
-static constexpr uint8_t RX_PACKET_QUEUE_SIZE = 4;
+static constexpr uint8_t RX_PACKET_QUEUE_SIZE = 8;
 static constexpr uint8_t EVENT_QUEUE_SIZE = 16;
 
-// Values are part of the serial API and persisted configuration.
 enum Mode : uint8_t { MODE_IDLE = 0, MODE_HUB = 1, MODE_PERIPHERAL = 2 };
-enum PeerState : uint8_t { PEER_UNKNOWN = 0, PEER_CONFIGURED = 1, PEER_FOUND = 2, PEER_CONNECTED = 3 };
+enum PeerState : uint8_t {
+  PEER_UNKNOWN = 0, PEER_CONFIGURED = 1, PEER_FOUND = 2, PEER_CONNECTED = 3,
+  PEER_CONNECTING = 4, PEER_HANDSHAKING = 5, PEER_BACKOFF = 6
+};
 enum EventCode : uint8_t {
-  EVENT_STATE_CHANGED = 0,
-  EVENT_PEER_FOUND,
-  EVENT_PEER_CONNECTED,
-  EVENT_PEER_DISCONNECTED,
-  EVENT_CONNECTION_FAILED,
-  EVENT_DATA_RECEIVED,
-  EVENT_ERROR,
-  EVENT_DATA_SENT,
-  EVENT_DATA_EXPIRED
+  EVENT_STATE_CHANGED = 0, EVENT_PEER_FOUND, EVENT_PEER_CONNECTED,
+  EVENT_PEER_DISCONNECTED, EVENT_CONNECTION_FAILED, EVENT_DATA_RECEIVED,
+  EVENT_ERROR, EVENT_DATA_SENT, EVENT_DATA_EXPIRED
 };
 enum NackCode : uint8_t {
-  NACK_RX_QUEUE_FULL = 1,
-  NACK_RX_BUSY = 2,
-  NACK_MESSAGE_TOO_LARGE = 3,
-  NACK_INVALID_FRAGMENT = 4,
-  NACK_METADATA_MISMATCH = 5,
+  NACK_RX_QUEUE_FULL = 1, NACK_RX_BUSY = 2, NACK_MESSAGE_TOO_LARGE = 3,
+  NACK_INVALID_FRAGMENT = 4, NACK_METADATA_MISMATCH = 5,
   NACK_UNSUPPORTED_VERSION = 6
 };
 
@@ -41,12 +35,12 @@ struct Config {
   uint16_t advertisingIntervalMs = 160;
   uint16_t scanIntervalMs = 160;
   uint16_t scanWindowMs = 80;
-  uint8_t reconnectEnabled = 0;
-  uint16_t reconnectIntervalMs = 1000;
+  uint8_t enabled = 0;
+  uint16_t reconnectIntervalMs = 1000; // Automatic retry interval; no opt-in flag.
   uint16_t connectionTimeoutMs = 5000;
-  uint8_t maxRetries = 1;
+  uint8_t maxRetries = 1;              // Message delivery retries only.
   uint16_t rxMessageTimeoutMs = 1000;
-  uint8_t peerCount = 0;
+  uint8_t peerCount = 0;               // Empty list means accept/connect to any valid peer.
   uint16_t peers[MAX_PEERS]{};
 };
 
@@ -77,8 +71,8 @@ class Manager {
   bool setLocalDeviceId(uint16_t localDeviceId);
   bool start();
   void stop();
-  bool connect(uint16_t peerId);
-  bool disconnect(uint16_t peerId);
+  bool connect(uint16_t peerId);       // Compatibility command; normal operation is autonomous.
+  bool disconnect(uint16_t peerId);    // Compatibility command; enabled mode reconnects automatically.
   void poll();
 
   bool sendToPeer(uint16_t peerId, const uint8_t* data, uint16_t length, uint16_t& messageId);
@@ -89,18 +83,20 @@ class Manager {
   bool getPeerStatus(uint16_t peerId, PeerStatus& status) const;
   const Config& config() const { return config_; }
   bool enabled() const { return enabled_; }
-  bool connected() const { return connected_; }
-  uint16_t connectedPeerId() const { return connectedPeerId_; }
+  bool connected() const;
+  uint16_t connectedPeerId() const;
   uint16_t negotiatedMtu() const;
 
-  // Entry points used by NimBLE callbacks. They only copy bounded data/state;
-  // protocol processing is deferred to poll() in the firmware loop.
-  void enqueueReceivedPacket(const uint8_t* data, size_t length);
+  // NimBLE callbacks only enqueue bounded data/state. Work is deferred to poll().
+  void notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_t addressType);
   void noteServerConnected(uint16_t connectionHandle);
   void noteServerDisconnected(uint16_t connectionHandle, int reason);
-  void noteClientConnected();
-  void noteClientDisconnected(int reason);
-  void noteRemoteIdentity(uint16_t peerId);
+  void noteServerMtuChanged(uint16_t connectionHandle, uint16_t mtu);
+  void noteClientConnected(void* client);
+  void noteClientDisconnected(void* client, int reason);
+  void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId);
+  void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
+  void enqueueClientPacket(const uint8_t* data, size_t length, void* characteristic);
 
  private:
   friend class BleNimBLEScanCallbacks;
@@ -110,6 +106,7 @@ class Manager {
   friend class BleNimBLEClientCallbacks;
 
   struct PacketSlot {
+    uint16_t peerId = 0;
     uint16_t length = 0;
     uint8_t data[MAX_PACKET_LENGTH]{};
   };
@@ -147,13 +144,37 @@ class Manager {
     uint8_t retryCount = 0;
     uint32_t lastActionMs = 0;
   };
+  struct Link {
+    bool used = false;
+    bool serverSide = false;
+    bool addressReady = false;
+    bool foundNotified = false;
+    bool connected = false;
+    bool connecting = false;
+    bool connectComplete = false;
+    bool disconnectPending = false;
+    bool identityPending = false;
+    bool handshakeTimedOut = false;
+    uint16_t peerId = 0;
+    uint16_t connectionHandle = 0;
+    uint16_t pendingIdentity = 0;
+    uint16_t mtu = 23;
+    uint8_t address[6]{};
+    uint8_t addressType = 0;
+    int disconnectReason = 0;
+    uint32_t connectStartedMs = 0;
+    uint32_t nextAttemptMs = 0;
+    void* client = nullptr;
+    void* remoteRx = nullptr;
+    void* remoteTx = nullptr;
+  };
 
   bool enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length);
   bool transmitPacket(const uint8_t* packet, uint16_t length);
   bool buildAndSendSimple(uint8_t type, uint16_t messageId, uint8_t fragmentIndex,
                           uint8_t errorCode = 0);
   bool sendMessageResult(uint16_t messageId, uint8_t status);
-  void handlePacket(const uint8_t* packet, uint16_t length);
+  void handlePacket(uint16_t peerId, const uint8_t* packet, uint16_t length);
   void handleData(const uint8_t* packet, uint16_t length);
   void handleAck(const uint8_t* packet, uint16_t length);
   void handleNack(const uint8_t* packet, uint16_t length);
@@ -166,8 +187,20 @@ class Manager {
   uint16_t fragmentDataCapacity() const;
   bool peerConfigured(uint16_t peerId) const;
   void clearMessageState(bool reportIndeterminate);
+  void clearMessageStateForPeer(uint16_t peerId);
   void emitError(uint8_t direction, uint16_t peerId, uint16_t messageId,
                  uint8_t fragmentIndex, uint8_t errorCode);
+  Link* findLink(uint16_t peerId);
+  const Link* findLink(uint16_t peerId) const;
+  Link* findLinkByHandle(uint16_t connectionHandle);
+  Link* findLinkByClient(void* client);
+  Link* findLinkByCharacteristic(void* characteristic);
+  Link* allocateLink(uint16_t peerId);
+  uint8_t activeConnectionCount() const;
+  void refreshConnectedSummary();
+  void scheduleRetry(Link& link, uint8_t reason, bool emitFailure);
+  void processLinkDisconnect(Link& link);
+  uint16_t mtuForPeer(uint16_t peerId) const;
   static uint16_t packetCrc(const uint8_t* data, size_t length);
   static uint16_t readU16(const uint8_t* p);
   static void writeU16(uint8_t* p, uint16_t value);
@@ -179,30 +212,12 @@ class Manager {
   bool enabled_ = false;
   bool advertising_ = false;
   bool scanning_ = false;
-  volatile bool connected_ = false;
-  volatile bool clientConnectComplete_ = false;
-  volatile bool clientDisconnectPending_ = false;
-  volatile bool serverDisconnectPending_ = false;
-  volatile bool remoteIdentityPending_ = false;
-  volatile uint16_t connectedPeerId_ = 0;
-  volatile uint16_t serverConnectionHandle_ = 0;
-  volatile bool serverConnectionActive_ = false;
-  uint32_t serverConnectStartedMs_ = 0;
-  bool serverHandshakeTimedOut_ = false;
-  volatile uint16_t pendingRemoteIdentity_ = 0;
-  volatile int disconnectReason_ = 0;
-  volatile uint16_t pendingDisconnectedPeerId_ = 0;
-  volatile uint16_t requestedPeerId_ = 0;
-  uint16_t mtu_ = 23;
-  uint32_t connectStartedMs_ = 0;
-  uint32_t lastReconnectAttemptMs_ = 0;
-  volatile bool connectRequested_ = false;
-  volatile bool scanAddressReady_ = false;
-  uint8_t foundAddressBytes_[6]{};
-  uint8_t foundAddressType_ = 0;
-  bool serviceSetupPending_ = false;
+  bool connected_ = false;             // Aggregate compatibility status: any link connected.
+  uint16_t connectedPeerId_ = 0;       // First connected peer; use GET_PEER_STATUS for all peers.
+  uint16_t selectedPeerId_ = 0;        // Unicast destination/source for the current packet.
   bool advertisingRestartPending_ = false;
-  bool foundNotified_[MAX_PEERS]{};
+  Link links_[MAX_PEERS]{};
+
   Message tx_{};
   bool txWaitingAck_ = false;
   bool txWaitingResult_ = false;
@@ -235,11 +250,6 @@ class Manager {
   void* protocolVersionCharacteristic_ = nullptr;
   void* identityWriteCharacteristic_ = nullptr;
   void* scan_ = nullptr;
-  void* client_ = nullptr;
-  void* remoteRxCharacteristic_ = nullptr;
-  void* remoteTxCharacteristic_ = nullptr;
-  void* remoteIdentityReadCharacteristic_ = nullptr;
-  void* remoteIdentityWriteCharacteristic_ = nullptr;
   void* scanCallbacks_ = nullptr;
   void* serverCallbacks_ = nullptr;
   void* rxCallbacks_ = nullptr;
