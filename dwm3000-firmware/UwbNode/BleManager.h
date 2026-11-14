@@ -163,6 +163,7 @@ class Manager {
     int disconnectReason = 0;
     uint32_t connectStartedMs = 0;
     uint32_t nextAttemptMs = 0;
+    uint32_t lastSeenMs = 0;
     void* client = nullptr;
     void* remoteRx = nullptr;
     void* remoteTx = nullptr;
