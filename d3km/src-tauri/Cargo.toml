@@ -1,0 +1,16 @@
+[package]
+name = "d3km"
+version = "0.2.0"
+description = "DWM3000 Manager"
+authors = ["D3KM"]
+edition = "2021"
+[lib]
+name = "d3km_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+serialport = { version = "4.7", default-features = false }
