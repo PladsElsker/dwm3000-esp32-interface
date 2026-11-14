@@ -1,153 +1,94 @@
-# XIAO ESP32-C3 + DWM3000 UWB Node
+# ESP32-C3 + DWM3000 Firmware and Host Tools
 
-Arduino firmware and a Raspberry Pi UART client for the custom board described in the project conversation.
+This directory contains the firmware project, the host-side protocol reference, a Python serial client and protocol tests. The firmware sketch and its embedded dependencies live in `UwbNode/`.
 
-## Contents
+## Repository contents
 
-- `UwbNodeV7.ino` — host protocol, configuration, ranging scheduler, measurement ring buffer, asynchronous events, power control, and BLE integration.
-- `Protocol.h/.cpp` — serial version 1 binary protocol (COBS framing + CRC-16/CCITT-FALSE).
-- `BLE/` — NimBLE-Arduino BLE Central/Peripheral transport, packet framing, reassembly, retries, queues, and delivery-result handling.
-- `pi_client.py` — Python command-line client for the Raspberry Pi.
-- `PROTOCOL.md` — frame format, opcodes, payloads, and field formats.
+- `UwbNode/` — Arduino/PlatformIO firmware for the Seeed XIAO ESP32-C3 and DWM3000
+- `PROTOCOL.md` — host command, event, frame and payload reference
+- `pi_client.py` — Python command-line serial client
+- `requirements.txt` — Python host-client dependencies
+- `tests/` — host-side protocol tests
 
-## Hardware pin map
+## Hardware and pin map
 
-These assignments preserve the agreed XIAO ESP32-C3 map. UART pins are the XIAO's pin names, not Raspberry Pi physical pin numbers.
+The reference target is a Seeed XIAO ESP32-C3 connected to a DWM3000 module.
 
-| XIAO pin | ESP32-C3 GPIO | Connect to |
-|---|---:|---|
-| D0 | GPIO2 | DWM3000 `SPICSn` |
-| D1 | GPIO3 | DWM3000 `WAKEUP` |
-| D2 | GPIO4 | DWM3000 `RSTn` (open-drain) |
-| D3 | GPIO5 | DWM3000 `IRQ` |
-| D4 | GPIO6 | Unused in this design |
-| D5 | GPIO7 | Unused in this design |
-| D6 | GPIO21 | UART TX to Raspberry Pi RXD, physical pin 10 |
-| D7 | GPIO20 | UART RX from Raspberry Pi TXD, physical pin 8 |
-| D8 | GPIO8 | DWM3000 SPI clock |
-| D9 | GPIO9 | DWM3000 SPI MISO |
-| D10 | GPIO10 | DWM3000 SPI MOSI |
+| Signal | XIAO pin | ESP32-C3 GPIO |
+|---|---:|---:|
+| DWM3000 CS | D0 | 2 |
+| DWM3000 WAKE | D1 | 3 |
+| DWM3000 RESET | D2 | 4 |
+| DWM3000 IRQ | D3 | 5 |
+| UART TX | D6 | 21 |
+| UART RX | D7 | 20 |
+| SPI SCK | D8 | 8 |
+| SPI MISO | D9 | 9 |
+| SPI MOSI | D10 | 10 |
 
-Connect Pi ground to board ground and use 3.3 V UART logic. Never drive DWM3000 signal pins with 5 V logic.
+Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strapping pins; verify boot, reset and upload behavior with the actual board circuitry. Confirm this pin map against the assembled hardware revision before wiring.
 
-**Boot-strapping warning:** GPIO2, GPIO8, and GPIO9 influence ESP32-C3 startup. D9 also connects to the XIAO BOOT button. Keep the agreed pinout only after testing cold boot, reset, USB upload, and BOOT-mode upload on your actual PCB. Add suitable biasing per the ESP32-C3/XIAO guidance, and verify that the attached DWM3000 does not force GPIO8/GPIO9 to incorrect levels at reset. In particular, avoid a pull-down on GPIO9 and ensure GPIO8 is high when entering the ROM download mode. The XIAO's D6 is also the ROM UART0 TX and can emit boot messages before application startup; the Pi parser discards malformed/CRC-invalid startup bytes.
+## Build and flash firmware
 
-Recommended passive components discussed during board design: a 10 kΩ pull-up on DWM3000 CSn / XIAO GPIO2, a 10 kΩ pull-up on XIAO GPIO8/SCK to support ROM download boot when BOOT forces GPIO9 low, a 100 kΩ pull-down on DWM3000 IRQ, and an optional 100 kΩ pull-down on WAKEUP. Confirm all pull values and reset topology against the actual DWM3000 reference schematic and module layout.
-
-## Build environment
-
-Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.2**. The ESP32-C3 NimBLE host must be built with nine connection slots so the firmware can maintain up to eight application peer links.
+Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.2**. The NimBLE host is configured for nine connection slots, allowing the firmware to maintain up to eight application peer links.
 
 Run the compile command from this directory:
 
-```bash
+```sh
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --build-property "compiler.c.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
   --build-property "compiler.cpp.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
-Upload the compiled sketch to the connected board:
+Upload the compiled sketch:
 
-```bash
+```sh
 arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin ./UwbNode
 ```
 
-The host UART rate is 460800 baud. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
-
-The custom Makerfabs port is already patched for the XIAO pin map. Do not run `patch_makerfabs_port.py` against the bundled source again unless you have first reviewed the source diff. The legacy helper remains available for patching a separately downloaded unmodified Makerfabs port.
+The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
 
 ## BLE peer messaging
 
-BLE uses NimBLE-Arduino 2.5.2. The transport runs independently of the DWM3000 ranging state machine and uses the existing USB CDC/UART serial protocol as its host API.
+BLE uses NimBLE-Arduino 2.5.2 and runs independently of UWB ranging.
 
-- `IDLE` disables BLE activity; `HUB` runs as BLE Central; `PERIPHERAL` advertises as a BLE Peripheral.
-- `START_BLE` and `STOP_BLE` enable or disable the BLE subsystem. The enabled state is persisted in NVS and restored at boot.
-- An enabled HUB continuously discovers peers and maintains connections automatically. An enabled Peripheral advertises and accepts connections automatically; the host does not need to issue ordinary connect, disconnect, or reconnect commands.
-- The firmware maintains up to eight simultaneous peer connections. The NimBLE host build is configured for nine connection slots. An empty peer list is open mode and accepts any valid peer; a non-empty list is an allow-list.
-- Application messages are limited to 496 bytes and are fragmented according to the negotiated ATT MTU.
-- `BLE_DATA_SENT` means the remote host retrieved the complete message. Fragment ACKs alone do not mean application-level delivery.
-- Queues and in-flight messages are volatile and cleared on disconnection. The GATT link is not paired or encrypted in this release.
+- \`IDLE\` disables BLE; \`HUB\` runs as Central; \`PERIPHERAL\` advertises as a Peripheral.
+- \`START_BLE\` enables BLE and persists the desired state in NVS. The node restores that state at boot. \`STOP_BLE\` disables BLE and persists the disabled state.
+- Enabled HUB nodes continuously discover and reconnect to peers. Enabled Peripheral nodes advertise and accept incoming peers. The host monitors status and events; it does not need to manage connections.
+- Up to eight concurrent peer links are maintained. The NimBLE host build uses nine connection slots.
+- An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
+- Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
+- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. \`BLE_DATA_SENT\` indicates that the remote host retrieved the complete message.
 
-Example two-node setup (choose distinct local IDs; use matching peer lists):
+## Use the Python client
 
-Peripheral board, local ID 2:
+From this directory:
 
-```bash
-python pi_client.py --port /dev/serial0 apply-save-config 2 0xDECA 5 16385 16385 --ble-mode peripheral --ble-peers 1
-python pi_client.py --port /dev/serial0 start-ble
-```
-
-HUB board, local ID 1:
-
-```bash
-python pi_client.py --port /dev/serial0 apply-save-config 1 0xDECA 5 16385 16385 --ble-mode hub --ble-peers 2
-python pi_client.py --port /dev/serial0 start-ble
-python pi_client.py --port /dev/serial0 peer-status 2
-```
-
-The host subscribes to event mask bits 6–14 for BLE events. On `BLE_DATA_RECEIVED`, retrieve the complete payload with `GET_RECEIVED_DATA` (`get-received-data PEER_ID MESSAGE_ID`). `send-to-peer PEER_ID TEXT` sends UTF-8 text; `send-to-peer PEER_ID HEX --hex` sends binary data. `GET_RECEIVED_DATA` is destructive at the BLE queue level, but the existing serial request-response cache replays the prior response for an identical serial request so a host retry does not consume a second message.
-
-The complete BLE command/event layouts, GATT UUIDs, packet framing, retry policy, configuration extension, and delivery semantics are defined in `PROTOCOL.md`. Stop BLE before changing its operating role, peer list, scan settings, advertising settings, or retry/timeout configuration; `SET_CONFIG` returns `BUSY` rather than silently keeping stale radio parameters.
-
-## Ranging details
-
-- Radio profile: channel 5, 6.8 Mbps, 128-symbol preamble, STS disabled.
-- Ranging: custom 4-frame double-sided two-way ranging (DS-TWR): `POLL → RESP → FINAL → REPORT`.
-- A target must run this compatible firmware in `responder` role, with the same PAN ID/channel/radio profile and a unique 16-bit device ID.
-- The `initiator` cycles through configured target IDs one at a time. `target_period_ms` is a desired minimum interval per target, not a guaranteed sample rate; the actual period grows with target count, transaction timeouts, and retries.
-- As this is a custom over-the-air protocol, it is not automatically interoperable with Qorvo's standard Decawave example frames. All nodes that range with each other must use a compatible message format and matching UWB settings.
-- Antenna delay values are placeholders (`16385`) and require calibration to achieve accurate absolute distances. Tune them with measured reference distances.
-- STS is disabled in the initial radio profile and the custom ranging messages are not cryptographically authenticated. Treat this as an engineering prototype, not a secure ranging system.
-- The default local clock is monotonic microseconds since boot. Send `TIME_SYNC` with Pi Unix time (microseconds) to populate the optional epoch timestamp on subsequent measurement records.
-
-### DWM3000 sleep limitation
-
-The bundled driver contains the Qorvo `dwt_configuresleep()` / `dwt_entersleep()` APIs, but the current firmware command path does not configure or invoke them. Consequently:
-
-- `UWB_SLEEP` enters the radio's `IDLE_RC` standby state, **not true DWM3000 deep sleep**. Its response payload is `01` to identify this standby mode.
-- `UWB_WAKE` requests a transition from IDLE_RC to IDLE over SPI and reapplies the radio profile. If SPI does not respond, it falls back to an active-low reset pulse and full initialization. Its response payload `00` indicates a wake/reinitialization; payload `01` means it was already awake. This is not a verified CSn wake-up sequence from true DWM3000 deep sleep.
-- `SYSTEM_SLEEP` does put the ESP32-C3 into deep sleep, with a timer wake requested by the Pi. It requires a duration between 1000 ms and seven days. The device restarts after the timer; the Pi must reconnect and reconfigure/restart ranging. **UART commands do not wake the ESP32-C3 from deep sleep.** Timer wake is the only system wake source implemented here.
-
-Do not treat `IDLE_RC` as equivalent to deep sleep. Enabling true DWM3000 deep sleep remains a separate firmware task: configure the bundled Qorvo API for the board's wake sources, then validate `SPICSn` and `WAKEUP` timing on hardware before relying on it.
-
-## Build and test status
-
-The complete ESP32-C3 firmware build has **not** been run for this change because Arduino CLI is not installed in the current execution environment. Compile using the Arduino CLI command above, which sets the NimBLE host connection limit to 9; the firmware application maintains up to 8 peers. Before deployment, flash at least two boards and test automatic boot enablement, discovery, eight concurrent links in both Central and Peripheral roles, reconnect after range loss, open mode, allow-list enforcement, and peer-directed message delivery. Physical BLE connectivity and resource usage under eight live links still require hardware validation.
-
-## Raspberry Pi setup
-
-```bash
+```sh
 python3 -m venv .venv
-. .venv/bin/activate
-pip install pyserial
+source .venv/bin/activate
+python -m pip install -r requirements.txt
+python pi_client.py --help
 python pi_client.py --port /dev/serial0 ping
-python pi_client.py --port /dev/serial0 status
 ```
 
-Use `/dev/serial0` only after enabling the Pi UART, disabling its serial login shell, and checking which device `/dev/serial0` maps to on your model. Ensure the UART voltage is 3.3 V and both boards share ground.
+On Windows, activate with `.venv\\Scripts\\activate`. Replace the example serial port with the port used by your host.
 
-## Typical two-node setup
+## Run host-side tests
 
-Choose a distinct 16-bit ID for each node, and use the same PAN ID and channel on both. The antenna-delay values below are starting values, not calibrated values.
+From this directory:
 
-Responder / anchor, ID 2:
-
-```bash
-python pi_client.py --port /dev/serial0 apply-save-config 2 0xDECA 5 16385 16385 --role responder --targets 1 --auto-start
-python pi_client.py --port /dev/serial0 start
+```sh
+python -m py_compile pi_client.py tests/test_protocol.py tests/test_ble_protocol.py
+python tests/test_protocol.py
+python tests/test_ble_protocol.py
 ```
 
-Initiator / tag, ID 1:
+These tests exercise host-side protocol code; they do not replace a firmware build or tests on physical hardware.
 
-```bash
-python pi_client.py --port /dev/serial0 apply-save-config 1 0xDECA 5 16385 16385 --role initiator --targets 2 --period-ms 100 --timeout-ms 120 --retries 1 --auto-start
-python pi_client.py --port /dev/serial0 time-sync
-python pi_client.py --port /dev/serial0 start
-```
+## Protocol development
 
-`SAVE_CONFIG` is retained for compatibility but returns `NOT_SUPPORTED`; use `APPLY_SAVE_CONFIG` for the complete saved configuration snapshot. These examples use starting antenna-delay values, not calibrated values.
+Read [PROTOCOL.md](PROTOCOL.md) before implementing or changing a host. Keep command IDs, event IDs, field widths, byte order, framing and delivery semantics synchronized across the firmware, D3KM and Python client. Update the protocol document in the same change as any wire-format change.
 
-To watch results, run `python pi_client.py --port /dev/serial0 subscribe` in a separate process or use the Python `UwbClient` class from an application. For a quick snapshot, use `get-last`; for loss recovery, page through `get-history --after SEQ --n 16` and advance using the response's `next_cursor`. `range-once TARGET_ID` returns a job ID; the result arrives as a subscribed event and is also saved to history.
-
-Run `python3 -m py_compile pi_client.py tests/test_protocol.py tests/test_ble_protocol.py`, `python3 tests/test_protocol.py`, and `python3 tests/test_ble_protocol.py` for host-side syntax, serial framing, and BLE packet/configuration tests. These do not replace a board firmware build, two-board BLE test, or UWB RF calibration.
+For system-level orientation, see the [repository README](../README.md).
