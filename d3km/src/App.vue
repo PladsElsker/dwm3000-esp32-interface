@@ -309,8 +309,9 @@ async function refreshBluetooth() {
         }
         const peers = Array.from({ length: peersPayload[0] }, (_, i) => get16(peersPayload, 1 + i * 2));
         ble.runtimeConfig.peers = peers;
-        ble.peerStatuses = [];
         const ids = [...new Set([...peers, ...ble.discoveredPeers, ...(ble.runtime.connectedPeerId ? [ble.runtime.connectedPeerId] : [])])];
+        // Keep the last known statuses visible while the per-peer reads complete.
+        ble.peerStatuses = ble.peerStatuses.filter(peer => ids.includes(peer.peerId));
         for (const id of ids) await refreshBlePeerStatus(id, true);
         log(`Bluetooth status refreshed · ${peers.length} configured peer(s)`);
     } catch (e: any) {
