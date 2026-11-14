@@ -8,10 +8,10 @@
 namespace UwbBle {
 
 static constexpr char SERVICE_UUID[] = "6f5a0001-8f7b-4b2d-a6d8-2d9a7b3c0001";
-static constexpr char RX_UUID[]      = "6f5a0002-8f7b-4b2d-a6d8-2d9a7b3c0001";
-static constexpr char TX_UUID[]      = "6f5a0003-8f7b-4b2d-a6d8-2d9a7b3c0001";
+static constexpr char RX_UUID[] = "6f5a0002-8f7b-4b2d-a6d8-2d9a7b3c0001";
+static constexpr char TX_UUID[] = "6f5a0003-8f7b-4b2d-a6d8-2d9a7b3c0001";
 static constexpr char ID_READ_UUID[] = "6f5a0004-8f7b-4b2d-a6d8-2d9a7b3c0001";
-static constexpr char ID_WRITE_UUID[]= "6f5a0005-8f7b-4b2d-a6d8-2d9a7b3c0001";
+static constexpr char ID_WRITE_UUID[] = "6f5a0005-8f7b-4b2d-a6d8-2d9a7b3c0001";
 static constexpr char PROTOCOL_VERSION_UUID[] = "6f5a0006-8f7b-4b2d-a6d8-2d9a7b3c0001";
 static constexpr uint8_t BLE_PROTOCOL_VERSION = 1;
 static constexpr uint8_t PKT_DATA = 0x01;
@@ -24,6 +24,7 @@ static constexpr uint8_t RESULT_CONSUMPTION_TIMEOUT = 1;
 static constexpr uint32_t ACK_TIMEOUT_MS = 300;
 static constexpr uint32_t RESULT_TIMEOUT_MS = 400;
 static constexpr uint32_t REASSEMBLY_TIMEOUT_MS = 1500;
+static constexpr uint32_t OPEN_PEER_STALE_MS = 10000;
 static constexpr uint8_t MAX_ADVERTISE_NAME = 16;
 
 static Manager* s_manager = nullptr;
@@ -42,29 +43,8 @@ class BleNimBLEScanCallbacks : public NimBLEScanCallbacks {
     const unsigned long parsed = strtoul(name.c_str() + 4, &end, 16);
     if (!end || *end != '\0' || parsed == 0 || parsed >= 0xFFFF) return;
     const uint16_t peerId = static_cast<uint16_t>(parsed);
-    if (!s_manager->peerConfigured(peerId)) return;
-
-    bool notifyFound = false;
-    for (uint8_t i = 0; i < s_manager->config_.peerCount; ++i) {
-      if (s_manager->config_.peers[i] == peerId && !s_manager->foundNotified_[i]) {
-        s_manager->foundNotified_[i] = true;
-        notifyFound = true;
-        break;
-      }
-    }
-    if (notifyFound) {
-      uint8_t payload[2];
-      Manager::writeU16(payload, peerId);
-      s_manager->enqueueEvent(EVENT_PEER_FOUND, payload, sizeof(payload));
-    }
-
-    if (s_manager->connectRequested_ && s_manager->requestedPeerId_ == peerId &&
-        !s_manager->scanAddressReady_) {
-      const NimBLEAddress address = device->getAddress();
-      memcpy(s_manager->foundAddressBytes_, address.getVal(), sizeof(s_manager->foundAddressBytes_));
-      s_manager->foundAddressType_ = address.getType();
-      s_manager->scanAddressReady_ = true;
-    }
+    s_manager->notePeerDiscovered(peerId, device->getAddress().getVal(),
+                                  device->getAddress().getType());
   }
 };
 
@@ -77,46 +57,44 @@ class BleNimBLEServerCallbacks : public NimBLEServerCallbacks {
     if (s_manager) s_manager->noteServerDisconnected(info.getConnHandle(), reason);
   }
   void onMTUChange(uint16_t mtu, NimBLEConnInfo& info) override {
-    if (s_manager && s_manager->serverConnectionActive_ &&
-        s_manager->serverConnectionHandle_ == info.getConnHandle())
-      s_manager->mtu_ = mtu;
+    if (s_manager) s_manager->noteServerMtuChanged(info.getConnHandle(), mtu);
   }
 };
 
 class BleNimBLERxCallbacks : public NimBLECharacteristicCallbacks {
  public:
-  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& info) override {
     if (!s_manager || !characteristic) return;
     const NimBLEAttValue value = characteristic->getValue();
-    if (value.length() > 0)
-      s_manager->enqueueReceivedPacket(value.data(), value.length());
+    if (value.length())
+      s_manager->enqueueServerPacket(value.data(), value.length(), info.getConnHandle());
   }
 };
 
 class BleNimBLEIdentityCallbacks : public NimBLECharacteristicCallbacks {
  public:
-  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo&) override {
+  void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& info) override {
     if (!s_manager || !characteristic) return;
     const NimBLEAttValue value = characteristic->getValue();
     if (value.length() == 2)
-      s_manager->noteRemoteIdentity(Manager::readU16(value.data()));
+      s_manager->noteRemoteIdentity(info.getConnHandle(), Manager::readU16(value.data()));
   }
 };
 
 class BleNimBLEClientCallbacks : public NimBLEClientCallbacks {
  public:
-  void onConnect(NimBLEClient*) override {
-    if (s_manager) s_manager->noteClientConnected();
+  void onConnect(NimBLEClient* client) override {
+    if (s_manager) s_manager->noteClientConnected(client);
   }
-  void onDisconnect(NimBLEClient*, int reason) override {
-    if (s_manager) s_manager->noteClientDisconnected(reason);
+  void onDisconnect(NimBLEClient* client, int reason) override {
+    if (s_manager) s_manager->noteClientDisconnected(client, reason);
   }
 };
 
-static void onRemoteNotify(NimBLERemoteCharacteristic*, uint8_t* data,
+static void onRemoteNotify(NimBLERemoteCharacteristic* characteristic, uint8_t* data,
                            size_t length, bool) {
-  if (s_manager && data && length)
-    s_manager->enqueueReceivedPacket(data, length);
+  if (s_manager && characteristic && data && length)
+    s_manager->enqueueClientPacket(data, length, characteristic);
 }
 
 Manager::Manager() {}
@@ -143,17 +121,14 @@ uint16_t Manager::packetCrc(const uint8_t* data, size_t length) {
 
 bool Manager::begin(uint16_t localDeviceId) {
   if (initialized_) return true;
-  if (localDeviceId == 0 || localDeviceId == 0xFFFF) return false;
+  if (!localDeviceId || localDeviceId == 0xFFFF) return false;
   localDeviceId_ = localDeviceId;
   char name[MAX_ADVERTISE_NAME];
   snprintf(name, sizeof(name), "UWB-%04X", localDeviceId_);
-  if (!NimBLEDevice::init(name)) return false;
-  if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) return false;
+  if (!NimBLEDevice::init(name) || !NimBLEDevice::setMTU(MAX_ATT_MTU)) return false;
   NimBLEDevice::setPower(3);
   s_manager = this;
 
-  // The same GATT service is used on every node. Central nodes write RX and
-  // subscribe to TX; Peripheral nodes accept RX writes and notify on TX.
   NimBLEServer* server = NimBLEDevice::createServer();
   if (!server) return false;
   server_ = server;
@@ -172,14 +147,10 @@ bool Manager::begin(uint16_t localDeviceId) {
   if (!service) return false;
   NimBLECharacteristic* rx = service->createCharacteristic(
       RX_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
-  NimBLECharacteristic* tx = service->createCharacteristic(
-      TX_UUID, NIMBLE_PROPERTY::NOTIFY);
-  NimBLECharacteristic* idRead = service->createCharacteristic(
-      ID_READ_UUID, NIMBLE_PROPERTY::READ);
-  NimBLECharacteristic* idWrite = service->createCharacteristic(
-      ID_WRITE_UUID, NIMBLE_PROPERTY::WRITE);
-  NimBLECharacteristic* protocolVersion = service->createCharacteristic(
-      PROTOCOL_VERSION_UUID, NIMBLE_PROPERTY::READ);
+  NimBLECharacteristic* tx = service->createCharacteristic(TX_UUID, NIMBLE_PROPERTY::NOTIFY);
+  NimBLECharacteristic* idRead = service->createCharacteristic(ID_READ_UUID, NIMBLE_PROPERTY::READ);
+  NimBLECharacteristic* idWrite = service->createCharacteristic(ID_WRITE_UUID, NIMBLE_PROPERTY::WRITE);
+  NimBLECharacteristic* protocolVersion = service->createCharacteristic(PROTOCOL_VERSION_UUID, NIMBLE_PROPERTY::READ);
   if (!rx || !tx || !idRead || !idWrite || !protocolVersion) return false;
   rx->setCallbacks(rxCallbacks);
   idWrite->setCallbacks(identityCallbacks);
@@ -187,7 +158,6 @@ bool Manager::begin(uint16_t localDeviceId) {
   writeU16(idBytes, localDeviceId_);
   idRead->setValue(idBytes, sizeof(idBytes));
   protocolVersion->setValue(&BLE_PROTOCOL_VERSION, sizeof(BLE_PROTOCOL_VERSION));
-  // NimBLE-Arduino 2.5.2 starts all registered services through the server.
   if (!server->start()) return false;
   rxCharacteristic_ = rx;
   txCharacteristic_ = tx;
@@ -209,25 +179,19 @@ bool Manager::begin(uint16_t localDeviceId) {
 }
 
 static bool sameBleConfig(const Config& a, const Config& b) {
-  return a.mode == b.mode &&
-         a.advertisingIntervalMs == b.advertisingIntervalMs &&
+  return a.mode == b.mode && a.advertisingIntervalMs == b.advertisingIntervalMs &&
          a.scanIntervalMs == b.scanIntervalMs && a.scanWindowMs == b.scanWindowMs &&
-         a.reconnectEnabled == b.reconnectEnabled &&
-         a.reconnectIntervalMs == b.reconnectIntervalMs &&
-         a.connectionTimeoutMs == b.connectionTimeoutMs &&
-         a.maxRetries == b.maxRetries && a.rxMessageTimeoutMs == b.rxMessageTimeoutMs &&
-         a.peerCount == b.peerCount &&
+         a.reconnectIntervalMs == b.reconnectIntervalMs && a.enabled == b.enabled &&
+         a.connectionTimeoutMs == b.connectionTimeoutMs && a.maxRetries == b.maxRetries &&
+         a.rxMessageTimeoutMs == b.rxMessageTimeoutMs && a.peerCount == b.peerCount &&
          memcmp(a.peers, b.peers, sizeof(a.peers)) == 0;
 }
 
-bool Manager::configure(const Config& config) {
-  return configure(config, localDeviceId_);
-}
+bool Manager::configure(const Config& config) { return configure(config, localDeviceId_); }
 
 bool Manager::configure(const Config& config, uint16_t localDeviceId) {
-  if (localDeviceId == 0 || localDeviceId == 0xFFFF ||
-      config.mode > MODE_PERIPHERAL || config.peerCount > MAX_PEERS ||
-      config.maxRetries > 5 || config.reconnectEnabled > 1 ||
+  if (!localDeviceId || localDeviceId == 0xFFFF || config.mode > MODE_PERIPHERAL ||
+      config.peerCount > MAX_PEERS || config.maxRetries > 5 || config.enabled > 1 ||
       config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
       config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
       config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
@@ -235,19 +199,27 @@ bool Manager::configure(const Config& config, uint16_t localDeviceId) {
       config.reconnectIntervalMs < 100 || config.reconnectIntervalMs > 60000 ||
       config.rxMessageTimeoutMs < 100 || config.rxMessageTimeoutMs > 2000) return false;
   for (uint8_t i = 0; i < config.peerCount; ++i) {
-    if (config.peers[i] == 0 || config.peers[i] == 0xFFFF || config.peers[i] == localDeviceId)
-      return false;
-    for (uint8_t j = 0; j < i; ++j)
-      if (config.peers[j] == config.peers[i]) return false;
+    if (!config.peers[i] || config.peers[i] == 0xFFFF || config.peers[i] == localDeviceId) return false;
+    for (uint8_t j = 0; j < i; ++j) if (config.peers[j] == config.peers[i]) return false;
   }
-  // Active advertising/scanning cannot safely adopt new interval, role or peer
-  // settings in-place. A caller must stop BLE first; an identity-only change is
-  // allowed because the advertised name and identity characteristic are updated.
-  if (enabled_ && (connected_ || !sameBleConfig(config, config_))) return false;
+  if (enabled_ && (activeConnectionCount() || !sameBleConfig(config, config_))) return false;
 
-  config_ = config;
   const bool identityChanged = localDeviceId_ != localDeviceId;
+  config_ = config;
   localDeviceId_ = localDeviceId;
+  // Reconcile remembered Central peers when the allow-list changes. An empty
+  // list is open mode, so start with fresh discovery rather than pinning the
+  // previous eight discovered IDs. Cached NimBLEClient objects remain reusable.
+  for (auto& link : links_) {
+    if (link.used && !link.serverSide &&
+        (config_.mode != MODE_HUB || config_.peerCount == 0 || !peerConfigured(link.peerId))) {
+      void* cachedClient = link.client;
+      const uint32_t retryAt = millis() + config_.reconnectIntervalMs;
+      link = Link();
+      link.client = cachedClient;
+      link.nextAttemptMs = retryAt;
+    }
+  }
   if (identityChanged) {
     uint8_t idBytes[2];
     writeU16(idBytes, localDeviceId_);
@@ -256,23 +228,12 @@ bool Manager::configure(const Config& config, uint16_t localDeviceId) {
     char name[MAX_ADVERTISE_NAME];
     snprintf(name, sizeof(name), "UWB-%04X", localDeviceId_);
     NimBLEDevice::setDeviceName(name);
-    if (auto* advertising = NimBLEDevice::getAdvertising()) {
-      const bool restart = enabled_ && config_.mode == MODE_PERIPHERAL && advertising->isAdvertising();
-      if (restart) advertising->stop();
-      advertising->setName(name);
-      if (restart) {
-        advertising->start();
-        advertising_ = advertising->isAdvertising();
-      }
-    }
+    if (auto* advertising = NimBLEDevice::getAdvertising()) advertising->setName(name);
   }
-  memset(foundNotified_, 0, sizeof(foundNotified_));
   return true;
 }
 
-bool Manager::setLocalDeviceId(uint16_t localDeviceId) {
-  return configure(config_, localDeviceId);
-}
+bool Manager::setLocalDeviceId(uint16_t localDeviceId) { return configure(config_, localDeviceId); }
 
 bool Manager::setPeers(const uint16_t* peers, uint8_t count) {
   if (count > MAX_PEERS || (count && !peers)) return false;
@@ -284,126 +245,204 @@ bool Manager::setPeers(const uint16_t* peers, uint8_t count) {
 }
 
 bool Manager::peerConfigured(uint16_t peerId) const {
-  if (peerId == 0 || peerId == 0xFFFF || peerId == localDeviceId_) return false;
+  if (!peerId || peerId == 0xFFFF || peerId == localDeviceId_) return false;
   if (config_.peerCount == 0) return true;
   for (uint8_t i = 0; i < config_.peerCount; ++i)
     if (config_.peers[i] == peerId) return true;
   return false;
 }
 
+Manager::Link* Manager::findLink(uint16_t peerId) {
+  if (!peerId) return nullptr;
+  for (auto& link : links_) if (link.used && link.peerId == peerId) return &link;
+  return nullptr;
+}
+
+const Manager::Link* Manager::findLink(uint16_t peerId) const {
+  if (!peerId) return nullptr;
+  for (const auto& link : links_) if (link.used && link.peerId == peerId) return &link;
+  return nullptr;
+}
+
+Manager::Link* Manager::findLinkByHandle(uint16_t handle) {
+  for (auto& link : links_) if (link.used && link.serverSide && link.connectionHandle == handle) return &link;
+  return nullptr;
+}
+
+Manager::Link* Manager::findLinkByClient(void* client) {
+  for (auto& link : links_) if (link.used && !link.serverSide && link.client == client) return &link;
+  return nullptr;
+}
+
+Manager::Link* Manager::findLinkByCharacteristic(void* characteristic) {
+  for (auto& link : links_) if (link.used && link.remoteTx == characteristic) return &link;
+  return nullptr;
+}
+
+Manager::Link* Manager::allocateLink(uint16_t peerId, bool serverSide) {
+  if (peerId) {
+    if (Link* existing = findLink(peerId)) return existing;
+  }
+  for (auto& link : links_) {
+    if (!link.used) {
+      // Keep a disconnected Central client object cached in the slot for reuse.
+      void* cachedClient = link.client;
+      const uint32_t retryAt = link.nextAttemptMs;
+      link = Link();
+      link.used = true;
+      link.serverSide = serverSide;
+      link.peerId = peerId;
+      link.client = cachedClient;
+      link.nextAttemptMs = retryAt;
+      return &link;
+    }
+  }
+  return nullptr;
+}
+
+uint8_t Manager::activeConnectionCount() const {
+  uint8_t count = 0;
+  for (const auto& link : links_) if (link.used && (link.connected || link.connecting)) ++count;
+  return count;
+}
+
+void Manager::refreshConnectedSummary() {
+  connected_ = false;
+  connectedPeerId_ = 0;
+  for (const auto& link : links_) {
+    if (link.used && link.connected) {
+      connected_ = true;
+      if (!connectedPeerId_) connectedPeerId_ = link.peerId;
+    }
+  }
+}
+
 bool Manager::start() {
   if (!initialized_ || config_.mode == MODE_IDLE) return false;
   if (enabled_) return true;
   enabled_ = true;
-  advertising_ = false;
-  scanning_ = false;
   if (config_.mode == MODE_PERIPHERAL) {
-    auto* advertising = NimBLEDevice::getAdvertising();
+    NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
     if (!advertising) { enabled_ = false; return false; }
     char name[MAX_ADVERTISE_NAME];
     snprintf(name, sizeof(name), "UWB-%04X", localDeviceId_);
     advertising->setName(name);
     advertising->addServiceUUID(SERVICE_UUID);
     advertising->enableScanResponse(true);
-    const uint16_t intervalUnits = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
-    advertising->setMinInterval(intervalUnits);
-    advertising->setMaxInterval(intervalUnits);
+    const uint16_t units = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
+    advertising->setMinInterval(units);
+    advertising->setMaxInterval(units);
     advertising->start();
     advertising_ = advertising->isAdvertising();
     if (!advertising_) { enabled_ = false; return false; }
   } else {
+    for (uint8_t i = 0; i < config_.peerCount; ++i) allocateLink(config_.peers[i], false);
     NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
+    if (!scan) { enabled_ = false; return false; }
     scan->setInterval(config_.scanIntervalMs);
     scan->setWindow(config_.scanWindowMs);
     scan->setMaxResults(0);
     scanning_ = scan->start(0);
     if (!scanning_) { enabled_ = false; return false; }
   }
-  uint8_t state[4] = {1, config_.mode, static_cast<uint8_t>(advertising_ ? 1 : 0),
-                       static_cast<uint8_t>(scanning_ ? 1 : 0)};
+  uint8_t state[4] = {1, config_.mode, static_cast<uint8_t>(advertising_), static_cast<uint8_t>(scanning_)};
   enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
   return true;
 }
 
+void Manager::clearMessageState(Link& link, bool reportIndeterminate) {
+  if (reportIndeterminate && link.tx.active)
+    emitError(0, link.peerId, link.tx.messageId, link.tx.fragmentIndex, 9);
+  link.tx = Message();
+  link.txWaitingAck = false;
+  link.txWaitingResult = false;
+  link.rx = Reassembly();
+  link.rxMessageReady = false;
+  link.readyMessageId = link.readyLength = 0;
+  link.lastCompletedValid = false;
+  link.lastCompletedMessageId = 0;
+  link.lastCompletedFragmentCount = 0;
+  link.result = PendingResult();
+}
+
 void Manager::stop() {
   if (!initialized_) return;
-  if (connectedPeerId_) pendingDisconnectedPeerId_ = connectedPeerId_;
+  enabled_ = false;
   if (auto* scan = static_cast<NimBLEScan*>(scan_)) scan->stop();
   if (auto* advertising = NimBLEDevice::getAdvertising()) advertising->stop();
-  if (config_.mode == MODE_HUB && client_) {
-    auto* client = static_cast<NimBLEClient*>(client_);
-    if (client->isConnected()) client->disconnect();
-    else client->cancelConnect();
-  } else if (config_.mode == MODE_PERIPHERAL && server_ && serverConnectionActive_) {
-    static_cast<NimBLEServer*>(server_)->disconnect(serverConnectionHandle_);
+  for (auto& link : links_) {
+    if (!link.used) continue;
+    if (link.serverSide) {
+      if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
+    } else if (link.client) {
+      auto* client = static_cast<NimBLEClient*>(link.client);
+      if (client->isConnected()) client->disconnect();
+      else client->cancelConnect();
+      // Keep the disconnected client object for reuse after BLE is re-enabled.
+    }
+    if (link.peerId && (link.connected || link.connecting)) {
+      uint8_t payload[3]; writeU16(payload, link.peerId); payload[2] = 0;
+      enqueueEvent(EVENT_PEER_DISCONNECTED, payload, sizeof(payload));
+    }
+    clearMessageState(link, true);
+    if (link.serverSide) link = Link();
+    else {
+      const uint16_t id = link.peerId;
+      void* client = link.client;
+      link = Link();
+      link.client = client;
+      link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
+      // Only configured IDs remain reserved. Open mode rediscovers the current
+      // set of peers after enable, and can reuse the eight cached client objects.
+      if (config_.peerCount && peerConfigured(id)) {
+        link.used = true;
+        link.peerId = id;
+      }
+    }
   }
-  clearMessageState(true);
-  enabled_ = false;
-  advertising_ = false;
-  scanning_ = false;
-  connected_ = false;
-  connectedPeerId_ = 0;
-  requestedPeerId_ = 0;
-  connectRequested_ = false;
+  advertising_ = scanning_ = false;
+  refreshConnectedSummary();
+  portENTER_CRITICAL(&mux_);
+  rxHead_ = rxTail_ = rxCount_ = 0;
+  portEXIT_CRITICAL(&mux_);
   uint8_t state[4] = {0, config_.mode, 0, 0};
   enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
 }
 
 bool Manager::connect(uint16_t peerId) {
-  if (!enabled_ || config_.mode != MODE_HUB || !peerConfigured(peerId) || connected_) return false;
-  requestedPeerId_ = peerId;
-  connectRequested_ = true;
-  scanAddressReady_ = false;
-  connectStartedMs_ = millis();
-  lastReconnectAttemptMs_ = connectStartedMs_;
-  if (!scanning_) {
-    NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
-    scanning_ = scan && scan->start(0);
-  }
-  if (!scanning_) {
-    connectRequested_ = false;
-    requestedPeerId_ = 0;
-    return false;
-  }
+  if (!enabled_ || config_.mode != MODE_HUB || !peerConfigured(peerId)) return false;
+  Link* link = allocateLink(peerId, false);
+  if (!link) return false;
+  link->nextAttemptMs = 0;
+  maintainHubConnections();
   return true;
 }
 
 bool Manager::disconnect(uint16_t peerId) {
-  if (!connected_ || peerId != connectedPeerId_) return false;
-  if (config_.mode == MODE_HUB && client_) {
-    const bool requested = static_cast<NimBLEClient*>(client_)->disconnect();
-    if (requested) { connectRequested_ = false; requestedPeerId_ = 0; }
-    return requested;
-  }
-  if (config_.mode == MODE_PERIPHERAL && server_ && serverConnectionActive_) {
-    const bool requested = static_cast<NimBLEServer*>(server_)->disconnect(serverConnectionHandle_);
-    return requested;
-  }
-  return false;
+  Link* link = findLink(peerId);
+  if (!link || !link->connected) return false;
+  if (link->serverSide)
+    return server_ && static_cast<NimBLEServer*>(server_)->disconnect(link->connectionHandle);
+  return link->client && static_cast<NimBLEClient*>(link->client)->disconnect();
 }
 
-uint16_t Manager::negotiatedMtu() const {
-  if (config_.mode == MODE_PERIPHERAL && server_ && serverConnectionActive_) {
-    const uint16_t peerMtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(serverConnectionHandle_);
-    return peerMtu >= 23 ? peerMtu : 23;
-  }
-  if (config_.mode == MODE_HUB && client_ && static_cast<NimBLEClient*>(client_)->isConnected()) {
-    const uint16_t peerMtu = static_cast<NimBLEClient*>(client_)->getMTU();
-    return peerMtu >= 23 ? peerMtu : 23;
-  }
-  return 23;
+uint16_t Manager::mtuForPeer(uint16_t peerId) const {
+  const Link* link = findLink(peerId);
+  return (link && link->mtu >= 23) ? link->mtu : 23;
 }
+
+uint16_t Manager::negotiatedMtu() const { return mtuForPeer(connectedPeerId_); }
 
 bool Manager::transmitPacket(const uint8_t* packet, uint16_t length) {
-  if (!connected_ || !packet || length == 0 || length > MAX_PACKET_LENGTH) return false;
-  if (config_.mode == MODE_HUB) {
-    auto* remote = static_cast<NimBLERemoteCharacteristic*>(remoteRxCharacteristic_);
-    return remote && remote->writeValue(packet, length, false);
+  if (!packet || !length || length > MAX_PACKET_LENGTH) return false;
+  Link* link = findLink(selectedPeerId_);
+  if (!link || !link->connected) return false;
+  if (link->serverSide) {
+    auto* tx = static_cast<NimBLECharacteristic*>(txCharacteristic_);
+    return tx && tx->notify(packet, length, link->connectionHandle);
   }
-  auto* tx = static_cast<NimBLECharacteristic*>(txCharacteristic_);
-  if (!tx) return false;
-  tx->setValue(packet, length);
-  return tx->notify();
+  auto* remote = static_cast<NimBLERemoteCharacteristic*>(link->remoteRx);
+  return remote && remote->writeValue(packet, length, false);
 }
 
 bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length) {
@@ -412,12 +451,10 @@ bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length)
   portENTER_CRITICAL(&mux_);
   if (eventCount_ < EVENT_QUEUE_SIZE) {
     Event& event = events_[eventHead_];
-    event.code = code;
-    event.length = length;
+    event.code = code; event.length = length;
     if (length && payload) memcpy(event.payload, payload, length);
     eventHead_ = (eventHead_ + 1) % EVENT_QUEUE_SIZE;
-    ++eventCount_;
-    ok = true;
+    ++eventCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
   return ok;
@@ -429,70 +466,116 @@ bool Manager::popEvent(Event& event) {
   if (eventCount_) {
     event = events_[eventTail_];
     eventTail_ = (eventTail_ + 1) % EVENT_QUEUE_SIZE;
-    --eventCount_;
-    ok = true;
+    --eventCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
   return ok;
 }
 
-void Manager::enqueueReceivedPacket(const uint8_t* data, size_t length) {
-  if (!data || length == 0 || length > MAX_PACKET_LENGTH) return;
+bool Manager::enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t peerId) {
+  if (!data || !length || length > MAX_PACKET_LENGTH || !peerId) return false;
+  bool ok = false;
   portENTER_CRITICAL(&mux_);
   if (rxCount_ < RX_PACKET_QUEUE_SIZE) {
     PacketSlot& slot = rxPackets_[rxHead_];
+    slot.peerId = peerId;
     slot.length = static_cast<uint16_t>(length);
     memcpy(slot.data, data, length);
     rxHead_ = (rxHead_ + 1) % RX_PACKET_QUEUE_SIZE;
-    ++rxCount_;
-  } else {
-    // RX callback never blocks; overflow is surfaced by the main-loop state machine.
-    portEXIT_CRITICAL(&mux_);
-    emitError(1, connectedPeerId_, 0, 0xFF, NACK_RX_BUSY);
-    return;
+    ++rxCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
+  if (!ok) emitError(1, peerId, 0, 0xFF, NACK_RX_BUSY);
+  return ok;
 }
 
-void Manager::noteServerConnected(uint16_t connectionHandle) {
-  // The transport manager maintains one active peer at a time. Reject any
-  // additional peripheral-side link rather than corrupting connection state.
-  if (serverConnectionActive_ && serverConnectionHandle_ != connectionHandle) {
-    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(connectionHandle);
+void Manager::enqueueServerPacket(const uint8_t* data, size_t length, uint16_t handle) {
+  Link* link = findLinkByHandle(handle);
+  if (link && link->connected) enqueueReceivedPacket(data, length, link->peerId);
+}
+
+void Manager::enqueueClientPacket(const uint8_t* data, size_t length, void* characteristic) {
+  Link* link = findLinkByCharacteristic(characteristic);
+  if (link && link->connected) enqueueReceivedPacket(data, length, link->peerId);
+}
+
+void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_t addressType) {
+  if (!enabled_ || config_.mode != MODE_HUB || !peerConfigured(peerId) || !address) return;
+  Link* link = allocateLink(peerId, false);
+  if (!link && config_.peerCount == 0) {
+    // In open mode, replace an idle peer that has not been seen recently.
+    // Its Central client is retained in the free slot and reused for the new ID.
+    for (auto& candidate : links_) {
+      if (candidate.used && !candidate.serverSide && !candidate.connected &&
+          !candidate.connecting && elapsed(millis(), candidate.lastSeenMs, OPEN_PEER_STALE_MS)) {
+        void* cachedClient = candidate.client;
+        candidate = Link();
+        candidate.client = cachedClient;
+        link = allocateLink(peerId, false);
+        break;
+      }
+    }
+  }
+  if (!link) return;
+  memcpy(link->address, address, sizeof(link->address));
+  link->addressType = addressType;
+  link->addressReady = true;
+  link->lastSeenMs = millis();
+  if (!link->foundNotified) {
+    link->foundNotified = true;
+    uint8_t payload[2]; writeU16(payload, peerId);
+    enqueueEvent(EVENT_PEER_FOUND, payload, sizeof(payload));
+  }
+}
+
+void Manager::noteServerConnected(uint16_t handle) {
+  if (!enabled_ || config_.mode != MODE_PERIPHERAL || activeConnectionCount() >= MAX_ACTIVE_CONNECTIONS) {
+    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
-  serverConnectionHandle_ = connectionHandle;
-  serverConnectionActive_ = true;
-  serverConnectStartedMs_ = millis();
-  serverHandshakeTimedOut_ = false;
-  connected_ = false; // identity write completes the peer handshake.
-  connectedPeerId_ = 0;
-  mtu_ = 23;
+  Link* link = allocateLink(0, true);
+  if (!link) {
+    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
+    return;
+  }
+  link->connectionHandle = handle;
+  link->connectStartedMs = millis();
+  link->mtu = 23;
+  link->connecting = true; // Count unauthenticated server links against the eight-link limit.
+  advertisingRestartPending_ = true;
 }
 
-void Manager::noteServerDisconnected(uint16_t connectionHandle, int reason) {
-  if (!serverConnectionActive_ || serverConnectionHandle_ != connectionHandle) return;
-  if (connectedPeerId_) pendingDisconnectedPeerId_ = connectedPeerId_;
-  disconnectReason_ = reason;
-  serverDisconnectPending_ = true;
-  serverConnectionActive_ = false;
+void Manager::noteServerDisconnected(uint16_t handle, int reason) {
+  Link* link = findLinkByHandle(handle);
+  if (!link) return;
+  link->disconnectReason = reason;
+  link->disconnectPending = true;
 }
 
-void Manager::noteClientConnected() { clientConnectComplete_ = true; }
-void Manager::noteClientDisconnected(int reason) {
-  if (connectedPeerId_) pendingDisconnectedPeerId_ = connectedPeerId_;
-  disconnectReason_ = reason;
-  clientDisconnectPending_ = true;
+void Manager::noteServerMtuChanged(uint16_t handle, uint16_t mtu) {
+  if (Link* link = findLinkByHandle(handle)) link->mtu = mtu;
 }
-void Manager::noteRemoteIdentity(uint16_t peerId) {
-  pendingRemoteIdentity_ = peerId;
-  remoteIdentityPending_ = true;
+
+void Manager::noteClientConnected(void* client) {
+  if (Link* link = findLinkByClient(client)) link->connectComplete = true;
+}
+
+void Manager::noteClientDisconnected(void* client, int reason) {
+  if (Link* link = findLinkByClient(client)) {
+    link->disconnectReason = reason;
+    link->disconnectPending = true;
+  }
+}
+
+void Manager::noteRemoteIdentity(uint16_t handle, uint16_t peerId) {
+  if (Link* link = findLinkByHandle(handle)) {
+    link->pendingIdentity = peerId;
+    link->identityPending = true;
+  }
 }
 
 uint16_t Manager::fragmentDataCapacity() const {
-  // The packet buffer and requested local MTU are bounded at 256. Clamp even
-  // if a peer or future stack build reports a larger negotiated MTU.
-  uint16_t mtu = negotiatedMtu();
+  uint16_t mtu = mtuForPeer(selectedPeerId_);
   if (mtu > MAX_ATT_MTU) mtu = MAX_ATT_MTU;
   if (mtu <= 12) return 1;
   const uint16_t capacity = mtu - 3 - 7 - 2;
@@ -501,44 +584,43 @@ uint16_t Manager::fragmentDataCapacity() const {
 
 bool Manager::sendToPeer(uint16_t peerId, const uint8_t* data, uint16_t length,
                          uint16_t& messageId) {
-  if (!connected_ || peerId != connectedPeerId_ || tx_.active ||
-      length > MAX_MESSAGE_LENGTH || (length && !data)) return false;
+  Link* link = findLink(peerId);
+  if (!link || !link->connected || link->tx.active || length > MAX_MESSAGE_LENGTH || (length && !data))
+    return false;
+  selectedPeerId_ = peerId;
   const uint16_t capacity = fragmentDataCapacity();
-  uint8_t fragments = length == 0 ? 1 : static_cast<uint8_t>((length + capacity - 1) / capacity);
-  if (fragments == 0 || fragments > MAX_FRAGMENTS) return false;
-  tx_ = Message();
-  tx_.active = true;
-  tx_.peerId = peerId;
-  tx_.messageId = nextMessageId_++;
-  // 0 is a valid wrapping message ID.
-  tx_.totalLength = length;
-  tx_.fragmentCount = fragments;
-  tx_.fragmentDataLength = capacity;
-  if (length) memcpy(tx_.data, data, length);
-  tx_.lastActionMs = millis();
-  txWaitingAck_ = false;
-  txWaitingResult_ = false;
-  messageId = tx_.messageId;
+  const uint8_t fragments = length == 0 ? 1 : static_cast<uint8_t>((length + capacity - 1) / capacity);
+  if (!fragments || fragments > MAX_FRAGMENTS) return false;
+  link->tx = Message();
+  link->tx.active = true;
+  link->tx.peerId = peerId;
+  link->tx.messageId = nextMessageId_++;
+  link->tx.totalLength = length;
+  link->tx.fragmentCount = fragments;
+  link->tx.fragmentDataLength = capacity;
+  if (length) memcpy(link->tx.data, data, length);
+  link->tx.lastActionMs = millis();
+  link->txWaitingAck = link->txWaitingResult = false;
+  messageId = link->tx.messageId;
   return true;
 }
 
 bool Manager::getReceivedData(uint16_t peerId, uint16_t messageId,
                               uint8_t* destination, uint16_t capacity, uint16_t& length) {
-  if (!rxMessageReady_ || peerId != readyPeerId_ || messageId != readyMessageId_ ||
-      (readyLength_ && !destination) || capacity < readyLength_) return false;
-  length = readyLength_;
-  if (length) memcpy(destination, readyData_, length);
-  rxMessageReady_ = false;
-  readyPeerId_ = 0;
-  readyMessageId_ = 0;
-  readyLength_ = 0;
-  rx_ = Reassembly();
-  result_ = PendingResult();
-  result_.active = true;
-  result_.peerId = peerId;
-  result_.messageId = messageId;
-  result_.status = RESULT_CONSUMED;
-  result_.lastActionMs = millis();
+  Link* link = findLink(peerId);
+  if (!link || !link->rxMessageReady || messageId != link->readyMessageId ||
+      (link->readyLength && !destination) || capacity < link->readyLength) return false;
+  selectedPeerId_ = peerId;
+  length = link->readyLength;
+  if (length) memcpy(destination, link->readyData, length);
+  link->rxMessageReady = false;
+  link->readyMessageId = link->readyLength = 0;
+  link->rx = Reassembly();
+  link->result = PendingResult();
+  link->result.active = true;
+  link->result.messageId = messageId;
+  link->result.status = RESULT_CONSUMED;
+  link->result.lastActionMs = millis();
   sendMessageResult(messageId, RESULT_CONSUMED);
   return true;
 }
@@ -546,63 +628,49 @@ bool Manager::getReceivedData(uint16_t peerId, uint16_t messageId,
 bool Manager::buildAndSendSimple(uint8_t type, uint16_t messageId,
                                  uint8_t fragmentIndex, uint8_t errorCode) {
   uint8_t packet[8]{};
-  packet[0] = type;
-  writeU16(packet + 1, messageId);
+  packet[0] = type; writeU16(packet + 1, messageId);
   uint16_t length = 3;
-  if (type == PKT_ACK) {
-    packet[3] = fragmentIndex;
-    length = 4;
-  } else if (type == PKT_NACK) {
-    packet[3] = fragmentIndex;
-    packet[4] = errorCode;
-    length = 5;
-  }
+  if (type == PKT_ACK) { packet[3] = fragmentIndex; length = 4; }
+  else if (type == PKT_NACK) { packet[3] = fragmentIndex; packet[4] = errorCode; length = 5; }
   writeU16(packet + length, packetCrc(packet, length));
   return transmitPacket(packet, length + 2);
 }
 
 bool Manager::sendMessageResult(uint16_t messageId, uint8_t status) {
-  uint8_t packet[6];
-  packet[0] = PKT_MESSAGE_RESULT;
-  writeU16(packet + 1, messageId);
-  packet[3] = status;
+  uint8_t packet[6]; packet[0] = PKT_MESSAGE_RESULT;
+  writeU16(packet + 1, messageId); packet[3] = status;
   writeU16(packet + 4, packetCrc(packet, 4));
   return transmitPacket(packet, sizeof(packet));
 }
 
 void Manager::emitError(uint8_t direction, uint16_t peerId, uint16_t messageId,
                         uint8_t fragmentIndex, uint8_t errorCode) {
-  uint8_t payload[8];
-  payload[0] = direction;
-  writeU16(payload + 1, peerId);
-  writeU16(payload + 3, messageId);
-  payload[5] = fragmentIndex;
-  payload[6] = errorCode;
-  payload[7] = 0;
+  uint8_t payload[8]; payload[0] = direction;
+  writeU16(payload + 1, peerId); writeU16(payload + 3, messageId);
+  payload[5] = fragmentIndex; payload[6] = errorCode; payload[7] = 0;
   enqueueEvent(EVENT_ERROR, payload, sizeof(payload));
 }
 
-void Manager::failTransmit(uint8_t errorCode, uint8_t fragmentIndex) {
-  if (!tx_.active) return;
-  emitError(0, tx_.peerId, tx_.messageId, fragmentIndex, errorCode);
-  tx_ = Message();
-  txWaitingAck_ = false;
-  txWaitingResult_ = false;
+void Manager::failTransmit(Link& link, uint8_t errorCode, uint8_t fragmentIndex) {
+  if (!link.tx.active) return;
+  emitError(0, link.peerId, link.tx.messageId, fragmentIndex, errorCode);
+  link.tx = Message();
+  link.txWaitingAck = link.txWaitingResult = false;
 }
 
 void Manager::handleData(const uint8_t* p, uint16_t length) {
-  if (length < 9) return;
+  Link* link = findLink(selectedPeerId_);
+  if (!link || length < 9) return;
   const uint16_t messageId = readU16(p + 1);
   const uint8_t fragmentIndex = p[3];
   const uint8_t fragmentCount = p[4];
   const uint16_t totalLength = readU16(p + 5);
   const uint16_t payloadLength = length - 9;
   const uint16_t capacity = fragmentDataCapacity();
-
   if (totalLength > MAX_MESSAGE_LENGTH) {
     buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_MESSAGE_TOO_LARGE); return;
   }
-  if (fragmentCount == 0 || fragmentCount > MAX_FRAGMENTS || fragmentIndex >= fragmentCount) {
+  if (!fragmentCount || fragmentCount > MAX_FRAGMENTS || fragmentIndex >= fragmentCount) {
     buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_INVALID_FRAGMENT); return;
   }
   const uint8_t expectedCount = totalLength == 0 ? 1 :
@@ -616,154 +684,117 @@ void Manager::handleData(const uint8_t* p, uint16_t length) {
     buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_INVALID_FRAGMENT); return;
   }
 
-  if (!rx_.active) {
-    if (lastCompletedValid_ && messageId == lastCompletedMessageId_ &&
-        lastCompletedFragmentCount_ && fragmentIndex < lastCompletedFragmentCount_) {
-      buildAndSendSimple(PKT_ACK, messageId, fragmentIndex);
-      return;
+  Reassembly& rx = link->rx;
+  if (!rx.active) {
+    if (link->lastCompletedValid && messageId == link->lastCompletedMessageId &&
+        link->lastCompletedFragmentCount && fragmentIndex < link->lastCompletedFragmentCount) {
+      buildAndSendSimple(PKT_ACK, messageId, fragmentIndex); return;
     }
-    if (result_.active && messageId == result_.messageId) {
-      // A sender may retransmit a fragment after receiving MESSAGE_RESULT but
-      // before its RESULT_ACK reaches the peer. Re-ACK it without re-delivery.
-      buildAndSendSimple(PKT_ACK, messageId, fragmentIndex);
-      return;
+    if (link->result.active && messageId == link->result.messageId) {
+      buildAndSendSimple(PKT_ACK, messageId, fragmentIndex); return;
     }
-    if (result_.active) {
-      // Preserve the one pending final-result record until its ACK arrives.
-      buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_RX_BUSY);
-      return;
+    if (link->result.active) {
+      buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_RX_BUSY); return;
     }
-    if (rxMessageReady_) {
-      if (messageId == readyMessageId_ && fragmentIndex < lastCompletedFragmentCount_) {
-        buildAndSendSimple(PKT_ACK, messageId, fragmentIndex); return;
-      }
-      buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_RX_QUEUE_FULL); return;
+    if (link->rxMessageReady) {
+      if (messageId == link->readyMessageId && fragmentIndex < link->lastCompletedFragmentCount)
+        buildAndSendSimple(PKT_ACK, messageId, fragmentIndex);
+      else buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_RX_QUEUE_FULL);
+      return;
     }
     if (fragmentIndex != 0) {
       buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_INVALID_FRAGMENT); return;
     }
-    rx_ = Reassembly();
-    rx_.active = true;
-    rx_.peerId = connectedPeerId_;
-    rx_.messageId = messageId;
-    rx_.totalLength = totalLength;
-    rx_.fragmentDataLength = capacity;
-    rx_.fragmentCount = fragmentCount;
-    rx_.lastActivityMs = millis();
+    rx = Reassembly();
+    rx.active = true; rx.peerId = selectedPeerId_; rx.messageId = messageId;
+    rx.totalLength = totalLength; rx.fragmentDataLength = capacity;
+    rx.fragmentCount = fragmentCount; rx.lastActivityMs = millis();
   }
 
-  if (rx_.messageId != messageId) {
+  if (rx.messageId != messageId) {
     buildAndSendSimple(PKT_NACK, messageId, fragmentIndex,
-                       rx_.complete ? NACK_RX_QUEUE_FULL : NACK_RX_BUSY); return;
+                       rx.complete ? NACK_RX_QUEUE_FULL : NACK_RX_BUSY); return;
   }
-  if (rx_.totalLength != totalLength || rx_.fragmentCount != fragmentCount ||
-      rx_.fragmentDataLength != capacity) {
+  if (rx.totalLength != totalLength || rx.fragmentCount != fragmentCount ||
+      rx.fragmentDataLength != capacity) {
     buildAndSendSimple(PKT_NACK, messageId, fragmentIndex, NACK_METADATA_MISMATCH); return;
   }
-
   const uint64_t bit = (uint64_t(1) << fragmentIndex);
-  if (rx_.receivedMask & bit) {
-    rx_.lastActivityMs = millis();
-    buildAndSendSimple(PKT_ACK, messageId, fragmentIndex); return;
+  if (rx.receivedMask & bit) {
+    rx.lastActivityMs = millis(); buildAndSendSimple(PKT_ACK, messageId, fragmentIndex); return;
   }
-  if (!rx_.complete && payloadLength)
-    memcpy(rx_.data + uint16_t(fragmentIndex) * capacity, p + 7, payloadLength);
-  rx_.receivedMask |= bit;
-  ++rx_.receivedCount;
-  rx_.lastActivityMs = millis();
+  if (!rx.complete && payloadLength) memcpy(rx.data + uint16_t(fragmentIndex) * capacity, p + 7, payloadLength);
+  rx.receivedMask |= bit; ++rx.receivedCount; rx.lastActivityMs = millis();
   buildAndSendSimple(PKT_ACK, messageId, fragmentIndex);
-
-  if (rx_.receivedCount == rx_.fragmentCount && !rx_.complete) {
-    rx_.complete = true;
-    rx_.completedAtMs = millis();
-    rxMessageReady_ = true;
-    readyPeerId_ = rx_.peerId;
-    readyMessageId_ = rx_.messageId;
-    readyLength_ = rx_.totalLength;
-    if (readyLength_) memcpy(readyData_, rx_.data, readyLength_);
-    lastCompletedMessageId_ = rx_.messageId;
-    lastCompletedFragmentCount_ = rx_.fragmentCount;
-    lastCompletedValid_ = true;
-    uint8_t payload[6];
-    writeU16(payload, readyPeerId_);
-    writeU16(payload + 2, readyMessageId_);
-    writeU16(payload + 4, readyLength_);
+  if (rx.receivedCount == rx.fragmentCount && !rx.complete) {
+    rx.complete = true; rx.completedAtMs = millis();
+    link->rxMessageReady = true;
+    link->readyMessageId = rx.messageId;
+    link->readyLength = rx.totalLength;
+    if (link->readyLength) memcpy(link->readyData, rx.data, link->readyLength);
+    link->lastCompletedMessageId = rx.messageId;
+    link->lastCompletedFragmentCount = rx.fragmentCount;
+    link->lastCompletedValid = true;
+    uint8_t payload[6]; writeU16(payload, selectedPeerId_);
+    writeU16(payload + 2, link->readyMessageId); writeU16(payload + 4, link->readyLength);
     enqueueEvent(EVENT_DATA_RECEIVED, payload, sizeof(payload));
   }
 }
 
 void Manager::handleAck(const uint8_t* p, uint16_t length) {
-  if (length != 6 || !tx_.active || !txWaitingAck_) return;
-  const uint16_t messageId = readU16(p + 1);
-  const uint8_t fragmentIndex = p[3];
-  if (messageId != tx_.messageId || fragmentIndex != tx_.fragmentIndex) return;
-  txWaitingAck_ = false;
-  tx_.retryCount = 0;
-  if (tx_.fragmentIndex + 1 < tx_.fragmentCount) {
-    ++tx_.fragmentIndex;
-    tx_.lastActionMs = millis();
+  Link* link = findLink(selectedPeerId_);
+  if (!link || length != 6 || !link->tx.active || !link->txWaitingAck) return;
+  const uint16_t id = readU16(p + 1); const uint8_t index = p[3];
+  if (id != link->tx.messageId || index != link->tx.fragmentIndex) return;
+  link->txWaitingAck = false; link->tx.retryCount = 0;
+  if (link->tx.fragmentIndex + 1 < link->tx.fragmentCount) {
+    ++link->tx.fragmentIndex; link->tx.lastActionMs = millis();
   } else {
-    txWaitingResult_ = true;
-    tx_.lastActionMs = millis();
-    tx_.retryCount = 0;
+    link->txWaitingResult = true; link->tx.lastActionMs = millis(); link->tx.retryCount = 0;
   }
 }
 
 void Manager::handleNack(const uint8_t* p, uint16_t length) {
-  if (length != 7 || !tx_.active || !txWaitingAck_) return;
-  const uint16_t messageId = readU16(p + 1);
-  const uint8_t fragmentIndex = p[3];
-  const uint8_t errorCode = p[4];
-  if (messageId != tx_.messageId || fragmentIndex != tx_.fragmentIndex) return;
-  if (errorCode == NACK_RX_QUEUE_FULL || errorCode == NACK_RX_BUSY) {
-    if (tx_.retryCount >= config_.maxRetries) failTransmit(errorCode, fragmentIndex);
-    else tx_.lastActionMs = millis() - ACK_TIMEOUT_MS;
-  } else {
-    failTransmit(errorCode, fragmentIndex);
-  }
+  Link* link = findLink(selectedPeerId_);
+  if (!link || length != 7 || !link->tx.active || !link->txWaitingAck) return;
+  const uint16_t id = readU16(p + 1); const uint8_t index = p[3]; const uint8_t error = p[4];
+  if (id != link->tx.messageId || index != link->tx.fragmentIndex) return;
+  if (error == NACK_RX_QUEUE_FULL || error == NACK_RX_BUSY) {
+    if (link->tx.retryCount >= config_.maxRetries) failTransmit(*link, error, index);
+    else link->tx.lastActionMs = millis() - ACK_TIMEOUT_MS;
+  } else failTransmit(*link, error, index);
 }
 
 void Manager::handleMessageResult(const uint8_t* p, uint16_t length) {
-  if (length != 6) return;
-  const uint16_t messageId = readU16(p + 1);
-  const uint8_t status = p[3];
-  uint8_t ack[5];
-  ack[0] = PKT_MESSAGE_RESULT_ACK;
-  writeU16(ack + 1, messageId);
-  writeU16(ack + 3, packetCrc(ack, 3));
-  transmitPacket(ack, sizeof(ack));
-  if (status > RESULT_CONSUMPTION_TIMEOUT) {
-    emitError(0, connectedPeerId_, messageId, 0xFF, 11);
-    return;
-  }
-
-  if (tx_.active && tx_.messageId == messageId) {
-    // A final result proves the receiver reassembled the whole message, even
-    // if the ACK for the final fragment was lost on its way back.
+  Link* link = findLink(selectedPeerId_);
+  if (!link || length != 6) return;
+  const uint16_t id = readU16(p + 1); const uint8_t status = p[3];
+  uint8_t ack[5]; ack[0] = PKT_MESSAGE_RESULT_ACK; writeU16(ack + 1, id);
+  writeU16(ack + 3, packetCrc(ack, 3)); transmitPacket(ack, sizeof(ack));
+  if (status > RESULT_CONSUMPTION_TIMEOUT) { emitError(0, selectedPeerId_, id, 0xFF, 11); return; }
+  if (link->tx.active && link->tx.messageId == id) {
     if (status == RESULT_CONSUMED) {
-      uint8_t payload[6];
-      writeU16(payload, tx_.peerId);
-      writeU16(payload + 2, tx_.messageId);
-      writeU16(payload + 4, tx_.totalLength);
+      uint8_t payload[6]; writeU16(payload, link->tx.peerId);
+      writeU16(payload + 2, id); writeU16(payload + 4, link->tx.totalLength);
       enqueueEvent(EVENT_DATA_SENT, payload, sizeof(payload));
-    } else {
-      emitError(0, tx_.peerId, tx_.messageId, 0xFF, RESULT_CONSUMPTION_TIMEOUT);
-    }
-    tx_ = Message();
-    txWaitingAck_ = false;
-    txWaitingResult_ = false;
+    } else emitError(0, link->tx.peerId, id, 0xFF, RESULT_CONSUMPTION_TIMEOUT);
+    link->tx = Message(); link->txWaitingAck = link->txWaitingResult = false;
   }
 }
 
 void Manager::handleMessageResultAck(const uint8_t* p, uint16_t length) {
-  if (length != 5 || !result_.active) return;
-  if (readU16(p + 1) == result_.messageId) result_ = PendingResult();
+  Link* link = findLink(selectedPeerId_);
+  if (link && length == 5 && link->result.active && readU16(p + 1) == link->result.messageId)
+    link->result = PendingResult();
 }
 
-void Manager::handlePacket(const uint8_t* p, uint16_t length) {
+void Manager::handlePacket(uint16_t peerId, const uint8_t* p, uint16_t length) {
   if (length < 3) return;
-  const uint16_t receivedCrc = readU16(p + length - 2);
-  if (packetCrc(p, length - 2) != receivedCrc) return;
+  Link* link = findLink(peerId);
+  if (!link || !link->connected) return;
+  selectedPeerId_ = peerId;
+  const uint16_t crc = readU16(p + length - 2);
+  if (packetCrc(p, length - 2) != crc) return;
   switch (p[0]) {
     case PKT_DATA: handleData(p, length); break;
     case PKT_ACK: handleAck(p, length); break;
@@ -774,319 +805,222 @@ void Manager::handlePacket(const uint8_t* p, uint16_t length) {
   }
 }
 
-void Manager::serviceTransmit() {
-  if (!tx_.active || !connected_) return;
+void Manager::serviceTransmit(Link& link) {
+  if (!link.connected || !link.tx.active) return;
+  selectedPeerId_ = link.peerId;
   const uint32_t now = millis();
-  if (txWaitingAck_) {
-    if (!elapsed(now, tx_.lastActionMs, ACK_TIMEOUT_MS)) return;
-    if (tx_.retryCount >= config_.maxRetries) {
-      failTransmit(8, tx_.fragmentIndex); return;
-    }
-    ++tx_.retryCount;
-  } else if (txWaitingResult_) {
-    if (!elapsed(now, tx_.lastActionMs, RESULT_TIMEOUT_MS)) return;
-    if (tx_.retryCount >= config_.maxRetries) {
-      failTransmit(9, 0xFF); return; // final result not observed: delivery is indeterminate.
-    }
-    ++tx_.retryCount;
+  if (link.txWaitingAck) {
+    if (!elapsed(now, link.tx.lastActionMs, ACK_TIMEOUT_MS)) return;
+    if (link.tx.retryCount >= config_.maxRetries) { failTransmit(link, 8, link.tx.fragmentIndex); return; }
+    ++link.tx.retryCount;
+  } else if (link.txWaitingResult) {
+    if (!elapsed(now, link.tx.lastActionMs, RESULT_TIMEOUT_MS)) return;
+    if (link.tx.retryCount >= config_.maxRetries) { failTransmit(link, 9, 0xFF); return; }
+    ++link.tx.retryCount;
   }
-
-  if (!txWaitingResult_) {
-    const uint16_t capacity = tx_.fragmentDataLength;
-    const uint16_t offset = uint16_t(tx_.fragmentIndex) * capacity;
-    const uint16_t remaining = tx_.totalLength > offset ? tx_.totalLength - offset : 0;
-    const uint16_t chunk = remaining > capacity ? capacity : remaining;
+  if (!link.txWaitingResult) {
+    const uint16_t cap = link.tx.fragmentDataLength;
+    const uint16_t offset = uint16_t(link.tx.fragmentIndex) * cap;
+    const uint16_t remain = link.tx.totalLength > offset ? link.tx.totalLength - offset : 0;
+    const uint16_t chunk = remain > cap ? cap : remain;
     uint8_t packet[MAX_PACKET_LENGTH]{};
-    packet[0] = PKT_DATA;
-    writeU16(packet + 1, tx_.messageId);
-    packet[3] = tx_.fragmentIndex;
-    packet[4] = tx_.fragmentCount;
-    writeU16(packet + 5, tx_.totalLength);
-    if (chunk) memcpy(packet + 7, tx_.data + offset, chunk);
+    packet[0] = PKT_DATA; writeU16(packet + 1, link.tx.messageId);
+    packet[3] = link.tx.fragmentIndex; packet[4] = link.tx.fragmentCount;
+    writeU16(packet + 5, link.tx.totalLength);
+    if (chunk) memcpy(packet + 7, link.tx.data + offset, chunk);
     writeU16(packet + 7 + chunk, packetCrc(packet, 7 + chunk));
-    if (!transmitPacket(packet, 9 + chunk)) {
-      if (tx_.retryCount >= config_.maxRetries) {
-        failTransmit(7, tx_.fragmentIndex);
-        return;
-      }
-      txWaitingAck_ = true;
-      tx_.lastActionMs = now;
-      return;
+    if (!transmitPacket(packet, 9 + chunk) && link.tx.retryCount >= config_.maxRetries) {
+      failTransmit(link, 7, link.tx.fragmentIndex); return;
     }
-    txWaitingAck_ = true;
-    tx_.lastActionMs = now;
-  } else {
-    tx_.lastActionMs = now;
-  }
+    link.txWaitingAck = true; link.tx.lastActionMs = now;
+  } else link.tx.lastActionMs = now;
 }
 
-void Manager::serviceReceiveTimeout() {
-  if (!rxMessageReady_ || !rx_.active || !rx_.complete) return;
-  if (!elapsed(millis(), rx_.completedAtMs, config_.rxMessageTimeoutMs)) return;
-  const uint16_t peer = readyPeerId_;
-  const uint16_t id = readyMessageId_;
-  rxMessageReady_ = false;
-  readyPeerId_ = readyMessageId_ = readyLength_ = 0;
-  rx_ = Reassembly();
-  uint8_t payload[4];
-  writeU16(payload, peer); writeU16(payload + 2, id);
+void Manager::serviceReceiveTimeout(Link& link) {
+  if (!link.rxMessageReady || !link.rx.active || !link.rx.complete ||
+      !elapsed(millis(), link.rx.completedAtMs, config_.rxMessageTimeoutMs)) return;
+  selectedPeerId_ = link.peerId;
+  const uint16_t peer = link.peerId, id = link.readyMessageId;
+  link.rxMessageReady = false; link.readyMessageId = link.readyLength = 0;
+  link.rx = Reassembly();
+  uint8_t payload[4]; writeU16(payload, peer); writeU16(payload + 2, id);
   enqueueEvent(EVENT_DATA_EXPIRED, payload, sizeof(payload));
-  result_ = PendingResult();
-  result_.active = true; result_.peerId = peer; result_.messageId = id;
-  result_.status = RESULT_CONSUMPTION_TIMEOUT; result_.lastActionMs = millis();
+  link.result = PendingResult(); link.result.active = true; link.result.messageId = id;
+  link.result.status = RESULT_CONSUMPTION_TIMEOUT; link.result.lastActionMs = millis();
   sendMessageResult(id, RESULT_CONSUMPTION_TIMEOUT);
 }
 
-void Manager::serviceResultRetry() {
-  if (!result_.active || !connected_) return;
-  if (!elapsed(millis(), result_.lastActionMs, RESULT_TIMEOUT_MS)) return;
-  if (result_.retryCount >= config_.maxRetries) {
-    emitError(1, result_.peerId, result_.messageId, 0xFF, 9);
-    result_ = PendingResult();
-    return;
+void Manager::serviceResultRetry(Link& link) {
+  if (!link.connected || !link.result.active) return;
+  if (!elapsed(millis(), link.result.lastActionMs, RESULT_TIMEOUT_MS)) return;
+  if (link.result.retryCount >= config_.maxRetries) {
+    emitError(1, link.peerId, link.result.messageId, 0xFF, 9);
+    link.result = PendingResult(); return;
   }
-  ++result_.retryCount;
-  result_.lastActionMs = millis();
-  sendMessageResult(result_.messageId, result_.status);
+  ++link.result.retryCount; link.result.lastActionMs = millis();
+  selectedPeerId_ = link.peerId;
+  sendMessageResult(link.result.messageId, link.result.status);
 }
 
-void Manager::clearMessageState(bool reportIndeterminate) {
-  if (reportIndeterminate && tx_.active) emitError(0, tx_.peerId, tx_.messageId, tx_.fragmentIndex, 9);
-  tx_ = Message();
-  txWaitingAck_ = false;
-  txWaitingResult_ = false;
-  rx_ = Reassembly();
-  rxMessageReady_ = false;
-  lastCompletedValid_ = false;
-  lastCompletedMessageId_ = 0;
-  lastCompletedFragmentCount_ = 0;
-  readyPeerId_ = readyMessageId_ = readyLength_ = 0;
-  result_ = PendingResult();
-  portENTER_CRITICAL(&mux_);
-  rxHead_ = rxTail_ = rxCount_ = 0;
-  portEXIT_CRITICAL(&mux_);
+void Manager::maintainHubConnections() {
+  if (!enabled_ || config_.mode != MODE_HUB) return;
+  NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
+  if (scan && !scan->isScanning()) scanning_ = scan->start(0);
+  else if (scan) scanning_ = true;
+
+  const uint32_t now = millis();
+  for (auto& link : links_) {
+    if (!link.used || link.serverSide || link.connected || link.connecting || !link.addressReady) continue;
+    if (activeConnectionCount() >= MAX_ACTIVE_CONNECTIONS) break;
+    if (link.nextAttemptMs && static_cast<int32_t>(now - link.nextAttemptMs) < 0) continue;
+    if (!link.client) {
+      NimBLEClient* client = NimBLEDevice::createClient();
+      if (!client) { link.nextAttemptMs = now + config_.reconnectIntervalMs; continue; }
+      link.client = client;
+      client->setClientCallbacks(static_cast<NimBLEClientCallbacks*>(clientCallbacks_), false);
+    }
+    NimBLEClient* client = static_cast<NimBLEClient*>(link.client);
+    client->setConnectTimeout(config_.connectionTimeoutMs);
+    const NimBLEAddress address(link.address, link.addressType);
+    link.connecting = true;
+    link.connectStartedMs = now;
+    link.nextAttemptMs = 0;
+    if (!client->connect(address, true, true, true)) {
+      link.connecting = false;
+      link.nextAttemptMs = now + config_.reconnectIntervalMs;
+      uint8_t payload[3]; writeU16(payload, link.peerId); payload[2] = 1;
+      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+    }
+  }
+}
+
+void Manager::processLinkEvents() {
+  for (auto& link : links_) {
+    if (!link.used) continue;
+    if (enabled_ && config_.mode == MODE_HUB && !link.serverSide && link.connecting &&
+        !link.connected && elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
+      if (link.client) static_cast<NimBLEClient*>(link.client)->cancelConnect();
+      link.connecting = false;
+      link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
+      uint8_t timeoutPayload[3]; writeU16(timeoutPayload, link.peerId); timeoutPayload[2] = 4;
+      enqueueEvent(EVENT_CONNECTION_FAILED, timeoutPayload, sizeof(timeoutPayload));
+    }
+    if (link.disconnectPending) {
+      link.disconnectPending = false;
+      const uint16_t peer = link.peerId;
+      const int reason = link.disconnectReason;
+      const bool wasConnected = link.connected;
+      link.connected = false; link.connecting = false; link.connectComplete = false;
+      link.remoteRx = link.remoteTx = nullptr;
+      link.mtu = 23;
+      clearMessageState(link, true);
+      if (peer && wasConnected) {
+        uint8_t payload[3]; writeU16(payload, peer); payload[2] = static_cast<uint8_t>(reason);
+        enqueueEvent(EVENT_PEER_DISCONNECTED, payload, sizeof(payload));
+      }
+      if (enabled_ && config_.mode == MODE_HUB && !link.serverSide)
+        link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
+      if (config_.mode == MODE_PERIPHERAL && link.serverSide) {
+        advertisingRestartPending_ = true;
+        link = Link();
+      }
+    }
+
+    if (link.used && link.serverSide && !link.connected && !link.handshakeTimedOut &&
+        elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
+      link.handshakeTimedOut = true;
+      uint8_t payload[3]; writeU16(payload, 0); payload[2] = 5;
+      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+      if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
+    }
+
+    if (link.used && link.identityPending) {
+      link.identityPending = false;
+      const uint16_t peer = link.pendingIdentity;
+      bool duplicate = false;
+      for (const auto& other : links_)
+        if (&other != &link && other.used && other.connected && other.peerId == peer) duplicate = true;
+      if (!enabled_ || !link.serverSide || link.handshakeTimedOut || !peerConfigured(peer) || duplicate) {
+        uint8_t payload[3]; writeU16(payload, peer); payload[2] = 3;
+        enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+        if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
+      } else {
+        link.peerId = peer; link.connected = true; link.connecting = false;
+        link.mtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(link.connectionHandle);
+        uint8_t payload[2]; writeU16(payload, peer);
+        enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
+      }
+    }
+
+    if (link.used && link.connectComplete) {
+      link.connectComplete = false;
+      NimBLEClient* client = static_cast<NimBLEClient*>(link.client);
+      if (!enabled_ || !client || !client->isConnected()) continue;
+      auto fail = [&](uint8_t reason) {
+        uint8_t payload[3]; writeU16(payload, link.peerId); payload[2] = reason;
+        enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+        link.connecting = false;
+        if (client->isConnected()) client->disconnect();
+      };
+      NimBLERemoteService* service = client->getService(SERVICE_UUID);
+      if (!service) { fail(5); continue; }
+      auto* remoteRx = service->getCharacteristic(RX_UUID);
+      auto* remoteTx = service->getCharacteristic(TX_UUID);
+      auto* remoteIdRead = service->getCharacteristic(ID_READ_UUID);
+      auto* remoteIdWrite = service->getCharacteristic(ID_WRITE_UUID);
+      auto* remoteVersion = service->getCharacteristic(PROTOCOL_VERSION_UUID);
+      if (!remoteRx || !remoteRx->canWrite() || !remoteTx || !remoteTx->canNotify() ||
+          !remoteIdRead || !remoteIdRead->canRead() || !remoteIdWrite || !remoteIdWrite->canWrite() ||
+          !remoteVersion || !remoteVersion->canRead()) { fail(5); continue; }
+      const NimBLEAttValue version = remoteVersion->readValue();
+      const NimBLEAttValue id = remoteIdRead->readValue();
+      if (version.length() != 1 || version.data()[0] != BLE_PROTOCOL_VERSION || id.length() != 2) {
+        fail(5); continue;
+      }
+      const uint16_t remoteId = readU16(id.data());
+      if (remoteId != link.peerId || !peerConfigured(remoteId)) { fail(3); continue; }
+      uint8_t ownId[2]; writeU16(ownId, localDeviceId_);
+      if (!remoteIdWrite->writeValue(ownId, sizeof(ownId), true) ||
+          !remoteTx->subscribe(true, onRemoteNotify)) { fail(5); continue; }
+      link.remoteRx = remoteRx; link.remoteTx = remoteTx;
+      link.mtu = client->getMTU(); link.connected = true; link.connecting = false;
+      uint8_t payload[2]; writeU16(payload, link.peerId);
+      enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
+    }
+  }
+  refreshConnectedSummary();
+  if (enabled_ && config_.mode == MODE_PERIPHERAL && advertisingRestartPending_) {
+    advertisingRestartPending_ = false;
+    if (activeConnectionCount() < MAX_ACTIVE_CONNECTIONS) {
+      if (auto* advertising = NimBLEDevice::getAdvertising()) {
+        advertising->start(); advertising_ = advertising->isAdvertising();
+      }
+    }
+  }
 }
 
 bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
   status = PeerStatus();
-  status.mode = config_.mode;
-  status.enabled = enabled_ ? 1 : 0;
-  status.advertising = advertising_ ? 1 : 0;
-  status.scanning = scanning_ ? 1 : 0;
-  status.connected = connected_ && connectedPeerId_ == peerId ? 1 : 0;
-  status.peerId = status.connected ? connectedPeerId_ : peerId;
-  status.mtu = status.connected ? negotiatedMtu() : 23;
-  if (status.connected) status.state = PEER_CONNECTED;
-  else if (peerConfigured(peerId)) {
-    status.state = PEER_CONFIGURED;
-    for (uint8_t i = 0; i < config_.peerCount; ++i) {
-      if (config_.peers[i] == peerId && foundNotified_[i]) {
-        status.state = PEER_FOUND;
-        break;
-      }
-    }
-  } else status.state = PEER_UNKNOWN;
+  status.mode = config_.mode; status.enabled = enabled_ ? 1 : 0;
+  status.advertising = advertising_ ? 1 : 0; status.scanning = scanning_ ? 1 : 0;
+  status.peerId = peerId;
+  const Link* link = findLink(peerId);
+  if (link) {
+    status.connected = link->connected ? 1 : 0;
+    status.mtu = link->connected ? link->mtu : 23;
+    if (link->connected) status.state = PEER_CONNECTED;
+    else if (link->connecting) status.state = PEER_CONNECTING;
+    else if (link->serverSide && !link->peerId) status.state = PEER_HANDSHAKING;
+    else if (link->addressReady) status.state = PEER_FOUND;
+    else status.state = PEER_BACKOFF;
+  } else if (peerConfigured(peerId)) status.state = PEER_CONFIGURED;
   return true;
 }
 
 void Manager::poll() {
   if (!initialized_) return;
-
-  if (clientDisconnectPending_ || serverDisconnectPending_) {
-    clientDisconnectPending_ = false;
-    serverDisconnectPending_ = false;
-    const uint16_t disconnectedPeer = pendingDisconnectedPeerId_;
-    pendingDisconnectedPeerId_ = 0;
-    const int reason = disconnectReason_;
-    connected_ = false;
-    connectedPeerId_ = 0;
-    remoteRxCharacteristic_ = nullptr;
-    remoteTxCharacteristic_ = nullptr;
-    remoteIdentityReadCharacteristic_ = nullptr;
-    remoteIdentityWriteCharacteristic_ = nullptr;
-    clearMessageState(true);
-    uint8_t payload[3]; writeU16(payload, disconnectedPeer); payload[2] = static_cast<uint8_t>(reason);
-    enqueueEvent(EVENT_PEER_DISCONNECTED, payload, sizeof(payload));
-    uint8_t state[4] = {static_cast<uint8_t>(enabled_ ? 1 : 0), config_.mode,
-                        static_cast<uint8_t>(advertising_ ? 1 : 0),
-                        static_cast<uint8_t>(scanning_ ? 1 : 0)};
-    enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
-    if (enabled_ && config_.mode == MODE_PERIPHERAL) advertisingRestartPending_ = true;
-    if (enabled_ && config_.mode == MODE_HUB && config_.reconnectEnabled && requestedPeerId_) {
-      connectRequested_ = true;
-      connectStartedMs_ = millis();
-      lastReconnectAttemptMs_ = connectStartedMs_ - config_.reconnectIntervalMs;
-    }
-  }
-
-  if (serverConnectionActive_ && !connected_ && !serverHandshakeTimedOut_ &&
-      elapsed(millis(), serverConnectStartedMs_, config_.connectionTimeoutMs)) {
-    serverHandshakeTimedOut_ = true;
-    const uint16_t handle = serverConnectionHandle_;
-    uint8_t payload[3]; writeU16(payload, 0); payload[2] = 5;
-    enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
-  }
-
-  if (remoteIdentityPending_) {
-    remoteIdentityPending_ = false;
-    const uint16_t peer = pendingRemoteIdentity_;
-    if (peerConfigured(peer) && config_.mode == MODE_PERIPHERAL &&
-        serverConnectionActive_ && !serverHandshakeTimedOut_) {
-      connectedPeerId_ = peer;
-      connected_ = true;
-      mtu_ = static_cast<NimBLEServer*>(server_)->getPeerMTU(serverConnectionHandle_);
-      uint8_t payload[2]; writeU16(payload, peer);
-      enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
-    } else if (config_.mode == MODE_PERIPHERAL && server_ && serverConnectionActive_) {
-      uint8_t payload[3]; writeU16(payload, peer); payload[2] = 1;
-      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-      static_cast<NimBLEServer*>(server_)->disconnect(serverConnectionHandle_);
-    }
-  }
-
-  if (advertisingRestartPending_) {
-    advertisingRestartPending_ = false;
-    if (auto* advertising = NimBLEDevice::getAdvertising()) {
-      advertising->start();
-      advertising_ = advertising->isAdvertising();
-    }
-  }
-
-  if (scanAddressReady_ && config_.mode == MODE_HUB && enabled_) {
-    scanAddressReady_ = false;
-    auto* scan = static_cast<NimBLEScan*>(scan_);
-    scan->stop();
-    scanning_ = false;
-    const NimBLEAddress address(foundAddressBytes_, foundAddressType_);
-    if (client_) {
-      auto* oldClient = static_cast<NimBLEClient*>(client_);
-      if (oldClient->isConnected()) oldClient->disconnect();
-    }
-    NimBLEClient* client = static_cast<NimBLEClient*>(client_);
-    if (!client) {
-      client = NimBLEDevice::getDisconnectedClient();
-      if (!client) client = NimBLEDevice::createClient();
-      if (client) {
-        client_ = client;
-        auto* callbacks = static_cast<BleNimBLEClientCallbacks*>(clientCallbacks_);
-        client->setClientCallbacks(callbacks, false);
-      }
-    }
-    if (client) {
-      client->setConnectTimeout(config_.connectionTimeoutMs);
-      const bool started = client->connect(address, true, true, true); // async connection
-      if (!started) {
-        uint8_t payload[3]; writeU16(payload, requestedPeerId_); payload[2] = 1;
-        enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-        connectRequested_ = false;
-        requestedPeerId_ = 0;
-      }
-    } else {
-      uint8_t payload[3]; writeU16(payload, requestedPeerId_); payload[2] = 2;
-      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-      connectRequested_ = false;
-      requestedPeerId_ = 0;
-    }
-  }
-
-  if (clientConnectComplete_) {
-    clientConnectComplete_ = false;
-    NimBLEClient* client = static_cast<NimBLEClient*>(client_);
-    if (client && client->isConnected()) {
-      if (!enabled_ || config_.mode != MODE_HUB || !connectRequested_) {
-        client->disconnect();
-      } else {
-        auto failHandshake = [&](uint16_t peerId, uint8_t reason) {
-          uint8_t payload[3]; writeU16(payload, peerId); payload[2] = reason;
-          enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-          connectRequested_ = false;
-          requestedPeerId_ = 0;
-          client->disconnect();
-        };
-        NimBLERemoteService* service = client->getService(SERVICE_UUID);
-        if (!service) {
-          failHandshake(requestedPeerId_, 5);
-        } else {
-          auto* remoteRx = service->getCharacteristic(RX_UUID);
-          auto* remoteTx = service->getCharacteristic(TX_UUID);
-          auto* remoteIdRead = service->getCharacteristic(ID_READ_UUID);
-          auto* remoteIdWrite = service->getCharacteristic(ID_WRITE_UUID);
-          auto* remoteProtocolVersion = service->getCharacteristic(PROTOCOL_VERSION_UUID);
-          if (!remoteRx || !remoteRx->canWrite() || !remoteTx || !remoteTx->canNotify() ||
-              !remoteIdRead || !remoteIdRead->canRead() || !remoteIdWrite || !remoteIdWrite->canWrite() ||
-              !remoteProtocolVersion || !remoteProtocolVersion->canRead()) {
-            failHandshake(requestedPeerId_, 5);
-          } else {
-            const NimBLEAttValue versionValue = remoteProtocolVersion->readValue();
-            const NimBLEAttValue idValue = remoteIdRead->readValue();
-            if (versionValue.length() != 1 || versionValue.data()[0] != BLE_PROTOCOL_VERSION ||
-                idValue.length() != 2) {
-              failHandshake(requestedPeerId_, 5);
-            } else {
-              const uint16_t peerId = readU16(idValue.data());
-              if (peerId != requestedPeerId_ || !peerConfigured(peerId)) {
-                failHandshake(peerId, 3);
-              } else {
-                uint8_t ownId[2]; writeU16(ownId, localDeviceId_);
-                if (!remoteIdWrite->writeValue(ownId, sizeof(ownId), true) ||
-                    !remoteTx->subscribe(true, onRemoteNotify)) {
-                  failHandshake(peerId, 5);
-                } else {
-                  remoteRxCharacteristic_ = remoteRx;
-                  remoteTxCharacteristic_ = remoteTx;
-                  remoteIdentityReadCharacteristic_ = remoteIdRead;
-                  remoteIdentityWriteCharacteristic_ = remoteIdWrite;
-                  connectedPeerId_ = peerId;
-                  connected_ = true;
-                  mtu_ = client->getMTU();
-                  connectRequested_ = false;
-                  uint8_t payload[2]; writeU16(payload, peerId);
-                  enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
-                  uint8_t state[4] = {1, config_.mode, 0, 0};
-                  enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
-                }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  if (enabled_ && config_.mode == MODE_HUB && connectRequested_ && !connected_ &&
-      !scanning_ && !scanAddressReady_) {
-    const uint32_t now = millis();
-    if (elapsed(now, lastReconnectAttemptMs_, config_.reconnectIntervalMs) ||
-        lastReconnectAttemptMs_ == connectStartedMs_) {
-      NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
-      scanning_ = scan->start(0);
-      lastReconnectAttemptMs_ = now;
-    }
-  }
-
-  if (enabled_ && config_.mode == MODE_HUB && connectRequested_ &&
-      !connected_ && elapsed(millis(), connectStartedMs_, config_.connectionTimeoutMs)) {
-    if (auto* scan = static_cast<NimBLEScan*>(scan_)) scan->stop();
-    scanning_ = false;
-    uint8_t payload[3]; writeU16(payload, requestedPeerId_); payload[2] = 4;
-    enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-    if (client_) {
-      auto* client = static_cast<NimBLEClient*>(client_);
-      if (client->isConnected()) client->disconnect();
-      else client->cancelConnect();
-    }
-    connectRequested_ = false;
-    requestedPeerId_ = 0;
-  }
-
-  if (rx_.active && !rx_.complete &&
-      elapsed(millis(), rx_.lastActivityMs, REASSEMBLY_TIMEOUT_MS)) {
-    emitError(1, rx_.peerId, rx_.messageId, 0xFF, 10);
-    rx_ = Reassembly();
-  }
-
-  if (!connected_) return;
+  processLinkEvents();
+  maintainHubConnections();
 
   for (;;) {
     PacketSlot slot;
@@ -1095,17 +1029,25 @@ void Manager::poll() {
     if (rxCount_) {
       slot = rxPackets_[rxTail_];
       rxTail_ = (rxTail_ + 1) % RX_PACKET_QUEUE_SIZE;
-      --rxCount_;
-      have = true;
+      --rxCount_; have = true;
     }
     portEXIT_CRITICAL(&mux_);
     if (!have) break;
-    handlePacket(slot.data, slot.length);
+    handlePacket(slot.peerId, slot.data, slot.length);
   }
 
-  serviceTransmit();
-  serviceReceiveTimeout();
-  serviceResultRetry();
+  for (auto& link : links_) {
+    if (!link.used || !link.connected) continue;
+    if (link.rx.active && !link.rx.complete &&
+        elapsed(millis(), link.rx.lastActivityMs, REASSEMBLY_TIMEOUT_MS)) {
+      emitError(1, link.peerId, link.rx.messageId, 0xFF, 10);
+      link.rx = Reassembly();
+    }
+    serviceTransmit(link);
+    serviceReceiveTimeout(link);
+    serviceResultRetry(link);
+  }
+  refreshConnectedSummary();
 }
 
 } // namespace UwbBle
