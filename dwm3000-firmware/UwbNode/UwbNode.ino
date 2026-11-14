@@ -589,7 +589,7 @@ static uint16_t encodeBleConfig(uint8_t *dst, const UwbBle::Config &c) {
   putU16(dst + 1, c.advertisingIntervalMs);
   putU16(dst + 3, c.scanIntervalMs);
   putU16(dst + 5, c.scanWindowMs);
-  dst[7] = c.reconnectEnabled;
+  dst[7] = 0; // Reserved legacy byte; reconnection is automatic.
   putU16(dst + 8, c.reconnectIntervalMs);
   putU16(dst + 10, c.connectionTimeoutMs);
   dst[12] = c.maxRetries;
@@ -606,7 +606,7 @@ static bool decodeBleConfig(const uint8_t *src, uint16_t length, UwbBle::Config 
   parsed.advertisingIntervalMs = getU16(src + 1);
   parsed.scanIntervalMs = getU16(src + 3);
   parsed.scanWindowMs = getU16(src + 5);
-  parsed.reconnectEnabled = src[7];
+  parsed.enabled = c.enabled; // Enable state is persisted separately in NVS.
   parsed.reconnectIntervalMs = getU16(src + 8);
   parsed.connectionTimeoutMs = getU16(src + 10);
   parsed.maxRetries = src[12];
@@ -615,7 +615,7 @@ static bool decodeBleConfig(const uint8_t *src, uint16_t length, UwbBle::Config 
   if (parsed.peerCount > UwbBle::MAX_PEERS ||
       length != BLE_CONFIG_FIXED_LENGTH + uint16_t(parsed.peerCount) * 2) return false;
   for (uint8_t i = 0; i < parsed.peerCount; ++i) parsed.peers[i] = getU16(src + 16 + i * 2);
-  if (parsed.mode > UwbBle::MODE_PERIPHERAL || parsed.reconnectEnabled > 1 ||
+  if (parsed.mode > UwbBle::MODE_PERIPHERAL ||
       parsed.maxRetries > 5 || parsed.advertisingIntervalMs < 20 ||
       parsed.advertisingIntervalMs > 10240 || parsed.scanIntervalMs < 10 ||
       parsed.scanIntervalMs > 10240 || parsed.scanWindowMs < 10 ||
@@ -638,6 +638,13 @@ static bool persistBlePeerList(const UwbBle::Config &c) {
                                                 c.peerCount * sizeof(uint16_t)) ==
                          c.peerCount * sizeof(uint16_t);
   else preferences.remove("ble_peers");
+  preferences.end();
+  return ok;
+}
+
+static bool persistBleEnabled(bool enabled) {
+  if (!preferences.begin("uwb-node", false)) return false;
+  const bool ok = preferences.putBool("ble_on", enabled) == sizeof(uint8_t);
   preferences.end();
   return ok;
 }
@@ -686,7 +693,7 @@ static bool readStoredSettings(StoredSettings &stored) {
   stored.bleConfig.advertisingIntervalMs = preferences.getUShort("ble_adv", stored.bleConfig.advertisingIntervalMs);
   stored.bleConfig.scanIntervalMs = preferences.getUShort("ble_scan_i", stored.bleConfig.scanIntervalMs);
   stored.bleConfig.scanWindowMs = preferences.getUShort("ble_scan_w", stored.bleConfig.scanWindowMs);
-  stored.bleConfig.reconnectEnabled = preferences.getUChar("ble_reconn", stored.bleConfig.reconnectEnabled);
+  stored.bleConfig.enabled = preferences.getBool("ble_on", false) ? 1 : 0;
   stored.bleConfig.reconnectIntervalMs = preferences.getUShort("ble_rec_ms", stored.bleConfig.reconnectIntervalMs);
   stored.bleConfig.connectionTimeoutMs = preferences.getUShort("ble_con_ms", stored.bleConfig.connectionTimeoutMs);
   stored.bleConfig.maxRetries = preferences.getUChar("ble_retry", stored.bleConfig.maxRetries);
@@ -734,7 +741,7 @@ static bool writeStoredSettings(const Config &savedCfg, Role savedRole,
   ok &= preferences.putUShort("ble_adv", savedBle.advertisingIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_scan_i", savedBle.scanIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_scan_w", savedBle.scanWindowMs) == sizeof(uint16_t);
-  ok &= preferences.putUChar("ble_reconn", savedBle.reconnectEnabled) == sizeof(uint8_t);
+  ok &= preferences.putBool("ble_on", savedBle.enabled != 0) == sizeof(uint8_t);
   ok &= preferences.putUShort("ble_rec_ms", savedBle.reconnectIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_con_ms", savedBle.connectionTimeoutMs) == sizeof(uint16_t);
   ok &= preferences.putUChar("ble_retry", savedBle.maxRetries) == sizeof(uint8_t);
@@ -1351,7 +1358,8 @@ static void processRequest(HostTransport &source, const Frame &q) {
           (newChannel != 5 && newChannel != 9) ||
           newPeriod < 20 || newPeriod > 60000 ||
           newTimeout < 50 || newTimeout > 5000 || newRetries > 5 ||
-          newRoleValue > ROLE_RESPONDER || autoStartValue > 1) {
+          newRoleValue > ROLE_RESPONDER || autoStartValue > 1 ||
+          (newBleCfg.enabled && newBleCfg.mode == UwbBle::MODE_IDLE)) {
         error = ERR_BAD_ARGUMENT; break;
       }
       if (autoStartValue && (newRoleValue == ROLE_IDLE ||
@@ -1395,9 +1403,16 @@ static void processRequest(HostTransport &source, const Frame &q) {
       schedulePeriodMs = newPeriod; scheduleTimeoutMs = newTimeout;
       scheduleRetries = newRetries; autoStartRanging = newAutoStart;
       rangingEnabled = false;
+      // BLE is an independent subsystem; restore it even when UWB radio startup
+      // fails so a temporary UWB fault does not suppress the configured BLE role.
+      if (newBleCfg.enabled && !ble.start()) {
+        bleCfg.enabled = 0;
+        persistBleEnabled(false);
+        error = ERR_INTERNAL;
+      }
       if (!radioStandby) radioReady = radioInitialize();
       for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
-      if (!radioReady && !radioStandby) { error = ERR_RADIO_FAILURE; break; }
+      if (!radioReady && !radioStandby && error == ERR_OK) error = ERR_RADIO_FAILURE;
       emitStateChanged();
       outLen = 0;
       break;
@@ -1674,14 +1689,29 @@ static void processRequest(HostTransport &source, const Frame &q) {
     case OP_START_BLE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
       if (bleCfg.mode == UwbBle::MODE_IDLE) { error = ERR_BAD_STATE; break; }
-      if (!ble.configure(bleCfg) || !ble.start()) { error = ERR_INTERNAL; break; }
+      UwbBle::Config desired = bleCfg;
+      desired.enabled = 1;
+      if (!ble.enabled() && (!ble.configure(desired) || !ble.start())) {
+        error = ERR_INTERNAL; break;
+      }
+      if (!persistBleEnabled(true)) {
+        ble.stop();
+        desired.enabled = 0;
+        ble.configure(desired);
+        error = ERR_INTERNAL; break;
+      }
+      bleCfg = desired;
       outLen = 0;
       break;
     }
 
     case OP_STOP_BLE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      ble.stop(); outLen = 0; break;
+      if (!persistBleEnabled(false)) { error = ERR_INTERNAL; break; }
+      ble.stop();
+      bleCfg.enabled = 0;
+      if (!ble.configure(bleCfg)) { error = ERR_INTERNAL; break; }
+      outLen = 0; break;
     }
 
     case OP_BLE_CONNECT: {
@@ -1900,7 +1930,11 @@ void setup() {
   UartTransport.io = &PiSerial;
   UartTransport.name = "UART1";
   loadConfig();
-  if (!ble.begin(cfg.deviceId) || !ble.configure(bleCfg)) rememberError(ERR_INTERNAL);
+  if (!ble.begin(cfg.deviceId) || !ble.configure(bleCfg)) {
+    rememberError(ERR_INTERNAL);
+  } else if (bleCfg.enabled && bleCfg.mode != UwbBle::MODE_IDLE && !ble.start()) {
+    rememberError(ERR_INTERNAL);
+  }
 
   if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE);
   for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();

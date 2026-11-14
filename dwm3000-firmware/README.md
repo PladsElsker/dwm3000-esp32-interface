@@ -30,17 +30,36 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 ## Build and flash firmware
 
-PlatformIO is the reference build workflow. Run these commands from `UwbNode/`:
+Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.2**. The NimBLE host is configured for nine connection slots, allowing the firmware to maintain up to eight application peer links.
+
+Run the compile command from this directory:
 
 ```sh
-python3 -m pip install platformio
-pio run
-pio run -t upload
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
+  --build-property "compiler.c.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
+  --build-property "compiler.cpp.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
+  --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
-The firmware targets the Seeed XIAO ESP32-C3. The project configures the board, build flags and libraries in its PlatformIO configuration. The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol.
+Upload the compiled sketch:
 
-The firmware provides UWB DS-TWR ranging and BLE messaging through NimBLE. BLE is managed by the firmware; host software controls it through the serial protocol. Review the source and [PROTOCOL.md](PROTOCOL.md) for current command and behavior details.
+```sh
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin ./UwbNode
+```
+
+The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
+
+## BLE peer messaging
+
+BLE uses NimBLE-Arduino 2.5.2 and runs independently of UWB ranging.
+
+- \`IDLE\` disables BLE; \`HUB\` runs as Central; \`PERIPHERAL\` advertises as a Peripheral.
+- \`START_BLE\` enables BLE and persists the desired state in NVS. The node restores that state at boot. \`STOP_BLE\` disables BLE and persists the disabled state.
+- Enabled HUB nodes continuously discover and reconnect to peers. Enabled Peripheral nodes advertise and accept incoming peers. The host monitors status and events; it does not need to manage connections.
+- Up to eight concurrent peer links are maintained. The NimBLE host build uses nine connection slots.
+- An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
+- Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
+- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. \`BLE_DATA_SENT\` indicates that the remote host retrieved the complete message.
 
 ## Use the Python client
 
