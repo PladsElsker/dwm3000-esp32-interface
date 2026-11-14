@@ -8,7 +8,7 @@ type Port = { name: string; description: string };
 type FrameEvent = { seq: number; opcode: number; payload: number[] };
 type BleConfig = {
     mode: number; advertisingIntervalMs: number; scanIntervalMs: number; scanWindowMs: number;
-    reconnectEnabled: boolean; reconnectIntervalMs: number; connectionTimeoutMs: number;
+    reconnectIntervalMs: number; connectionTimeoutMs: number;
     maxRetries: number; rxMessageTimeoutMs: number; peers: number[];
 };
 type BlePeerStatus = {
@@ -21,7 +21,7 @@ type BleMessage = {
 };
 const defaultBleConfig = (): BleConfig => ({
     mode: 0, advertisingIntervalMs: 160, scanIntervalMs: 160, scanWindowMs: 80,
-    reconnectEnabled: false, reconnectIntervalMs: 1000, connectionTimeoutMs: 5000,
+    reconnectIntervalMs: 1000, connectionTimeoutMs: 5000,
     maxRetries: 1, rxMessageTimeoutMs: 1000, peers: []
 });
 const bleDraft = reactive<BleConfig>(defaultBleConfig());
@@ -41,6 +41,13 @@ const ble = reactive({
 });
 const blePeersInput = ref('');
 const blePeerTokens = computed(() => blePeersInput.value.split(',').filter(token => token.trim().length > 0));
+const bleVisiblePeerIds = computed(() => [...new Set([
+    ...ble.runtimeConfig.peers,
+    ...ble.discoveredPeers,
+    ...ble.peerStatuses.map(peer => peer.peerId),
+    ...(ble.runtime.connectedPeerId ? [ble.runtime.connectedPeerId] : [])
+])].sort((a, b) => a - b));
+const bleConnectedCount = computed(() => ble.peerStatuses.filter(peer => peer.connected).length);
 const bleMessagePeerId = ref('');
 const bleMessageText = ref('');
 const bleMessageByteLength = computed(() => new TextEncoder().encode(bleMessageText.value).length);
@@ -194,12 +201,12 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
     }
     const config: BleConfig = {
         mode: p[offset], advertisingIntervalMs: get16(p, offset + 1), scanIntervalMs: get16(p, offset + 3),
-        scanWindowMs: get16(p, offset + 5), reconnectEnabled: p[offset + 7] === 1,
+        scanWindowMs: get16(p, offset + 5),
         reconnectIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
         maxRetries: p[offset + 12], rxMessageTimeoutMs: get16(p, offset + 13),
         peers: Array.from({ length: peerCount }, (_, i) => get16(p, offset + 16 + i * 2))
     };
-    if (config.mode > 2 || p[offset + 7] > 1 || config.maxRetries > 5 ||
+    if (config.mode > 2 || config.maxRetries > 5 ||
         config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
         config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
         config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
@@ -216,7 +223,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
 function encodeBleConfigExtension(c: BleConfig) {
     return [
         c.mode, ...u16(c.advertisingIntervalMs), ...u16(c.scanIntervalMs), ...u16(c.scanWindowMs),
-        c.reconnectEnabled ? 1 : 0, ...u16(c.reconnectIntervalMs), ...u16(c.connectionTimeoutMs),
+        0, ...u16(c.reconnectIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved legacy reconnect flag.
         c.maxRetries, ...u16(c.rxMessageTimeoutMs), c.peers.length, ...c.peers.flatMap(u16)
     ];
 }
@@ -336,7 +343,7 @@ function validateBleConfig(c: BleConfig) {
     if (!Number.isInteger(c.advertisingIntervalMs) || c.advertisingIntervalMs < 20 || c.advertisingIntervalMs > 10240) throw new Error('Bluetooth advertising interval must be 20–10240 ms.');
     if (!Number.isInteger(c.scanIntervalMs) || c.scanIntervalMs < 10 || c.scanIntervalMs > 10240) throw new Error('Bluetooth scan interval must be 10–10240 ms.');
     if (!Number.isInteger(c.scanWindowMs) || c.scanWindowMs < 10 || c.scanWindowMs > c.scanIntervalMs) throw new Error('Bluetooth scan window must be 10 ms or greater and cannot exceed the scan interval.');
-    if (!Number.isInteger(c.reconnectIntervalMs) || c.reconnectIntervalMs < 100 || c.reconnectIntervalMs > 60000) throw new Error('Bluetooth reconnect interval must be 100–60000 ms.');
+    if (!Number.isInteger(c.reconnectIntervalMs) || c.reconnectIntervalMs < 100 || c.reconnectIntervalMs > 60000) throw new Error('Bluetooth retry interval must be 100–60000 ms.');
     if (!Number.isInteger(c.connectionTimeoutMs) || c.connectionTimeoutMs < 100 || c.connectionTimeoutMs > 30000) throw new Error('Bluetooth connection timeout must be 100–30000 ms.');
     if (!Number.isInteger(c.maxRetries) || c.maxRetries < 0 || c.maxRetries > 5) throw new Error('Bluetooth retries must be 0–5.');
     if (!Number.isInteger(c.rxMessageTimeoutMs) || c.rxMessageTimeoutMs < 100 || c.rxMessageTimeoutMs > 2000) throw new Error('Bluetooth receive timeout must be 100–2000 ms.');
@@ -351,7 +358,9 @@ async function startBle() {
     try {
         await cmd(0x52);
         await refreshStatus();
-        notice.value = ble.runtimeConfig.mode === 1 ? 'Bluetooth started; scanning for configured peers.' : 'Bluetooth advertising started.';
+        notice.value = ble.runtimeConfig.mode === 1
+            ? (ble.runtimeConfig.peers.length ? 'Bluetooth enabled; automatically discovering and connecting to allowed peers.' : 'Bluetooth enabled in open mode; automatically discovering peers.')
+            : 'Bluetooth enabled; advertising and accepting permitted peers.';
         log(`Bluetooth started · ${bleModeName(ble.runtimeConfig.mode)}`);
     } catch (e: any) { error.value = String(e); }
     finally { ble.action = ''; }
@@ -362,43 +371,21 @@ async function stopBle() {
     try {
         await cmd(0x53);
         await refreshStatus();
-        notice.value = 'Bluetooth stopped.';
-        log('Bluetooth stopped');
+        notice.value = 'Bluetooth disabled. The disabled state is saved and will be restored at boot.';
+        log('Bluetooth disabled · state saved to NVS');
     } catch (e: any) { error.value = String(e); }
     finally { ble.action = ''; }
 }
-async function scanBlePeers() {
-    if (ble.runtimeConfig.mode !== 1) { error.value = 'Peer discovery is available in HUB / Central mode. Peripheral mode advertises for a HUB to find.'; return; }
-    if (!ble.runtime.enabled) await startBle();
-    else { await refreshStatus(); notice.value = 'Scanning for configured Bluetooth peers.'; }
-}
-async function connectBlePeer(peerId: number) {
-    if (!ble.runtime.enabled || ble.runtimeConfig.mode !== 1) { error.value = 'Start Bluetooth in HUB / Central mode before connecting to a peer.'; return; }
-    if (!ble.runtimeConfig.peers.includes(peerId)) { error.value = `Peer ${peerId} is not in the configured peer list. Add it in Configuration first.`; return; }
-    ble.action = `connect:${peerId}`;
-    try {
-        await cmd(0x54, u16(peerId));
-        notice.value = `Connection requested for peer ${peerId}. Waiting for the BLE connection event.`;
-        log(`Bluetooth connection requested · peer ${peerId}`);
-    } catch (e: any) { error.value = String(e); }
-    finally { ble.action = ''; }
-}
-async function disconnectBlePeer(peerId = ble.runtime.connectedPeerId) {
-    if (!peerId) return;
-    ble.action = `disconnect:${peerId}`;
-    try {
-        await cmd(0x55, u16(peerId));
-        await refreshStatus();
-        notice.value = `Disconnection requested for peer ${peerId}.`;
-        log(`Bluetooth disconnection requested · peer ${peerId}`);
-    } catch (e: any) { error.value = String(e); }
-    finally { ble.action = ''; }
+async function toggleBle() {
+    if (ble.action) return;
+    if (ble.runtime.enabled) await stopBle();
+    else await startBle();
 }
 async function sendBleMessage() {
     if (!ble.supported || ble.sending) return;
     const peerId = Number(bleMessagePeerId.value || ble.runtime.connectedPeerId);
     if (!Number.isInteger(peerId) || peerId < 1 || peerId > 65534) { error.value = 'Enter a valid Bluetooth peer ID.'; return; }
-    if (!ble.runtime.connected || ble.runtime.connectedPeerId !== peerId) { error.value = `Bluetooth is not connected to peer ${peerId}.`; return; }
+    if (!getBlePeerStatus(peerId)?.connected) { error.value = `Bluetooth is not connected to peer ${peerId}.`; return; }
     const bytes = Array.from(new TextEncoder().encode(bleMessageText.value));
     if (!bytes.length) { error.value = 'Enter a message to send.'; return; }
     if (bytes.length > 496) { error.value = `Message is ${bytes.length} bytes; the maximum is 496 bytes.`; return; }
@@ -424,7 +411,10 @@ function clearBleMessages() {
     ble.outgoing = [];
 }
 function blePeerStateName(state: number) {
-    return ({ 0: 'Unknown', 1: 'Configured', 2: 'Discovered', 3: 'Connected' } as Record<number, string>)[state] ?? `State ${state}`;
+    return ({
+        0: 'Unknown', 1: 'Configured', 2: 'Discovered', 3: 'Connected',
+        4: 'Connecting', 5: 'Handshaking', 6: 'Retry pending'
+    } as Record<number, string>)[state] ?? `State ${state}`;
 }
 function bleModeName(mode: number) {
     return ({ 0: 'Idle', 1: 'HUB / Central', 2: 'Peripheral' } as Record<number, string>)[mode] ?? `Mode ${mode}`;
@@ -491,19 +481,22 @@ function handleEvent(e: FrameEvent) {
     }
     if (e.opcode === 136 && p.length >= 2) {
         const peerId = get16(p);
+        if (!ble.discoveredPeers.includes(peerId)) ble.discoveredPeers.push(peerId);
         Object.assign(ble.runtime, { connected: true, connectedPeerId: peerId, enabled: true });
-        bleMessagePeerId.value = String(peerId);
+        if (!bleMessagePeerId.value) bleMessagePeerId.value = String(peerId);
         log(`BLE connected · peer ${peerId}`);
         void refreshBlePeerStatus(peerId);
     }
     if (e.opcode === 137 && p.length >= 3) {
         const peerId = get16(p);
-        Object.assign(ble.runtime, { connected: false, connectedPeerId: 0, mtu: 23 });
         log(`BLE disconnected · peer ${peerId} · reason ${p[2]}`);
         void refreshBlePeerStatus(peerId);
+        void refreshStatus();
     }
     if (e.opcode === 138 && p.length >= 3) {
-        log(`BLE connection failed · peer ${get16(p)} · reason ${p[2]}`);
+        const peerId = get16(p);
+        log(`BLE connection attempt failed · peer ${peerId} · reason ${p[2]}; automatic retry remains active`);
+        void refreshBlePeerStatus(peerId);
     }
     if (e.opcode === 139 && p.length >= 6) {
         const peerId = get16(p), messageId = get16(p, 2), length = get16(p, 4);
@@ -815,9 +808,9 @@ async function saveSettings() {
         if (ble.supported) {
             bleDraft.peers = parseBlePeerIds(blePeersInput.value);
             validateBleConfig(bleDraft);
-            if (ble.runtime.connected) throw new Error('Disconnect the Bluetooth peer before saving configuration.');
+
         }
-        const restartBleAfterSave = ble.supported && ble.runtime.enabled && !ble.runtime.connected && bleDraft.mode !== 0;
+        const restartBleAfterSave = ble.supported && ble.runtime.enabled && bleDraft.mode !== 0;
         savingConfig.value = true;
 
         // One explicit snapshot, including the BLE extension, is applied to runtime RAM and NVS.
@@ -1771,17 +1764,17 @@ onUnmounted(() => {
 
                                 <div class="config-subsection">
                                     <div class="config-subheading">
-                                        <h4>Connection and message delivery</h4>
-                                        <p>Retry, timeout and reconnection behavior</p>
+                                        <h4>Automatic connections and message delivery</h4>
+                                        <p>Connections and recovery are managed by the node while BLE is enabled</p>
                                     </div>
-                                    <label class="full-field auto-start-field">
-                                        <span class="auto-start-title"><input type="checkbox" v-model="bleDraft.reconnectEnabled" /> Automatically reconnect to configured peers</span>
-                                        <small>Applies to HUB mode. The host can still explicitly connect or disconnect from the Bluetooth page.</small>
-                                    </label>
+                                    <div class="callout info">
+                                        <Bluetooth :size="16" />
+                                        <div><b>Automatic connection management</b><p>HUB nodes continuously discover and reconnect to peers. Peripheral nodes advertise and accept permitted peers. This remains active until Bluetooth is disabled.</p></div>
+                                    </div>
                                     <div class="field-grid">
                                         <label>Reconnect interval <span class="field-help">100–60000 ms</span>
                                             <input type="number" min="100" max="60000" step="1" v-model.number="bleDraft.reconnectIntervalMs" />
-                                            <small>Delay between reconnect attempts when enabled.</small>
+                                            <small>Delay before the next automatic connection attempt.</small>
                                         </label>
                                         <label>Connection timeout <span class="field-help">100–30000 ms</span>
                                             <input type="number" min="100" max="30000" step="1" v-model.number="bleDraft.connectionTimeoutMs" />
@@ -1802,17 +1795,17 @@ onUnmounted(() => {
                                     <div class="peer-config-heading">
                                         <div class="config-subheading">
                                             <h4>BLE peer list</h4>
-                                            <p>HUB discovery and connection allow-list · maximum 8 unique 16-bit IDs</p>
+                                            <p>Peer allow-list · maximum 8 unique 16-bit IDs; an empty list means open mode</p>
                                         </div>
                                         <span class="tag neutral">{{ blePeerTokens.length }} / 8</span>
                                     </div>
                                     <label>Peer IDs <span class="field-help">comma separated</span>
                                         <input v-model="blePeersInput" placeholder="e.g. 2, 3, 12" />
-                                        <small>Enter remote nodes by Device ID. Only configured peers are reported by discovery; edit the list using the same format as UWB Target IDs.</small>
+                                        <small>HUB mode connects to these IDs. Peripheral mode accepts these IDs. Leave the list empty to discover or accept any valid peer.</small>
                                     </label>
                                     <div class="target-chips">
                                         <span v-for="id in blePeerTokens" :key="id">{{ id.trim() }}</span>
-                                        <span v-if="!blePeersInput.trim()" class="muted-chip">No peers configured</span>
+                                        <span v-if="!blePeersInput.trim()" class="muted-chip">Open mode · all valid peer IDs</span>
                                     </div>
                                 </div>
                             </div>
@@ -1836,12 +1829,11 @@ onUnmounted(() => {
                         <div>
                             <div class="eyebrow">WIRELESS MESSAGING</div>
                             <h1>Bluetooth</h1>
-                            <p>Discover configured UWB nodes, manage the BLE connection and test reliable message delivery.</p>
+                            <p>Configure the peer network, enable autonomous connections and monitor up to eight simultaneous links.</p>
                         </div>
                         <div class="heading-actions">
                             <button class="button secondary" :disabled="!connected || !ble.supported || ble.loading" @click="refreshBluetooth"><RefreshCw :size="15" :class="{ spinning: ble.loading }" /> Refresh</button>
-                            <button class="button primary" :disabled="!connected || !ble.supported || ble.runtime.enabled || ble.action !== ''" @click="startBle"><Power :size="15" /> Start BLE</button>
-                            <button class="button danger-ghost" :disabled="!connected || !ble.supported || !ble.runtime.enabled || ble.action !== ''" @click="stopBle"><Power :size="15" /> Stop BLE</button>
+                            <button class="button" :class="ble.runtime.enabled ? 'danger-ghost' : 'primary'" :disabled="!connected || !ble.supported || ble.action !== ''" @click="toggleBle"><Power :size="15" /> {{ ble.action ? 'Updating…' : ble.runtime.enabled ? 'Disable Bluetooth' : 'Enable Bluetooth' }}</button>
                         </div>
                     </div>
                     <div v-if="!ble.supported" class="callout warning">
@@ -1851,36 +1843,37 @@ onUnmounted(() => {
                         <div class="metric-grid ble-status-grid">
                             <div class="metric-card"><div class="metric-top"><span>CONFIGURED MODE</span><Bluetooth /></div><div class="metric-value">{{ bleModeName(ble.runtimeConfig.mode) }}</div><div class="metric-foot">Saved mode: {{ bleModeName(ble.savedConfig.mode) }}</div></div>
                             <div class="metric-card"><div class="metric-top"><span>RADIO STATE</span><Activity /></div><div class="metric-value" :class="ble.runtime.enabled ? 'good' : ''">{{ !ble.runtime.enabled ? 'Stopped' : ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Scanning' : 'Enabled' }}</div><div class="metric-foot">{{ ble.runtimeConfig.mode === 1 ? 'HUB / Central' : ble.runtimeConfig.mode === 2 ? 'Peripheral' : 'Mode idle' }}</div></div>
-                            <div class="metric-card"><div class="metric-top"><span>CONNECTION</span><Link2 /></div><div class="metric-value" :class="ble.runtime.connected ? 'good' : ''">{{ ble.runtime.connected ? 'Connected' : 'Disconnected' }}</div><div class="metric-foot">{{ ble.runtime.connected ? `Peer ${ble.runtime.connectedPeerId}` : 'One BLE peer at a time' }}</div></div>
+                            <div class="metric-card"><div class="metric-top"><span>ACTIVE LINKS</span><Link2 /></div><div class="metric-value" :class="bleConnectedCount ? 'good' : ''">{{ bleConnectedCount }} / 8</div><div class="metric-foot">{{ ble.runtime.connected ? 'Peer connections are maintained automatically' : 'No active peer links' }}</div></div>
                             <div class="metric-card"><div class="metric-top"><span>NEGOTIATED MTU</span><Database /></div><div class="metric-value">{{ ble.runtime.mtu }} B</div><div class="metric-foot">Up to 496 application bytes per message</div></div>
                         </div>
                         <div class="two-col ble-main-grid">
                             <div class="panel">
-                                <div class="panel-heading"><div><h3>Configured peers</h3><p>Known BLE identities and current connection state</p></div><span class="tag neutral">{{ ble.runtimeConfig.peers.length }} configured</span></div>
-                                <div v-if="ble.runtimeConfig.peers.length" class="table-wrap">
-                                    <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th>ACTION</th></tr></thead>
-                                        <tbody><tr v-for="peerId in ble.runtimeConfig.peers" :key="peerId">
+                                <div class="panel-heading"><div><h3>Peer connections</h3><p>Live state for configured and discovered peer identities</p></div><span class="tag neutral">{{ bleConnectedCount }} / 8 connected</span></div>
+                                <div class="state-line"><span>Peer policy</span><b>{{ ble.runtimeConfig.peers.length ? 'Allow-list' : 'Open mode' }}</b></div>
+                                <div v-if="bleVisiblePeerIds.length" class="table-wrap">
+                                    <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th></th></tr></thead>
+                                        <tbody><tr v-for="peerId in bleVisiblePeerIds" :key="peerId">
                                             <td><b>{{ peerId }}</b><small class="mono">{{ hex(peerId) }}</small></td>
-                                            <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : getBlePeerStatus(peerId)?.state === 2 ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName((getBlePeerStatus(peerId)?.state ?? 0)) : 'Not checked' }}</span></td>
-                                            <td>{{ getBlePeerStatus(peerId)?.mtu ?? '—' }}</td>
-                                            <td class="ble-peer-actions">
-                                                <button v-if="ble.runtime.connected && ble.runtime.connectedPeerId === peerId" class="button danger-ghost small" :disabled="ble.action !== ''" @click="disconnectBlePeer(peerId)">Disconnect</button>
-                                                <button v-else class="button secondary small" :disabled="ble.runtimeConfig.mode !== 1 || !ble.runtime.enabled || ble.runtime.connected || ble.action !== ''" @click="connectBlePeer(peerId)">Connect</button>
-                                                <button class="icon-button mini" title="Refresh peer status" :disabled="ble.loading" @click="refreshBlePeerStatus(peerId)"><RefreshCw :size="13" /></button>
-                                            </td>
+                                            <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName(getBlePeerStatus(peerId)!.state) : 'Not checked' }}</span></td>
+                                            <td>{{ getBlePeerStatus(peerId)?.connected ? getBlePeerStatus(peerId)?.mtu : '—' }}</td>
+                                            <td class="ble-peer-actions"><button class="icon-button mini" title="Refresh peer status" :disabled="ble.loading" @click="refreshBlePeerStatus(peerId)"><RefreshCw :size="13" /></button></td>
                                         </tr></tbody>
                                     </table>
                                 </div>
-                                <div v-else class="empty-state">No peers are configured. <button class="text-button" @click="navigate('configuration')">Configure peer IDs <ArrowUpFromLine :size="13" /></button></div>
-                                <div class="panel-inline-actions"><button class="button secondary small" :disabled="ble.runtimeConfig.mode !== 1 || !ble.supported" @click="scanBlePeers"><Search :size="14" /> Scan for configured peers</button><button class="button secondary small" @click="navigate('configuration')">Manage configuration</button></div>
+                                <div v-else class="empty-state">
+                                    <span v-if="ble.runtimeConfig.peers.length">Waiting for configured peers to be discovered or connect.</span>
+                                    <span v-else>Open mode is active. Any valid peer can connect; connected peers will appear here automatically.</span>
+                                    <button class="text-button" @click="navigate('configuration')">Manage peer policy <ArrowUpFromLine :size="13" /></button>
+                                </div>
+                                <div class="panel-inline-actions"><button class="button secondary small" @click="navigate('configuration')">Manage configuration</button></div>
                                 <div v-if="ble.discoveredPeers.length" class="discovered-line"><b>Discovered this session:</b><span v-for="id in ble.discoveredPeers" :key="id" class="tag good">{{ id }}</span></div>
                             </div>
                             <div class="panel ble-quick-test">
-                                <div class="panel-heading"><div><h3>Message test</h3><p>Send a text payload to the currently connected peer</p></div><Send /></div>
-                                <label>Destination peer ID<input type="number" min="1" max="65534" v-model="bleMessagePeerId" :placeholder="ble.runtime.connected ? String(ble.runtime.connectedPeerId) : 'Connect a peer first'" /></label>
+                                <div class="panel-heading"><div><h3>Message test</h3><p>Send a unicast text payload to a selected connected peer</p></div><Send /></div>
+                                <label>Destination peer ID<input type="number" min="1" max="65534" v-model="bleMessagePeerId" :placeholder="bleConnectedCount ? 'Enter a connected peer ID' : 'Waiting for a peer link'" /></label>
                                 <label>Message payload<textarea v-model="bleMessageText" rows="4" maxlength="496" placeholder="Type a short test message…" /></label>
-                                <div class="ble-compose-meta"><span>{{ bleMessageByteLength }} / 496 bytes (UTF-8)</span><span v-if="ble.runtime.connected" class="tag good">LINK READY</span><span v-else class="tag neutral">NO LINK</span></div>
-                                <div class="panel-inline-actions"><button class="button primary" :disabled="!ble.runtime.connected || ble.sending || bleMessageByteLength === 0 || bleMessageByteLength > 496 || Number(bleMessagePeerId) !== ble.runtime.connectedPeerId" @click="sendBleMessage"><Send :size="14" /> {{ ble.sending ? 'Sending…' : 'Send message' }}</button><button class="button secondary" :disabled="!ble.runtime.connected || ble.sending" @click="sendBleTestMessage">Send test payload</button></div>
+                                <div class="ble-compose-meta"><span>{{ bleMessageByteLength }} / 496 bytes (UTF-8)</span><span v-if="getBlePeerStatus(Number(bleMessagePeerId))?.connected" class="tag good">PEER LINK READY</span><span v-else class="tag neutral">PEER NOT CONNECTED</span></div>
+                                <div class="panel-inline-actions"><button class="button primary" :disabled="!getBlePeerStatus(Number(bleMessagePeerId))?.connected || ble.sending || bleMessageByteLength === 0 || bleMessageByteLength > 496" @click="sendBleMessage"><Send :size="14" /> {{ ble.sending ? 'Sending…' : 'Send message' }}</button><button class="button secondary" :disabled="!getBlePeerStatus(Number(bleMessagePeerId))?.connected || ble.sending" @click="sendBleTestMessage">Send test payload</button></div>
                                 <small class="hint">SEND_TO_PEER acceptance only means the local queue accepted the payload. “Delivered” is shown only after the remote host retrieves the complete message.</small>
                             </div>
                         </div>
@@ -1905,7 +1898,7 @@ onUnmounted(() => {
                                 <div v-else class="empty-state">No outgoing BLE messages in this session.</div>
                             </div>
                         </div>
-                        <div class="bottom-actions"><span class="hint">BLE uses the node's Device ID as its peer identity. The USB connection remains the host control channel; BLE carries peer-to-peer application messages.</span><button class="button secondary" @click="clearBleMessages"><Trash2 :size="14" /> Clear message history</button></div>
+                        <div class="bottom-actions"><span class="hint">The enabled state is persisted in NVS and restored at boot. Connections recover automatically while enabled. Application messages are unicast to the selected peer ID; no broadcast is performed.</span><button class="button secondary" @click="clearBleMessages"><Trash2 :size="14" /> Clear message history</button></div>
                     </template>
                 </section>
 
