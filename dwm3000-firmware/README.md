@@ -36,20 +36,24 @@ Recommended passive components discussed during board design: a 10 kΩ pull-up o
 
 ## Build environment
 
-The supported project build uses PlatformIO and the Seeed XIAO ESP32-C3 board definition. The project pins **NimBLE-Arduino 2.5.2** in `platformio.ini`; the local Makerfabs `Dw3000` library is bundled under `lib/Dw3000` and contains the board-specific SPI/reset port changes already applied.
+Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.2**. The ESP32-C3 NimBLE host must be built with nine connection slots so the firmware can maintain up to eight application peer links.
+
+Run the compile command from this directory:
 
 ```bash
-python3 -m pip install platformio
-pio run
+arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
+  --build-property "compiler.c.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
+  --build-property "compiler.cpp.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
+  --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
-To upload to the connected board:
+Upload the compiled sketch to the connected board:
 
 ```bash
-pio run -t upload
+arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin ./UwbNode
 ```
 
-The monitor speed is 460800 baud. If using Arduino IDE instead, install NimBLE-Arduino 2.5.2, add the bundled `lib/Dw3000` library to the Arduino libraries folder, open `UwbNodeV7.ino` as a sketch, and select Seeed XIAO ESP32C3 with USB CDC on boot enabled. PlatformIO is the reference build because the dependency and board settings are declared in this project.
+The host UART rate is 460800 baud. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
 
 The custom Makerfabs port is already patched for the XIAO pin map. Do not run `patch_makerfabs_port.py` against the bundled source again unless you have first reviewed the source diff. The legacy helper remains available for patching a separately downloaded unmodified Makerfabs port.
 
@@ -58,8 +62,9 @@ The custom Makerfabs port is already patched for the XIAO pin map. Do not run `p
 BLE uses NimBLE-Arduino 2.5.2. The transport runs independently of the DWM3000 ranging state machine and uses the existing USB CDC/UART serial protocol as its host API.
 
 - `IDLE` disables BLE activity; `HUB` runs as BLE Central; `PERIPHERAL` advertises as a BLE Peripheral.
-- `START_BLE` and `STOP_BLE` control activity. `BLE_CONNECT` and `BLE_DISCONNECT` control a HUB connection.
-- Configure up to eight peer IDs. The transport manager supports one active BLE connection at a time.
+- `START_BLE` and `STOP_BLE` enable or disable the BLE subsystem. The enabled state is persisted in NVS and restored at boot.
+- An enabled HUB continuously discovers peers and maintains connections automatically. An enabled Peripheral advertises and accepts connections automatically; the host does not need to issue ordinary connect, disconnect, or reconnect commands.
+- The firmware maintains up to eight simultaneous peer connections. The NimBLE host build is configured for nine connection slots. An empty peer list is open mode and accepts any valid peer; a non-empty list is an allow-list.
 - Application messages are limited to 496 bytes and are fragmented according to the negotiated ATT MTU.
 - `BLE_DATA_SENT` means the remote host retrieved the complete message. Fragment ACKs alone do not mean application-level delivery.
 - Queues and in-flight messages are volatile and cleared on disconnection. The GATT link is not paired or encrypted in this release.
@@ -78,7 +83,6 @@ HUB board, local ID 1:
 ```bash
 python pi_client.py --port /dev/serial0 apply-save-config 1 0xDECA 5 16385 16385 --ble-mode hub --ble-peers 2
 python pi_client.py --port /dev/serial0 start-ble
-python pi_client.py --port /dev/serial0 ble-connect 2
 python pi_client.py --port /dev/serial0 peer-status 2
 ```
 
