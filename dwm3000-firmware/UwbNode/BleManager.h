@@ -8,7 +8,7 @@ namespace UwbBle {
 static constexpr uint16_t MAX_MESSAGE_LENGTH = 496;
 static constexpr uint8_t MAX_FRAGMENTS = 46;
 static constexpr uint8_t MAX_PEERS = 8;
-static constexpr uint8_t MAX_ACTIVE_CONNECTIONS = 3; // Initial ESP32-C3/NimBLE link budget.
+static constexpr uint8_t MAX_ACTIVE_CONNECTIONS = MAX_PEERS; // Firmware permits all eight configured peers.
 static constexpr uint16_t MAX_ATT_MTU = 256;
 static constexpr uint16_t MAX_PACKET_LENGTH = MAX_ATT_MTU - 3;
 static constexpr uint8_t RX_PACKET_QUEUE_SIZE = 4;
