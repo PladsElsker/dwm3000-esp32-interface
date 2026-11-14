@@ -7,10 +7,10 @@ D3KM is a Tauri 2 desktop application built with Vue 3 and TypeScript. It config
 - Connects to a node over USB serial and displays connection and device status.
 - Configures node identity, UWB ranging settings and Bluetooth transport settings.
 - Starts ranging operations and displays measurements and history.
-- Configures BLE peer IDs and sends test messages through the firmware.
+- Configures BLE role and peer policy, toggles the persisted Bluetooth enabled state, monitors up to eight peer links, and sends peer-directed test messages through the firmware.
 - Displays device diagnostics and protocol events.
 
-The Rust backend owns the serial connection and protocol transactions. The Vue frontend presents the controls and device state. BLE is performed by the node firmware; D3KM does not establish a direct BLE connection.
+The Rust backend owns the serial connection and protocol transactions. The Vue frontend configures the BLE network, toggles its persisted enabled state, and displays per-peer connection state. BLE discovery, connections, reconnection, and unicast routing are performed autonomously by the node firmware; D3KM does not establish or manage direct BLE links. An empty peer list selects open mode; a non-empty list acts as an allow-list.
 
 ## Requirements
 
@@ -55,5 +55,6 @@ cargo check
 
 - Implement UI changes in the Vue frontend; keep serial I/O and device transactions in the Rust backend.
 - Keep command IDs, event IDs and payload layouts synchronized with the firmware [protocol reference](../dwm3000-firmware/PROTOCOL.md).
+- Treat BLE connection state as per-peer: `GET_STATUS` is only an aggregate summary, while `GET_PEER_STATUS` reports an individual link. Do not reintroduce manual connect/disconnect actions as the normal workflow.
 - Test frontend changes with `npm run build` and backend changes with `cargo check`.
 - A successful software build does not verify serial interoperability, ranging accuracy or BLE operation. Test those with target hardware and a second compatible node.
