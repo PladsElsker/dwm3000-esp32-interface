@@ -1,0 +1,3 @@
+[submodule "dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"]
+	path = dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
+	url = https://github.com/PladsElsker/Makerfabs-ESP32-UWB-DW3000.git
