@@ -810,7 +810,6 @@ async function saveSettings() {
             validateBleConfig(bleDraft);
 
         }
-        const restartBleAfterSave = ble.supported && ble.runtime.enabled && bleDraft.mode !== 0;
         savingConfig.value = true;
 
         // One explicit snapshot, including the BLE extension, is applied to runtime RAM and NVS.
@@ -850,12 +849,8 @@ async function saveSettings() {
         }
 
         await refreshAll();
-        if (restartBleAfterSave && ble.supported && ble.runtimeConfig.mode !== 0) {
-            await cmd(0x52);
-            await refreshStatus();
-        }
         notice.value = device.status?.radio_ready
-            ? `Configuration applied to RAM and saved to NVS${restartBleAfterSave ? '; Bluetooth restarted with the updated settings' : ''}.`
+            ? 'Configuration applied to RAM and saved to NVS. The firmware manages any required BLE restart and reconnection automatically.'
             : 'Configuration was saved to NVS and loaded into RAM, but the radio is not ready. Check diagnostics.';
         log(`Configuration saved · UWB ${['Idle', 'Initiator', 'Responder'][draft.role]} · BLE ${bleModeName(ble.savedConfig.mode)}`);
     } catch (e: any) {
@@ -1429,7 +1424,7 @@ onUnmounted(() => {
                                     <div><span>Configured UWB targets</span><b>{{ device.status?.target_count ?? 0 }}</b>
                                     </div>
                                     <div><span>Bluetooth mode</span><b>{{ ble.supported ? bleModeName(ble.runtime.mode) : 'Not supported' }}</b></div>
-                                    <div><span>Bluetooth link</span><b>{{ !ble.supported ? '—' : ble.runtime.connected ? `Peer ${ble.runtime.connectedPeerId}` : ble.runtime.enabled ? (ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Scanning' : 'Enabled') : 'Stopped' }}</b></div>
+                                    <div><span>Bluetooth links</span><b>{{ !ble.supported ? '—' : bleConnectedCount ? `${bleConnectedCount} active peer link(s)` : ble.runtime.enabled ? (ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Discovering peers' : 'Enabled') : 'Disabled' }}</b></div>
                                     <div><span>Last refresh</span><b>{{ lastRefresh }}</b></div>
                                 </div>
                             </div>
@@ -1844,7 +1839,7 @@ onUnmounted(() => {
                             <div class="metric-card"><div class="metric-top"><span>CONFIGURED MODE</span><Bluetooth /></div><div class="metric-value">{{ bleModeName(ble.runtimeConfig.mode) }}</div><div class="metric-foot">Saved mode: {{ bleModeName(ble.savedConfig.mode) }}</div></div>
                             <div class="metric-card"><div class="metric-top"><span>RADIO STATE</span><Activity /></div><div class="metric-value" :class="ble.runtime.enabled ? 'good' : ''">{{ !ble.runtime.enabled ? 'Stopped' : ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Scanning' : 'Enabled' }}</div><div class="metric-foot">{{ ble.runtimeConfig.mode === 1 ? 'HUB / Central' : ble.runtimeConfig.mode === 2 ? 'Peripheral' : 'Mode idle' }}</div></div>
                             <div class="metric-card"><div class="metric-top"><span>ACTIVE LINKS</span><Link2 /></div><div class="metric-value" :class="bleConnectedCount ? 'good' : ''">{{ bleConnectedCount }} / 8</div><div class="metric-foot">{{ ble.runtime.connected ? 'Peer connections are maintained automatically' : 'No active peer links' }}</div></div>
-                            <div class="metric-card"><div class="metric-top"><span>NEGOTIATED MTU</span><Database /></div><div class="metric-value">{{ ble.runtime.mtu }} B</div><div class="metric-foot">Up to 496 application bytes per message</div></div>
+                            <div class="metric-card"><div class="metric-top"><span>REPRESENTATIVE MTU</span><Database /></div><div class="metric-value">{{ ble.runtime.mtu }} B</div><div class="metric-foot">Each connected peer has its own negotiated MTU</div></div>
                         </div>
                         <div class="two-col ble-main-grid">
                             <div class="panel">
@@ -1854,7 +1849,7 @@ onUnmounted(() => {
                                     <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th></th></tr></thead>
                                         <tbody><tr v-for="peerId in bleVisiblePeerIds" :key="peerId">
                                             <td><b>{{ peerId }}</b><small class="mono">{{ hex(peerId) }}</small></td>
-                                            <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName(getBlePeerStatus(peerId)!.state) : 'Not checked' }}</span></td>
+                                            <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) : 'Not checked' }}</span></td>
                                             <td>{{ getBlePeerStatus(peerId)?.connected ? getBlePeerStatus(peerId)?.mtu : '—' }}</td>
                                             <td class="ble-peer-actions"><button class="icon-button mini" title="Refresh peer status" :disabled="ble.loading" @click="refreshBlePeerStatus(peerId)"><RefreshCw :size="13" /></button></td>
                                         </tr></tbody>
