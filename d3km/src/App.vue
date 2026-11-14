@@ -98,6 +98,7 @@ let calibrationLoopPromise: Promise<void> | null = null;
 const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void; reject: (e: Error) => void; timer: number }>();
 const calibrationJobResults = new Map<number, CalJobResult>();
 let poller: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
+let lastBleRefreshAt = 0;
 let commandQueue: Promise<void> = Promise.resolve();
 const device = reactive<any>({ info: null, status: null, stats: null,
     // config/savedTargets always describe NVS; runtimeConfig/schedule/targets describe RAM.
@@ -486,6 +487,7 @@ function handleEvent(e: FrameEvent) {
         if (!bleMessagePeerId.value) bleMessagePeerId.value = String(peerId);
         log(`BLE connected · peer ${peerId}`);
         void refreshBlePeerStatus(peerId);
+        void refreshStatus();
     }
     if (e.opcode === 137 && p.length >= 3) {
         const peerId = get16(p);
@@ -1221,6 +1223,10 @@ onMounted(async () => {
             polling = true;
             try {
                 await refreshStatus();
+                if (active.value === 'bluetooth' && ble.supported && Date.now() - lastBleRefreshAt >= 4000) {
+                    lastBleRefreshAt = Date.now();
+                    await refreshBluetooth();
+                }
             } catch (e: any) {
                 if (isUsbDisconnectError(e)) {
                     await handleUsbLoss('USB connection lost. Reconnect the device to continue.');
