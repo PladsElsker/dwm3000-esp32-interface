@@ -1403,15 +1403,16 @@ static void processRequest(HostTransport &source, const Frame &q) {
       schedulePeriodMs = newPeriod; scheduleTimeoutMs = newTimeout;
       scheduleRetries = newRetries; autoStartRanging = newAutoStart;
       rangingEnabled = false;
-      if (!radioStandby) radioReady = radioInitialize();
-      for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
-      if (!radioReady && !radioStandby) { error = ERR_RADIO_FAILURE; break; }
+      // BLE is an independent subsystem; restore it even when UWB radio startup
+      // fails so a temporary UWB fault does not suppress the configured BLE role.
       if (newBleCfg.enabled && !ble.start()) {
         bleCfg.enabled = 0;
         persistBleEnabled(false);
         error = ERR_INTERNAL;
-        break;
       }
+      if (!radioStandby) radioReady = radioInitialize();
+      for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
+      if (!radioReady && !radioStandby && error == ERR_OK) error = ERR_RADIO_FAILURE;
       emitStateChanged();
       outLen = 0;
       break;
