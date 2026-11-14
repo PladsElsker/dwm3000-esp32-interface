@@ -1867,7 +1867,7 @@ onUnmounted(() => {
                                     <button class="text-button" @click="navigate('configuration')">Manage peer policy <ArrowUpFromLine :size="13" /></button>
                                 </div>
                                 <div class="panel-inline-actions"><button class="button secondary small" @click="navigate('configuration')">Manage configuration</button></div>
-                                <div v-if="ble.discoveredPeers.length" class="discovered-line"><b>Discovered this session:</b><span v-for="id in ble.discoveredPeers" :key="id" class="tag good">{{ id }}</span></div>
+                                <div v-if="ble.discoveredPeers.length" class="discovered-line"><b>Observed this session:</b><span v-for="id in ble.discoveredPeers" :key="id" class="tag good">{{ id }}</span></div>
                             </div>
                             <div class="panel ble-quick-test">
                                 <div class="panel-heading"><div><h3>Message test</h3><p>Send a unicast text payload to a selected connected peer</p></div><Send /></div>
