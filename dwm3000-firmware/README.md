@@ -113,7 +113,7 @@ Do not treat `IDLE_RC` as equivalent to deep sleep. Enabling true DWM3000 deep s
 
 ## Build and test status
 
-The Python host client and host-side protocol tests have been run successfully. `BLE/BleManager.cpp` also passes a C++11 syntax-only check against a local NimBLE 2.5.2 API compatibility stub; this is **not** a substitute for compiling against the real Arduino-ESP32 and NimBLE headers. A PlatformIO/Arduino toolchain is not available in the current build environment, so the complete ESP32-C3 firmware has **not** been compiled and no `.bin` image is included. The bundled XIAO SPI/reset port changes are already present; do not apply the patch helper a second time. Before deployment, run `pio run`, flash two boards, validate BLE messaging in both directions, and test UWB ranging at known reference distances. Physical BLE connectivity, UWB RF performance, antenna-delay calibration, boot-strapping behavior, and sleep/wake timing remain hardware-validation items.
+The complete ESP32-C3 firmware build has **not** been run for this change because Arduino CLI is not installed in the current execution environment. Compile using the Arduino CLI command above, which sets the NimBLE host connection limit to 9; the firmware application maintains up to 8 peers. Before deployment, flash at least two boards and test automatic boot enablement, discovery, eight concurrent links in both Central and Peripheral roles, reconnect after range loss, open mode, allow-list enforcement, and peer-directed message delivery. Physical BLE connectivity and resource usage under eight live links still require hardware validation.
 
 ## Raspberry Pi setup
 
