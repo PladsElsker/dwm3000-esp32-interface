@@ -1029,6 +1029,14 @@ void Manager::processLinkEvents() {
     if (link.used && link.identityPending) {
       link.identityPending = false;
       const uint16_t peer = link.pendingIdentity;
+      // Replace a retained diagnostic-only record for this peer with the
+      // current incoming link so GET_PEER_STATUS resolves to the live link.
+      for (auto& other : links_) {
+        if (&other != &link && other.used && !other.serverSide &&
+            !other.connected && !other.connecting && other.peerId == peer) {
+          other = Link();
+        }
+      }
       bool duplicate = false;
       for (const auto& other : links_)
         if (&other != &link && other.used && other.connected && other.peerId == peer) duplicate = true;
