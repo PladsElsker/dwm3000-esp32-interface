@@ -97,6 +97,26 @@ struct PeerStatus {
   int16_t lastFailureDetail = 0;
 };
 
+struct Statistics {
+  uint32_t messagesSent = 0;
+  uint32_t messagesReceived = 0;
+  uint32_t txErrors = 0;
+  uint32_t rxErrors = 0;
+  uint32_t connectionFailures = 0;
+  uint32_t rxQueueOverflows = 0;
+  uint32_t eventQueueOverflows = 0;
+};
+
+struct Diagnostics {
+  uint8_t mode = MODE_IDLE;
+  uint8_t enabled = 0;
+  uint8_t advertising = 0;
+  uint8_t scanning = 0;
+  uint8_t activeLinks = 0;
+  uint8_t rxQueueDepth = 0;
+  uint8_t eventQueueDepth = 0;
+};
+
 class Manager {
  public:
   Manager();
@@ -115,6 +135,9 @@ class Manager {
 
   bool popEvent(Event& event);
   bool getPeerStatus(uint16_t peerId, PeerStatus& status) const;
+  void getStatistics(Statistics& statistics) const;
+  void clearStatistics();
+  void getDiagnostics(Diagnostics& diagnostics) const;
   uint16_t getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const;
   const Config& config() const { return config_; }
   bool enabled() const { return enabled_; }
@@ -243,6 +266,7 @@ class Manager {
 
   bool enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length);
   bool enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t peerId);
+  void incrementStatistic(uint8_t index);
   bool transmitPacket(const uint8_t* packet, uint16_t length);
   bool buildAndSendSimple(uint8_t type, uint16_t messageId, uint8_t fragmentIndex,
                           uint8_t errorCode = 0);
@@ -300,6 +324,7 @@ class Manager {
   DiagnosticRecord diagnosticTrace_[BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
   uint8_t diagnosticTraceHead_ = 0;
   uint8_t diagnosticTraceCount_ = 0;
+  Statistics statistics_{};
   uint32_t lastScanStartFailureMs_ = 0;
   bool scanStartFailureSeen_ = false;
 
