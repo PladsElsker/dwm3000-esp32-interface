@@ -96,8 +96,8 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x43` | `REBOOT` | — | —; response is sent before restart |
 | `0x50` | `SET_PEERS` | `count:u8, peer_ids:u16[]` (0–8 unique IDs) | —; updates and persists the peer list |
 | `0x51` | `GET_PEERS` | — | `count:u8, peer_ids:u16[]` |
-| `0x52` | `START_BLE` / enable BLE | — | —; enables the configured BLE role and persists enabled state in NVS; advertising/scanning and peer connections then run autonomously |
-| `0x53` | `STOP_BLE` / disable BLE | — | —; disables BLE, disconnects active links, stops advertising/scanning, and persists disabled state in NVS |
+| `0x52` | `START_BLE` / enable BLE | — | —; enables the configured BLE role for the current boot; does not change the saved auto-start preference |
+| `0x53` | `STOP_BLE` / disable BLE | — | —; disables BLE for the current boot, disconnects active links, and stops advertising/scanning; does not change the saved auto-start preference |
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16` |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
@@ -135,7 +135,7 @@ The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` 
 | 1 | 2 | `ble_advertising_interval_ms:u16` (20–10240) |
 | 3 | 2 | `ble_scan_interval_ms:u16` (10–10240) |
 | 5 | 2 | `ble_scan_window_ms:u16` (10 through scan interval) |
-| 7 | 1 | `reserved:u8`; write `0` |
+| 7 | 1 | `ble_auto_start:u8` (`0` disabled, `1` start the configured non-IDLE BLE role automatically after boot) |
 | 8 | 2 | `ble_retry_interval_ms:u16` (100–60000) |
 | 10 | 2 | `ble_connection_timeout_ms:u16` (100–30000) |
 | 12 | 1 | `ble_max_retries:u8` (0–5 additional attempts) |
@@ -147,7 +147,7 @@ The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` 
 
 `SAVE_ANTENNA_DELAYS` persists only the current TX and RX antenna delay values. It is rejected while ranging or a transaction is active.
 
-`RESET_CONFIG` clears saved settings and restores compiled defaults, with BLE disabled. At boot, the firmware restores the BLE enabled state from NVS. If BLE is enabled and its mode is not IDLE, the configured BLE role starts automatically. `START_BLE` and `STOP_BLE` persist the enabled state. BLE enablement is independent of the UWB `auto_start` ranging preference.
+`RESET_CONFIG` clears saved settings and restores compiled defaults, with BLE disabled. At boot, the firmware restores the BLE auto-start preference from NVS. If `ble_auto_start=1` and the saved mode is not IDLE, the configured BLE role starts automatically. `START_BLE` and `STOP_BLE` affect only the current runtime state; they do not modify the boot preference. The BLE boot preference is independent of the UWB `auto_start` ranging preference. The first boot after upgrading migrates the previous `ble_on` value to the new `ble_auto` preference when no new preference exists, preserving the prior boot behavior.
 
 ### Role, targets, and scheduling
 
@@ -207,7 +207,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 The BLE transport uses NimBLE-Arduino 2.5.2 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
-BLE enablement is a persisted runtime setting. `START_BLE` (`0x52`) enables the configured role and saves the enabled state in NVS. At boot, an enabled non-IDLE role starts automatically. `STOP_BLE` (`0x53`) disables BLE, stops scanning or advertising, disconnects active peers, and saves the disabled state. Selecting a BLE mode does not enable BLE. `GET_STATUS` and `GET_PEER_STATUS` report the current enabled state.
+BLE runtime enablement and boot auto-start are separate. `START_BLE` (`0x52`) enables the configured role for the current boot; `STOP_BLE` (`0x53`) disables it for the current boot and disconnects active peers. Neither command changes the saved boot preference. The `ble_auto_start` field in the BLE configuration extension is persisted through `APPLY_SAVE_CONFIG` and determines whether a non-IDLE configured role starts at boot. Selecting a BLE mode or changing the boot preference does not change the current runtime state. `GET_STATUS` and `GET_PEER_STATUS` report the current enabled state.
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
