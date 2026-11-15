@@ -56,6 +56,10 @@ const retrievingBleMessages = new Set<string>();
 const connected = ref(false), connecting = ref(false), ports = ref<Port[]>([]), selectedPort = ref(''), active = ref('overview'), busy = ref(false), savingConfig = ref(false), savingStep = ref(''), lastRefresh = ref('—'), error = ref(''), notice = ref(''), events = ref<string[]>([]), measurements = ref<any[]>([]), eventCount = ref(0);
 
 type CalJobResult = { target: number; status: number; mm: number | null };
+type BleDiagnosticRecord = {
+    uptimeMs: number; code: number; peerId: number; reason: number; stage: number;
+    detail: number; activeLinks: number; stateFlags: number;
+};
 const CAL_WINDOW_SIZE = 100;
 const DEFAULT_ANTENNA_DELAY = 16385;
 // One DW3000 device-time unit converted to one-way propagation distance.
@@ -100,6 +104,7 @@ const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void;
 const calibrationJobResults = new Map<number, CalJobResult>();
 let poller: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
 let lastBleRefreshAt = 0;
+let lastBleDiagnosticTraceRefreshAt = 0;
 let commandQueue: Promise<void> = Promise.resolve();
 const device = reactive<any>({ info: null, status: null, stats: null,
     // config/savedTargets always describe NVS; runtimeConfig/schedule/targets describe RAM.
@@ -115,6 +120,10 @@ const traceDetailSupported = ref<boolean | null>(null);
 const traceDetailFetchedAt = ref('');
 const traceDetailError = ref('');
 const traceDetailBusy = ref(false);
+const bleDiagnosticTrace = ref<BleDiagnosticRecord[]>([]);
+const bleDiagnosticTraceSupported = ref<boolean | null>(null);
+const bleDiagnosticTraceBusy = ref(false);
+const bleDiagnosticTraceError = ref('');
 const traceFetchedAt = ref('');
 const traceError = ref('');
 const traceBusy = ref(false);
@@ -438,13 +447,102 @@ function bleConnectionStageName(stage: number) {
         12: 'Peripheral handshake timeout'
     } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
 }
+function nimbleStatusName(status: number) {
+    return ({
+        0x0008: 'Connection timeout',
+        0x000d: 'Connection rejected due to limited resources',
+        0x003e: 'Connection failed to be established'
+    } as Record<number, string>)[status] ?? 'Unmapped NimBLE status';
+}
 function bleConnectionDetailText(stage: number, detail: number) {
     if (detail === -1 || (detail === 0 && [5, 6, 9, 10, 12].includes(stage))) return 'detail unavailable';
     const hexDetail = `0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
-    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail}`;
+    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail} · ${nimbleStatusName(detail & 0xffff)}`;
     if (stage === 8) return `reported peer ID ${hexDetail}`;
     if (stage === 11) return `validation code ${detail}`;
     return `detail ${hexDetail}`;
+}
+function bleDiagnosticCodeName(code: number) {
+    return ({
+        1: 'BLE stack initialized', 2: 'BLE stack initialization failed',
+        3: 'BLE role started', 4: 'BLE role start failed', 5: 'BLE stopped',
+        6: 'Central scan started', 7: 'Central scan start failed',
+        8: 'Central scan stop failed', 9: 'Peer discovered',
+        10: 'Central client allocation failed', 11: 'Central connect attempt',
+        12: 'Connection failure', 13: 'Central GAP connected',
+        14: 'Central GATT handshake step', 15: 'Central handshake complete',
+        16: 'Peripheral accepted GAP connection', 17: 'Peripheral capacity rejected connection',
+        18: 'Peripheral link slot allocation failed', 19: 'Peripheral accepted peer identity',
+        20: 'Peripheral rejected peer identity', 21: 'Peripheral handshake timeout',
+        22: 'Peer disconnected', 23: 'Advertising restart failed',
+        24: 'Central scan restart failed', 25: 'GAP connection callback',
+        26: 'BLE event queue full', 27: 'BLE receive queue full'
+    } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
+}
+function bleDiagnosticLine(record: BleDiagnosticRecord) {
+    const mode = (record.stateFlags >> 3) & 0x03;
+    const state = [
+        bleModeName(mode),
+        record.stateFlags & 1 ? 'enabled' : 'disabled',
+        record.stateFlags & 2 ? 'advertising' : '',
+        record.stateFlags & 4 ? 'scanning' : ''
+    ].filter(Boolean).join(', ');
+    const detail = record.detail < 0 ? String(record.detail) :
+        `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    return [
+        `${(record.uptimeMs / 1000).toFixed(1)}s`,
+        bleDiagnosticCodeName(record.code),
+        record.peerId ? `peer ${record.peerId}` : 'peer unknown',
+        record.stage ? bleConnectionStageName(record.stage) : '',
+        record.reason ? `reason ${record.reason}` : '',
+        record.detail || record.code === 25 ? `detail ${detail}` : '',
+        `${record.activeLinks}/8 links`,
+        state
+    ].filter(Boolean).join(' · ');
+}
+function decodeBleDiagnosticTrace(payload: number[]): BleDiagnosticRecord[] {
+    if (!payload.length) throw new Error('GET_BLE_DIAGNOSTIC_TRACE returned an empty payload.');
+    const count = payload[0];
+    const recordSize = 13;
+    if (count > 32 || payload.length !== 1 + count * recordSize) {
+        throw new Error(`GET_BLE_DIAGNOSTIC_TRACE returned ${payload.length} bytes for ${count} record(s).`);
+    }
+    return Array.from({ length: count }, (_, index) => {
+        const offset = 1 + index * recordSize;
+        const rawDetail = get16(payload, offset + 9);
+        return {
+            uptimeMs: get32(payload, offset),
+            code: payload[offset + 4],
+            peerId: get16(payload, offset + 5),
+            reason: payload[offset + 7],
+            stage: payload[offset + 8],
+            detail: rawDetail >= 0x8000 ? rawDetail - 0x10000 : rawDetail,
+            activeLinks: payload[offset + 11],
+            stateFlags: payload[offset + 12]
+        };
+    });
+}
+async function refreshBleDiagnosticTrace(silent = false) {
+    if (!connected.value || bleDiagnosticTraceBusy.value) return;
+    bleDiagnosticTraceBusy.value = true;
+    try {
+        const payload = await cmd(0x59);
+        bleDiagnosticTrace.value = decodeBleDiagnosticTrace(payload);
+        bleDiagnosticTraceSupported.value = true;
+        bleDiagnosticTraceError.value = '';
+    } catch (e: any) {
+        bleDiagnosticTraceError.value = String(e);
+        if (/UNKNOWN_COMMAND|UNKNOWN COMMAND|0x02/i.test(String(e))) {
+            bleDiagnosticTraceSupported.value = false;
+        }
+        if (!silent) error.value = `Could not read BLE diagnostic trace: ${String(e)}`;
+    } finally {
+        bleDiagnosticTraceBusy.value = false;
+    }
+}
+async function refreshDiagnostics() {
+    await refreshAll();
+    await refreshBleDiagnosticTrace();
 }
 function bleConnectionFailureText(status?: BlePeerStatus) {
     if (!status?.lastFailureReason) return '';
@@ -728,6 +826,10 @@ async function connectDevice() {
         await cmd(0x01);
         await refreshAll();
         await cmd(0x32, u16(0x7fff));
+        bleDiagnosticTrace.value = [];
+        bleDiagnosticTraceSupported.value = null;
+        bleDiagnosticTraceError.value = '';
+        lastBleDiagnosticTraceRefreshAt = 0;
         notice.value = 'Device connected';
     } catch (e: any) {
         error.value = String(e);
