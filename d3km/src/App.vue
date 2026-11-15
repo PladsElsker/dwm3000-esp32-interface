@@ -2148,7 +2148,7 @@ onUnmounted(() => {
                                 <div v-if="bleVisiblePeerIds.length" class="table-wrap">
                                     <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th>LAST CONNECTION FAILURE</th><th></th></tr></thead>
                                         <tbody><tr v-for="peerId in bleVisiblePeerIds" :key="peerId">
-                                            <td><b>{{ peerId }}</b><small class="mono">{{ hex(peerId) }}</small></td>
+                                            <td><small class="mono">{{ hex(peerId) }}</small></td>
                                             <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) : 'Not checked' }}</span></td>
                                             <td>{{ getBlePeerStatus(peerId)?.connected ? getBlePeerStatus(peerId)?.mtu : '—' }}</td>
                                             <td><small v-if="bleConnectionFailureText(getBlePeerStatus(peerId))" class="ble-error-detail">{{ bleConnectionFailureText(getBlePeerStatus(peerId)) }}</small><span v-else>—</span></td>
