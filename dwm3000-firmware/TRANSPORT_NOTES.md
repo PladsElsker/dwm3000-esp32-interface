@@ -17,6 +17,6 @@ The firmware targets the Seeed XIAO ESP32-C3. UART1 uses GPIO20 RX and GPIO21 TX
 
 ## BLE processing
 
-The BLE manager uses NimBLE-Arduino 2.5.2. It runs from the main firmware loop after host commands are serviced and before the UWB radio scheduler. NimBLE callbacks enqueue bounded packets and state changes; the main loop processes those queues through `ble.poll()`. BLE events are translated into host protocol events and delivered according to each transport's subscription mask.
+The BLE manager uses NimBLE-Arduino 2.5.0. It runs from the main firmware loop after host commands are serviced and before the UWB radio scheduler. NimBLE callbacks enqueue bounded packets and state changes; the main loop processes those queues through `ble.poll()`. BLE events are translated into host protocol events and delivered according to each transport's subscription mask.
 
 BLE scanning, advertising, peer connection management, reconnection, and message delivery run in the node firmware. D3KM and the Python client configure the BLE network and use host commands to inspect peer state and exchange application messages. See [PROTOCOL.md](PROTOCOL.md) for the serial and GATT interfaces.
