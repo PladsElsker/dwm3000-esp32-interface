@@ -607,6 +607,13 @@ void Manager::getDiagnostics(Diagnostics& diagnostics) const {
   portEXIT_CRITICAL(&mux_);
 }
 
+bool Manager::getLastError(LastError& error) const {
+  portENTER_CRITICAL(&mux_);
+  error = lastError_;
+  portEXIT_CRITICAL(&mux_);
+  return error.valid;
+}
+
 void Manager::incrementStatistic(StatisticCounter counter) {
   portENTER_CRITICAL(&mux_);
   switch (counter) {
@@ -1219,11 +1226,30 @@ void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
   record.stateFlags = static_cast<uint8_t>((enabled_ ? 1 : 0) |
       (advertising_ ? 2 : 0) | (scanning_ ? 4 : 0) |
       (static_cast<uint8_t>(config_.mode) << 3));
+  const bool failure =
+      code == DIAG_INIT_FAILED || code == DIAG_START_FAILED ||
+      code == DIAG_SCAN_START_FAILED || code == DIAG_SCAN_STOP_FAILED ||
+      code == DIAG_CLIENT_ALLOC_FAILED || code == DIAG_CONNECTION_FAILED ||
+      code == DIAG_SERVER_CAPACITY_REJECTED || code == DIAG_SERVER_SLOT_ALLOC_FAILED ||
+      code == DIAG_SERVER_IDENTITY_REJECTED || code == DIAG_HANDSHAKE_TIMEOUT ||
+      code == DIAG_ADVERTISING_RESTART_FAILED || code == DIAG_SCAN_RESTART_FAILED ||
+      code == DIAG_EVENT_QUEUE_FULL || code == DIAG_RX_QUEUE_FULL ||
+      (code == DIAG_CENTRAL_CONNECT_RETURN && reason == 0) ||
+      (code == DIAG_PERIPHERAL_ADVERTISING_CONFIG && detail < 0);
   portENTER_CRITICAL(&mux_);
   diagnosticTrace_[diagnosticTraceHead_] = record;
   diagnosticTraceHead_ = static_cast<uint8_t>((diagnosticTraceHead_ + 1) %
                                                BLE_DIAGNOSTIC_TRACE_CAPACITY);
   if (diagnosticTraceCount_ < BLE_DIAGNOSTIC_TRACE_CAPACITY) ++diagnosticTraceCount_;
+  if (failure) {
+    lastError_.valid = true;
+    lastError_.uptimeMs = record.uptimeMs;
+    lastError_.code = code;
+    lastError_.peerId = peerId;
+    lastError_.reason = reason;
+    lastError_.stage = stage;
+    lastError_.detail = detail;
+  }
   portEXIT_CRITICAL(&mux_);
 }
 
