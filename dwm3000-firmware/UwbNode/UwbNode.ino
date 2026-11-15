@@ -205,6 +205,11 @@ bool clockSynchronized = false;
 static constexpr uint8_t ERROR_SUBSYSTEM_SYSTEM = 0;
 static constexpr uint8_t ERROR_SUBSYSTEM_UWB = 1;
 static constexpr uint8_t ERROR_SUBSYSTEM_BLE = 2;
+enum TraceSource : uint8_t {
+  TRACE_SOURCE_UWB_RADIO = 0,
+  TRACE_SOURCE_UWB_TX_START = 1,
+  TRACE_SOURCE_BLE_LIFECYCLE = 2
+};
 uint8_t lastErrorSubsystem = ERROR_SUBSYSTEM_SYSTEM;
 uint8_t lastErrorCode = ERR_OK;
 uint64_t lastErrorMonoUs = 0;
@@ -1785,9 +1790,9 @@ static void processRequest(HostTransport &source, const Frame &q) {
     // 1 = detailed TX-start trace, 2 = BLE lifecycle trace. Response:
     // trace_source:u8, record_size:u8, count:u8, then count records.
     case OP_GET_TRACE: {
-      if (n != 1 || p[0] > 2) { error = ERR_BAD_ARGUMENT; break; }
+      if (n != 1 || p[0] > TRACE_SOURCE_BLE_LIFECYCLE) { error = ERR_BAD_ARGUMENT; break; }
       const uint8_t sourceType = p[0];
-      if (sourceType == 0) {
+      if (sourceType == TRACE_SOURCE_UWB_RADIO) {
         out[0] = 0; out[1] = RADIO_TRACE_RECORD_BYTES; out[2] = radioTraceCount;
         const uint8_t oldest = (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY;
         for (uint8_t i = 0; i < radioTraceCount; ++i) {
@@ -1801,7 +1806,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
           d[26] = r.rc; d[27] = r.reserved;
         }
         outLen = 3 + radioTraceCount * RADIO_TRACE_RECORD_BYTES;
-      } else if (sourceType == 1) {
+      } else if (sourceType == TRACE_SOURCE_UWB_TX_START) {
         out[0] = 1; out[1] = RADIO_TRACE_DETAIL_RECORD_BYTES; out[2] = radioTraceDetailCount;
         const uint8_t oldest = (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY -
                                 radioTraceDetailCount) % RADIO_TRACE_DETAIL_CAPACITY;
