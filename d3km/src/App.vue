@@ -1065,6 +1065,7 @@ async function refreshAll() {
         const [i, s, runtime, savedPayload, st, t, sc, d, le] = await Promise.all([
             cmd(0x02), cmd(0x03), cmd(0x10), cmd(0x17), cmd(0x04), cmd(0x22), cmd(0x24), cmd(0x35), cmd(0x06)
         ]);
+        if (i.length !== 21) throw new Error(`GET_INFO returned ${i.length} bytes; expected 21.`);
         const saved = decodeSavedConfig(savedPayload);
         applyBleStatusPayload(s);
         const runtimeBleConfig = decodeBleConfigExtension(runtime, 16);
@@ -1155,6 +1156,7 @@ async function saveSettings() {
             throw new Error('Auto-start requires an Initiator with at least one target, or a Responder role.');
         }
         if (device.status?.ranging) throw new Error('Stop the RAM ranging test before saving configuration.');
+        if (!ble.supported) throw new Error('This firmware did not report the required BLE capability and complete configuration.');
         bleDraft.peers = parseBlePeerIds(blePeersInput.value);
         validateBleConfig(bleDraft);
         savingConfig.value = true;
@@ -1774,6 +1776,11 @@ onUnmounted(() => {
                                     <div><span>Maximum targets</span><b>{{ device.info?.maxTargets }}</b></div>
                                     <div><span>History capacity</span><b>{{ device.info?.history }} records</b></div>
                                     <div><span>Maximum payload</span><b>{{ device.info?.maxPayload }} bytes</b></div>
+                                    <div><span>BLE capability</span><b>{{ device.info?.bleSupported ? 'Available' : 'Unavailable' }}</b></div>
+                                    <div><span>BLE peer limit</span><b>{{ device.info?.maxBlePeers ?? '—' }}</b></div>
+                                    <div><span>BLE connection limit</span><b>{{ device.info?.maxBleConnections ?? '—' }}</b></div>
+                                    <div><span>BLE message limit</span><b>{{ device.info?.maxBleMessageLength ?? '—' }} bytes</b></div>
+                                    <div><span>BLE maximum MTU</span><b>{{ device.info?.maxBleMtu ?? '—' }}</b></div>
                                 </div>
                             </div>
                             <div class="panel">
@@ -2528,8 +2535,12 @@ onUnmounted(() => {
                                         0, 8) }}</b>
                                 </div>
                                 <div><span>Radio state machine</span><b>{{ device.diagnostics?.state ?? '—' }}</b></div>
-                                <div><span>Standby</span><b>{{ device.diagnostics?.standby ? 'IDLE_RC' : 'No' }}</b>
-                                </div>
+                                <div><span>Standby</span><b>{{ device.diagnostics?.standby ? 'IDLE_RC' : 'No' }}</b></div>
+                                <div><span>BLE mode</span><b>{{ ['IDLE', 'HUB', 'PERIPHERAL'][device.diagnostics?.bleMode ?? 0] ?? 'Unknown' }}</b></div>
+                                <div><span>BLE enabled</span><b>{{ device.diagnostics?.bleEnabled ? 'Yes' : 'No' }}</b></div>
+                                <div><span>BLE advertising / scanning</span><b>{{ device.diagnostics?.bleAdvertising ? 'Advertising' : device.diagnostics?.bleScanning ? 'Scanning' : 'Inactive' }}</b></div>
+                                <div><span>BLE active links</span><b>{{ device.diagnostics?.bleActiveLinks ?? '—' }}</b></div>
+                                <div><span>BLE RX / event queue depth</span><b>{{ device.diagnostics ? `${device.diagnostics.bleRxQueueDepth} / ${device.diagnostics.bleEventQueueDepth}` : '—' }}</b></div>
                                 <div><span>Last error subsystem</span><b>{{ ['System', 'UWB', 'BLE'][device.lastError?.subsystem ?? 0] ?? 'Unknown' }}</b></div>
                                 <div><span>Last error code</span><b>{{ device.lastError?.code ?? '—' }} ·
                                         {{ device.lastError?.subsystem === 2 ? hex(device.lastError.code, 2) :
