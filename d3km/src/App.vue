@@ -2393,9 +2393,9 @@ onUnmounted(() => {
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>Recent device events</h3>
-                                <p>Events decoded from the subscribed USB stream</p>
-                            </div><span class="tag neutral">{{ events.length }} logged</span>
+                                <h3>Recent app and device events</h3>
+                                <p>Includes D3KM status-refresh messages; use the BLE firmware trace above for node-side BLE records</p>
+                            </div><span class="tag neutral">{{ events.length }} messages</span>
                         </div>
                         <div v-if="events.length" class="event-log">
                             <div v-for="(item, index) in events.slice(0, 30)" :key="index">{{ item }}</div>
