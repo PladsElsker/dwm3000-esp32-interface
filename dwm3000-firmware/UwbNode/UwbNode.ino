@@ -532,7 +532,7 @@ static void sendResponse(HostTransport &source, const Frame &request, uint8_t er
     e.valid = true; e.seq = request.seq; e.opcode = request.opcode;
     e.payloadCrc = crc16(request.payload, request.length); e.response = r;
   }
-  if (error != ERR_OK) rememberError(error);
+  if (error != ERR_OK) rememberError(error, error == ERR_RADIO_FAILURE ? ERROR_SUBSYSTEM_UWB : ERROR_SUBSYSTEM_SYSTEM);
 }
 
 static void emitEvent(uint8_t opcode, const uint8_t *payload, uint16_t length, bool force = false) {
@@ -1851,7 +1851,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       break;
     }
 
-    // Detail response: count:u8 followed by 48-byte records, oldest first.
+    // Legacy detail response: count:u8 followed by 44-byte records, oldest first.
     // This is an application-only snapshot; post-call registers may already
     // reflect the driver's TXRXOFF cleanup after a failed start.
     case OP_GET_RADIO_TRACE_DETAIL: {
