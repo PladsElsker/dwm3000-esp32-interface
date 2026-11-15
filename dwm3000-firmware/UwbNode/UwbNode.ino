@@ -540,7 +540,12 @@ static void sendResponse(HostTransport &source, const Frame &request, uint8_t er
   if (error != ERR_OK) {
     uint8_t subsystem = error == ERR_RADIO_FAILURE ? ERROR_SUBSYSTEM_UWB : ERROR_SUBSYSTEM_SYSTEM;
     uint16_t peerId = 0;
-    if (request.opcode >= OP_SET_PEERS && request.opcode <= OP_GET_BLE_DIAGNOSTIC_TRACE) {
+    const bool isBleCommand =
+        request.opcode == OP_SET_PEERS || request.opcode == OP_GET_PEERS ||
+        request.opcode == OP_START_BLE || request.opcode == OP_STOP_BLE ||
+        request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
+        request.opcode == OP_GET_RECEIVED_DATA || request.opcode == OP_GET_BLE_DIAGNOSTIC_TRACE;
+    if (isBleCommand) {
       subsystem = ERROR_SUBSYSTEM_BLE;
       if ((request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
            request.opcode == OP_GET_RECEIVED_DATA) && request.length >= 2) {
