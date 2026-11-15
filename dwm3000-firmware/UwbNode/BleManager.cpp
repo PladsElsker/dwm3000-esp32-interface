@@ -368,7 +368,11 @@ bool Manager::start() {
   enabled_ = true;
   if (config_.mode == MODE_PERIPHERAL) {
     NimBLEAdvertising* advertising = NimBLEDevice::getAdvertising();
-    if (!advertising) { enabled_ = false; return false; }
+    if (!advertising) {
+      enabled_ = false;
+      recordDiagnostic(DIAG_START_FAILED, 0, 2, 1, -1);
+      return false;
+    }
     char name[MAX_ADVERTISE_NAME];
     snprintf(name, sizeof(name), "UWB-%04X", localDeviceId_);
     advertising->setName(name);
@@ -377,19 +381,34 @@ bool Manager::start() {
     const uint16_t units = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
     advertising->setMinInterval(units);
     advertising->setMaxInterval(units);
-    advertising->start();
+    const bool started = advertising->start();
     advertising_ = advertising->isAdvertising();
-    if (!advertising_) { enabled_ = false; return false; }
+    if (!started || !advertising_) {
+      enabled_ = false;
+      recordDiagnostic(DIAG_START_FAILED, 0, 2, 2,
+                       static_cast<int16_t>(started ? 1 : 0));
+      return false;
+    }
   } else {
     for (uint8_t i = 0; i < config_.peerCount; ++i) allocateLink(config_.peers[i], false);
     NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
-    if (!scan) { enabled_ = false; return false; }
+    if (!scan) {
+      enabled_ = false;
+      recordDiagnostic(DIAG_START_FAILED, 0, 3, 1, -1);
+      return false;
+    }
     scan->setInterval(config_.scanIntervalMs);
     scan->setWindow(config_.scanWindowMs);
     scan->setMaxResults(0);
     scanning_ = scan->start(0);
-    if (!scanning_) { enabled_ = false; return false; }
+    if (!scanning_) {
+      enabled_ = false;
+      recordDiagnostic(DIAG_START_FAILED, 0, 3, 2, -1);
+      return false;
+    }
+    recordDiagnostic(DIAG_SCAN_STARTED);
   }
+  recordDiagnostic(DIAG_START_COMPLETE);
   uint8_t state[4] = {1, config_.mode, static_cast<uint8_t>(advertising_), static_cast<uint8_t>(scanning_)};
   enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
   return true;
@@ -446,6 +465,7 @@ void Manager::stop() {
     }
   }
   advertising_ = scanning_ = false;
+  recordDiagnostic(DIAG_STOPPED);
   refreshConnectedSummary();
   portENTER_CRITICAL(&mux_);
   rxHead_ = rxTail_ = rxCount_ = 0;
@@ -1095,6 +1115,8 @@ void Manager::maintainHubConnections() {
     if (scan->isScanning() && !scan->stop()) {
       scanning_ = scan->isScanning();
       candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
+      recordDiagnostic(DIAG_SCAN_STOP_FAILED, candidate->peerId, 1,
+                       FAILURE_STAGE_SCAN_STOP, -1);
       emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_SCAN_STOP, -1);
       return;
     }
@@ -1110,6 +1132,8 @@ void Manager::maintainHubConnections() {
       NimBLEClient* client = NimBLEDevice::createClient();
       if (!client) {
         candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
+        recordDiagnostic(DIAG_CLIENT_ALLOC_FAILED, candidate->peerId, 1,
+                         FAILURE_STAGE_CLIENT_ALLOCATE, -1);
         emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_CLIENT_ALLOCATE, -1);
         return;
       }
@@ -1124,6 +1148,8 @@ void Manager::maintainHubConnections() {
     candidate->connectStartedMs = now;
     candidate->nextAttemptMs = 0;
     candidate->connectFailedPending = false;
+    recordDiagnostic(DIAG_CENTRAL_CONNECT_ATTEMPT, candidate->peerId, 0, 0,
+                     static_cast<int16_t>(candidate->addressType));
     if (!client->connect(address, true, true, true)) {
       const int rc = client->getLastError();
       candidate->connecting = false;
@@ -1134,8 +1160,19 @@ void Manager::maintainHubConnections() {
     return;
   }
 
-  if (!scan->isScanning()) scanning_ = scan->start(0);
-  else scanning_ = true;
+  if (!scan->isScanning()) {
+    scanning_ = scan->start(0);
+    if (scanning_) {
+      scanStartFailureSeen_ = false;
+      recordDiagnostic(DIAG_SCAN_STARTED);
+    } else if (!scanStartFailureSeen_ || elapsed(now, lastScanStartFailureMs_, 2000)) {
+      scanStartFailureSeen_ = true;
+      lastScanStartFailureMs_ = now;
+      recordDiagnostic(DIAG_SCAN_RESTART_FAILED, 0, 3, 0, -1);
+    }
+  } else {
+    scanning_ = true;
+  }
 }
 
 void Manager::processLinkEvents() {
@@ -1177,6 +1214,8 @@ void Manager::processLinkEvents() {
     if (link.used && link.serverSide && !link.connected && !link.handshakeTimedOut &&
         elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
       link.handshakeTimedOut = true;
+      recordDiagnostic(DIAG_HANDSHAKE_TIMEOUT, 0, 5,
+                       FAILURE_STAGE_PERIPHERAL_HANDSHAKE_TIMEOUT, 0);
       emitConnectionFailure(0, 5, FAILURE_STAGE_PERIPHERAL_HANDSHAKE_TIMEOUT, 0);
       if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
     }
@@ -1190,10 +1229,13 @@ void Manager::processLinkEvents() {
       if (!enabled_ || !link.serverSide || link.handshakeTimedOut || !peerConfigured(peer) || duplicate) {
         const int16_t detail = !enabled_ ? 1 : !link.serverSide ? 2 :
                                link.handshakeTimedOut ? 3 : !peerConfigured(peer) ? 4 : 5;
+        recordDiagnostic(DIAG_SERVER_IDENTITY_REJECTED, peer, 3,
+                         FAILURE_STAGE_PERIPHERAL_IDENTITY, detail);
         link.peerId = peer;
         emitConnectionFailure(peer, 3, FAILURE_STAGE_PERIPHERAL_IDENTITY, detail);
         if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
       } else {
+        recordDiagnostic(DIAG_SERVER_IDENTITY_ACCEPTED, peer);
         link.peerId = peer; link.connected = true; link.connecting = false;
         clearPeerFailure(peer);
         link.mtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(link.connectionHandle);
@@ -1216,6 +1258,8 @@ void Manager::processLinkEvents() {
       };
       NimBLERemoteService* service = client->getService(SERVICE_UUID);
       if (!service) { fail(5, FAILURE_STAGE_GATT_SERVICE, 0); continue; }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_GATT_SERVICE, 1);
       auto* remoteRx = service->getCharacteristic(RX_UUID);
       auto* remoteTx = service->getCharacteristic(TX_UUID);
       auto* remoteIdRead = service->getCharacteristic(ID_READ_UUID);
@@ -1226,11 +1270,15 @@ void Manager::processLinkEvents() {
           !remoteVersion || !remoteVersion->canRead()) {
         fail(5, FAILURE_STAGE_GATT_CHARACTERISTICS, 0); continue;
       }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_GATT_CHARACTERISTICS, 1);
       const NimBLEAttValue version = remoteVersion->readValue();
       if (version.length() != 1 || version.data()[0] != BLE_PROTOCOL_VERSION) {
         const int16_t detail = version.length() == 1 ? version.data()[0] : -1;
         fail(5, FAILURE_STAGE_PROTOCOL_VERSION, detail); continue;
       }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_PROTOCOL_VERSION, version.data()[0]);
       const NimBLEAttValue id = remoteIdRead->readValue();
       if (id.length() != 2) {
         fail(5, FAILURE_STAGE_PEER_IDENTITY, static_cast<int16_t>(id.length())); continue;
@@ -1239,14 +1287,21 @@ void Manager::processLinkEvents() {
       if (remoteId != link.peerId || !peerConfigured(remoteId)) {
         fail(3, FAILURE_STAGE_PEER_IDENTITY, static_cast<int16_t>(remoteId)); continue;
       }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_PEER_IDENTITY, static_cast<int16_t>(remoteId));
       uint8_t ownId[2]; writeU16(ownId, localDeviceId_);
       if (!remoteIdWrite->writeValue(ownId, sizeof(ownId), true)) {
         fail(5, FAILURE_STAGE_IDENTITY_WRITE, -1); continue;
       }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_IDENTITY_WRITE, 1);
       if (!remoteTx->subscribe(true, onRemoteNotify)) {
         fail(5, FAILURE_STAGE_NOTIFY_SUBSCRIBE, -1); continue;
       }
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_STEP, link.peerId, 0,
+                       FAILURE_STAGE_NOTIFY_SUBSCRIBE, 1);
       link.remoteRx = remoteRx; link.remoteTx = remoteTx;
+      recordDiagnostic(DIAG_CENTRAL_HANDSHAKE_COMPLETE, link.peerId);
       clearPeerFailure(link.peerId);
       link.mtu = client->getMTU(); link.connected = true; link.connecting = false;
       uint8_t payload[2]; writeU16(payload, link.peerId);
@@ -1258,7 +1313,14 @@ void Manager::processLinkEvents() {
     advertisingRestartPending_ = false;
     if (activeConnectionCount() < MAX_ACTIVE_CONNECTIONS) {
       if (auto* advertising = NimBLEDevice::getAdvertising()) {
-        advertising->start(); advertising_ = advertising->isAdvertising();
+        const bool started = advertising->start();
+        advertising_ = advertising->isAdvertising();
+        if (!started || !advertising_) {
+          recordDiagnostic(DIAG_ADVERTISING_RESTART_FAILED, 0, 2, 0,
+                           static_cast<int16_t>(started ? 1 : 0));
+        }
+      } else {
+        recordDiagnostic(DIAG_ADVERTISING_RESTART_FAILED, 0, 2, 0, -1);
       }
     }
   }
