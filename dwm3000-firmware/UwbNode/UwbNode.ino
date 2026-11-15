@@ -497,7 +497,7 @@ static void sendFrameTo(HostTransport &transport, const Frame &f) {
 
 // Do not send unsolicited USB events into a disconnected CDC session. The
 // measurement itself is stored independently in history and remains available
-// to GET_LAST / GET_HISTORY after the host reconnects.
+// to GET_LAST_RANGE / GET_HISTORY after the host reconnects.
 static void sendEventFrameTo(HostTransport &transport, const Frame &f) {
   if (&transport == &UsbTransport && !usbCdcConnected()) return;
   sendFrameTo(transport, f);
