@@ -50,7 +50,7 @@ enum DiagnosticCode : uint8_t {
   DIAG_SERVER_IDENTITY_DECISION, DIAG_CENTRAL_CONNECT_RETURN,
   DIAG_GAP_CONNECTION_LOOKUP, DIAG_SERVER_DISCONNECT_CALLBACK,
   DIAG_GAP_CONNECTION_HANDLE, DIAG_CENTRAL_CONNECT_TIMEOUT,
-  DIAG_PERIPHERAL_ADVERTISING_CONFIG
+  DIAG_PERIPHERAL_ADVERTISING_CONFIG, DIAG_BLE_ADDRESS
 };
 enum EventCode : uint8_t {
   EVENT_STATE_CHANGED = 0, EVENT_PEER_FOUND, EVENT_PEER_CONNECTED,
@@ -132,6 +132,8 @@ class Manager {
   void noteClientConnectFailed(void* client, int reason);
   void noteClientDisconnected(void* client, int reason);
   void notePeripheralConnectFailed(int reason);
+  void recordBleAddress(uint16_t peerId, uint8_t source,
+                        const uint8_t* address, uint8_t addressType);
   void noteGapEvent(uint8_t eventType, int16_t detail, uint16_t connectionHandle);
   void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId, uint16_t valueLength);
   void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
