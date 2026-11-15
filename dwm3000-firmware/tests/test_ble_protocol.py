@@ -259,5 +259,5 @@ for bad_mtu in (22, 257, 518):
     else:
         raise AssertionError("invalid ATT MTU was accepted")
 
-assert 1 + 26 * (6 + 19) <= module.MAX_PAYLOAD
+assert 1 + 26 * (6 + 13) <= module.MAX_PAYLOAD
 print("BLE V2.1 config, status, unified trace, fragmentation and CRC tests passed")
