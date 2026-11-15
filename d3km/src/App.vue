@@ -14,6 +14,7 @@ type BleConfig = {
 type BlePeerStatus = {
     peerId: number; state: number; mode: number; enabled: boolean; advertising: boolean;
     scanning: boolean; connected: boolean; mtu: number;
+    lastFailureReason: number; lastFailureStage: number; lastFailureDetail: number;
 };
 type BleMessage = {
     peerId: number; messageId: number; length: number; time: number;
@@ -273,10 +274,14 @@ function applyBleStatusPayload(p: number[]) {
     if (ble.runtime.connected && ble.runtime.connectedPeerId) bleMessagePeerId.value = String(ble.runtime.connectedPeerId);
 }
 function decodeBlePeerStatus(p: number[]): BlePeerStatus {
-    if (p.length !== 10) throw new Error(`GET_PEER_STATUS returned ${p.length} bytes; expected 10.`);
+    if (p.length !== 10 && p.length !== 14) throw new Error(`GET_PEER_STATUS returned ${p.length} bytes; expected 10 or 14.`);
+    const rawFailureDetail = p.length >= 14 ? get16(p, 12) : 0;
     return {
         peerId: get16(p, 6), state: p[0], mode: p[1], enabled: p[2] === 1,
-        advertising: p[3] === 1, scanning: p[4] === 1, connected: p[5] === 1, mtu: get16(p, 8)
+        advertising: p[3] === 1, scanning: p[4] === 1, connected: p[5] === 1, mtu: get16(p, 8),
+        lastFailureReason: p.length >= 14 ? p[10] : 0,
+        lastFailureStage: p.length >= 14 ? p[11] : 0,
+        lastFailureDetail: rawFailureDetail >= 0x8000 ? rawFailureDetail - 0x10000 : rawFailureDetail
     };
 }
 function updateBlePeerStatus(status: BlePeerStatus) {
@@ -423,6 +428,28 @@ function blePeerStateName(state: number) {
 function bleModeName(mode: number) {
     return ({ 0: 'Idle', 1: 'HUB / Central', 2: 'Peripheral' } as Record<number, string>)[mode] ?? `Mode ${mode}`;
 }
+function bleConnectionStageName(stage: number) {
+    return ({
+        1: 'Stopping scan', 2: 'Allocating client', 3: 'Starting GAP connection',
+        4: 'GAP connection result', 5: 'GAP connection timeout',
+        6: 'Finding GATT service', 7: 'Validating GATT characteristics',
+        8: 'Checking BLE protocol version', 9: 'Checking peer identity',
+        10: 'Writing local identity', 11: 'Subscribing to notifications',
+        12: 'Peripheral identity validation', 13: 'Peripheral handshake timeout'
+    } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
+}
+function bleConnectionFailureText(status?: BlePeerStatus) {
+    if (!status?.lastFailureReason) return '';
+    const reason = ({
+        1: 'Local connection setup failed', 3: 'Peer identity rejected',
+        4: 'Connection attempt timed out', 5: 'Peripheral handshake timed out',
+        6: 'GAP connection failed'
+    } as Record<number, string>)[status.lastFailureReason] ?? `Failure ${status.lastFailureReason}`;
+    const detail = status.lastFailureDetail === -1
+        ? ' · no status code'
+        : ` · status 0x${(status.lastFailureDetail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
+    return `${reason} · ${bleConnectionStageName(status.lastFailureStage)}${detail}`;
+}
 function bleErrorName(code: number, direction = 0) {
     const names: Record<number, string> = {
         1: direction === 0 ? 'Remote receive queue full or message consumption timed out' : 'Remote receive queue full',
@@ -500,8 +527,25 @@ function handleEvent(e: FrameEvent) {
     }
     if (e.opcode === 138 && p.length >= 3) {
         const peerId = get16(p);
-        log(`BLE connection attempt failed · peer ${peerId} · reason ${p[2]}; automatic retry remains active`);
-        void refreshBlePeerStatus(peerId);
+        const reason = ({
+            1: 'Local setup failed', 3: 'Peer identity rejected',
+            4: 'Connection timed out', 5: 'Peripheral handshake timed out',
+            6: 'GAP connection failed'
+        } as Record<number, string>)[p[2]] ?? `Failure ${p[2]}`;
+        if (p.length >= 6) {
+            const detailRaw = get16(p, 4);
+            const detail = detailRaw >= 0x8000 ? detailRaw - 0x10000 : detailRaw;
+            const code = detail === -1 ? 'status unavailable' :
+                `NimBLE status 0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
+            const stage = bleConnectionStageName(p[3]);
+            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason} · ${stage} · ${code}`);
+        } else {
+            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason}`);
+        }
+        if (peerId) void refreshBlePeerStatus(peerId);
+        else if (ble.runtimeConfig.mode === 2) {
+            for (const id of ble.runtimeConfig.peers) void refreshBlePeerStatus(id, true);
+        }
     }
     if (e.opcode === 139 && p.length >= 6) {
         const peerId = get16(p), messageId = get16(p, 2), length = get16(p, 4);
@@ -1859,11 +1903,12 @@ onUnmounted(() => {
                                 <div class="panel-heading"><div><h3>Peer connections</h3><p>Live state for configured and discovered peer identities</p></div><span class="tag neutral">{{ bleConnectedCount }} / 8 connected</span></div>
                                 <div class="state-line"><span>Peer policy</span><b>{{ ble.runtimeConfig.peers.length ? 'Allow-list' : 'Open mode' }}</b></div>
                                 <div v-if="bleVisiblePeerIds.length" class="table-wrap">
-                                    <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th></th></tr></thead>
+                                    <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th>LAST CONNECTION FAILURE</th><th></th></tr></thead>
                                         <tbody><tr v-for="peerId in bleVisiblePeerIds" :key="peerId">
                                             <td><b>{{ peerId }}</b><small class="mono">{{ hex(peerId) }}</small></td>
                                             <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) : 'Not checked' }}</span></td>
                                             <td>{{ getBlePeerStatus(peerId)?.connected ? getBlePeerStatus(peerId)?.mtu : '—' }}</td>
+                                            <td><small v-if="bleConnectionFailureText(getBlePeerStatus(peerId))" class="ble-error-detail">{{ bleConnectionFailureText(getBlePeerStatus(peerId)) }}</small><span v-else>—</span></td>
                                             <td class="ble-peer-actions"><button class="icon-button mini" title="Refresh peer status" :disabled="ble.loading" @click="refreshBlePeerStatus(peerId)"><RefreshCw :size="13" /></button></td>
                                         </tr></tbody>
                                     </table>
