@@ -47,6 +47,16 @@ auto_start_extension = module.encode_ble_config(auto_start_args)
 assert auto_start_extension[7] == 1
 assert module.decode_ble_config(auto_start_extension)["ble_auto_start"] is True
 
+idle_auto_start_args = config_args([])
+idle_auto_start_args.ble_mode = "idle"
+idle_auto_start_args.ble_auto_start = True
+try:
+    module.encode_ble_config(idle_auto_start_args)
+except ValueError:
+    pass
+else:
+    raise AssertionError("BLE auto-start accepted with IDLE mode")
+
 # Values other than 0 or 1 are invalid boot-preference flags.
 invalid_auto_start = bytearray(extension)
 invalid_auto_start[7] = 2
