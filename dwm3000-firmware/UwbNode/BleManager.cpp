@@ -146,6 +146,12 @@ bool Manager::begin(uint16_t localDeviceId) {
     recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 1, -1);
     return false;
   }
+#if defined(CONFIG_BT_NIMBLE_MAX_CONNECTIONS)
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 0,
+                   static_cast<int16_t>(CONFIG_BT_NIMBLE_MAX_CONNECTIONS));
+#else
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 0, -1);
+#endif
   s_manager = this;
   if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) {
     recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 2, -1);
