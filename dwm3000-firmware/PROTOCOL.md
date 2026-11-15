@@ -205,7 +205,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 ## BLE peer transport
 
-The BLE transport uses NimBLE-Arduino 2.5.2 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
+The BLE transport uses NimBLE-Arduino 2.5.0 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
 The saved BLE configuration contains the operating mode, peer policy, timing parameters, and `ble_auto_start` preference. `APPLY_SAVE_CONFIG` persists these settings. When auto-start is enabled and the saved mode is HUB or PERIPHERAL, the firmware starts that role during boot. `START_BLE` (`0x52`) and `STOP_BLE` (`0x53`) control BLE for the current runtime session. `GET_STATUS` reports aggregate BLE state; `GET_PEER_STATUS` reports the state of a specific peer.
 
