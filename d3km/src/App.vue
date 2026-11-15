@@ -483,7 +483,9 @@ function bleDiagnosticCodeName(code: number) {
         32: 'Peripheral peer identity write',
         33: 'Peripheral peer identity decision',
         34: 'Central connect() return value',
-        35: 'GAP connection handle lookup'
+        35: 'GAP connection handle lookup',
+        36: 'Peripheral disconnect callback',
+        37: 'Raw GAP connection handle'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
 function bleDiagnosticStageText(record: BleDiagnosticRecord) {
@@ -522,6 +524,11 @@ function bleDiagnosticStageText(record: BleDiagnosticRecord) {
     if (record.code === 35) {
         return record.reason === 0 ? 'after CONNECT' :
             record.reason === 38 ? 'after LINK_ESTAB' : `after GAP event ${record.reason}`;
+    }
+    if (record.code === 37) {
+        return ({
+            0: 'CONNECT', 1: 'DISCONNECT', 38: 'LINK_ESTAB'
+        } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`;
     }
     if (record.code === 32) {
         return ({ 0: 'write accepted', 1: 'invalid payload length', 2: 'no matching connection handle' } as Record<number, string>)[record.reason] ?? `write result ${record.reason}`;
@@ -572,6 +579,8 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.code === 34 ? (record.reason ? 'connect() started' : 'connect() rejected synchronously') :
         record.code === 35 ? (record.detail === 0 ? 'connection handle lookup succeeded' :
             `connection handle lookup failed: ${record.detail}`) :
+        record.code === 36 ? `disconnect reason ${record.reason}, handle ${record.detail < 0 ? 'none' : record.detail}` :
+        record.code === 37 ? `handle ${record.detail < 0 ? 'none' : record.detail}` :
         record.reason ? `reason ${record.reason}` : '';
     const capacityDetail = record.code === 28
         ? record.detail < 0 ? 'capacity macro unavailable' :
