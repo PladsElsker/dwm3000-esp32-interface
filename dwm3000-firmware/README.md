@@ -51,7 +51,7 @@ The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same 
 
 ## BLE peer messaging
 
-BLE uses NimBLE-Arduino 2.5.2 and runs independently of UWB ranging.
+BLE uses NimBLE-Arduino 2.5.0 and runs independently of UWB ranging.
 
 - `IDLE` leaves BLE stopped; `HUB` operates as a Central; `PERIPHERAL` advertises as a Peripheral.
 - Configuration stores the BLE role, peer policy, timing parameters, and the `Automatically start Bluetooth after boot` preference in NVS. At boot, the node starts the saved HUB or PERIPHERAL role when auto-start is enabled.
