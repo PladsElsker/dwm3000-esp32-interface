@@ -65,7 +65,6 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x01` | `PING` | — | ASCII `PONG` (4 bytes) |
 | `0x02` | `GET_INFO` | — | `major:u8, minor:u8, patch:u8, protocol:u8, device_id:u16, max_targets:u8, history_capacity:u16, radio_type:u8, max_payload:u16, ble_supported:u8, ble_mode_mask:u8, max_ble_peers:u8, max_ble_connections:u8, max_ble_message_length:u16, max_ble_mtu:u16, ble_protocol_version:u8` (21 bytes); radio type `1` is DWM3000 |
 
-`GET_INFO` reports BLE capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state, while `GET_DIAGNOSTICS` adds BLE runtime and queue diagnostics.
 | `0x03` | `GET_STATUS` | — | 18-byte UWB status followed by 9-byte aggregate BLE status: `ble_mode:u8, ble_enabled:u8, any_peer_connected:u8, representative_peer_id:u16, advertising:u8, scanning:u8, representative_peer_mtu:u16` (27 bytes total) |
 | `0x04` | `GET_STATISTICS` | — | Seventeen `u32` counters: ten UWB/host counters followed by `ble_messages_sent, ble_messages_received, ble_tx_errors, ble_rx_errors, ble_connection_failures, ble_rx_queue_overflows, ble_event_queue_overflows` (68 bytes total) |
 | `0x05` | `CLEAR_STATISTICS` | — | —; clears UWB and BLE counters |
@@ -109,6 +108,8 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
 | `0x59` | `GET_BLE_DIAGNOSTIC_TRACE` (legacy) | — | Legacy BLE lifecycle trace response: `count:u8`, then 13-byte records; use `GET_TRACE` |
+
+`GET_INFO` reports BLE capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state, while `GET_DIAGNOSTICS` adds BLE runtime and queue diagnostics.
 
 ### Configuration state and persistence
 
