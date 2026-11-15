@@ -1771,10 +1771,6 @@ onUnmounted(() => {
                                         <h4>Automatic connections and message delivery</h4>
                                         <p>Connections and recovery are managed by the node while BLE is enabled</p>
                                     </div>
-                                    <div class="callout info">
-                                        <Bluetooth :size="16" />
-                                        <div><b>Automatic connection management</b><p>HUB nodes continuously discover and reconnect to peers. Peripheral nodes advertise and accept permitted peers. This remains active while Bluetooth is enabled.</p></div>
-                                    </div>
                                     <label class="full-field auto-start-field">
                                         <span class="auto-start-title"><input type="checkbox" v-model="bleDraft.autoStart" /> Automatically start Bluetooth after boot</span>
                                         <small>Start the configured BLE role automatically after the next boot. This preference is independent of the Enable/Disable Bluetooth control and does not change the current radio state.</small>
