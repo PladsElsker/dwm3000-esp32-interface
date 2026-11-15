@@ -96,17 +96,17 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x43` | `REBOOT` | — | —; response is sent before restart |
 | `0x50` | `SET_PEERS` | `count:u8, peer_ids:u16[]` (0–8 unique IDs) | —; updates and persists the peer list |
 | `0x51` | `GET_PEERS` | — | `count:u8, peer_ids:u16[]` |
-| `0x52` | `START_BLE` / enable BLE | — | —; enables the configured BLE role for the current boot; does not change the saved auto-start preference |
-| `0x53` | `STOP_BLE` / disable BLE | — | —; disables BLE for the current boot, disconnects active links, and stops advertising/scanning; does not change the saved auto-start preference |
+| `0x52` | `START_BLE` / enable BLE | — | —; starts the configured BLE role for the current runtime session |
+| `0x53` | `STOP_BLE` / disable BLE | — | —; stops BLE for the current runtime session and disconnects active peers |
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16` |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
 
 ### Configuration state and persistence
 
-`GET_CONFIG`, `GET_TARGETS`, `GET_SCHEDULE`, and `GET_STATUS` describe active runtime state in RAM. `GET_SAVED_CONFIG` reads the saved NVS snapshot and does not change runtime state.
+`GET_CONFIG`, `GET_TARGETS`, `GET_SCHEDULE`, and `GET_STATUS` report live device state in RAM. `GET_SAVED_CONFIG` returns the configuration stored in NVS.
 
-`SET_CONFIG`, `SET_ANTENNA_DELAYS`, `SET_ROLE`, `SET_TARGETS`, and `SET_SCHEDULE` change runtime state. These changes are not automatically persisted.
+`SET_CONFIG`, `SET_ANTENNA_DELAYS`, `SET_ROLE`, `SET_TARGETS`, and `SET_SCHEDULE` modify runtime state. Use `APPLY_SAVE_CONFIG` to validate, apply, and persist a complete configuration snapshot.
 
 `APPLY_SAVE_CONFIG` submits an explicit complete snapshot, validates it, writes it to NVS, applies it to RAM, and reinitializes the radio. Its request and `GET_SAVED_CONFIG` response use this layout:
 
@@ -147,7 +147,7 @@ The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` 
 
 `SAVE_ANTENNA_DELAYS` persists only the current TX and RX antenna delay values. It is rejected while ranging or a transaction is active.
 
-`RESET_CONFIG` clears saved settings and restores compiled defaults, with BLE disabled. At boot, the firmware restores the BLE auto-start preference from NVS. If `ble_auto_start=1` and the saved mode is not IDLE, the configured BLE role starts automatically. `START_BLE` and `STOP_BLE` affect only the current runtime state; they do not modify the boot preference. The BLE boot preference is independent of the UWB `auto_start` ranging preference. The first boot after upgrading migrates the previous `ble_on` value to the new `ble_auto` preference when no new preference exists, preserving the prior boot behavior.
+`RESET_CONFIG` clears the saved settings and restores compiled defaults, leaving BLE stopped with auto-start disabled. At boot, the firmware starts the saved BLE role when `ble_auto_start=1` and the mode is HUB or PERIPHERAL. `START_BLE` and `STOP_BLE` control the current runtime session; the boot auto-start preference is saved through `APPLY_SAVE_CONFIG`. BLE auto-start and UWB ranging auto-start are independent settings.
 
 ### Role, targets, and scheduling
 
@@ -171,7 +171,7 @@ Each measurement record is 28 bytes:
 | 14 | 8 | Unix/epoch timestamp in microseconds, `u64`; zero until `TIME_SYNC` |
 | 22 | 4 | Distance in millimetres, signed `i32`; `-1` for invalid or failed results |
 | 26 | 1 | Status: valid `0`, timeout `1`, invalid `2`, cancelled `3`, radio error `4` |
-| 27 | 1 | Quality flags; currently `0` |
+| 27 | 1 | Quality flags (`0` in this firmware) |
 
 The history ring buffer holds 256 records. `GET_LAST` returns the newest retained record for each matching target, or the newest record for every target when the filter is `0xFFFF`.
 
@@ -207,7 +207,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 The BLE transport uses NimBLE-Arduino 2.5.2 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
-BLE runtime enablement and boot auto-start are separate. `START_BLE` (`0x52`) enables the configured role for the current boot; `STOP_BLE` (`0x53`) disables it for the current boot and disconnects active peers. Neither command changes the saved boot preference. The `ble_auto_start` field in the BLE configuration extension is persisted through `APPLY_SAVE_CONFIG` and determines whether a non-IDLE configured role starts at boot. Selecting a BLE mode or changing the boot preference does not change the current runtime state. `GET_STATUS` and `GET_PEER_STATUS` report the current enabled state.
+The saved BLE configuration contains the operating mode, peer policy, timing parameters, and `ble_auto_start` preference. `APPLY_SAVE_CONFIG` persists these settings. When auto-start is enabled and the saved mode is HUB or PERIPHERAL, the firmware starts that role during boot. `START_BLE` (`0x52`) and `STOP_BLE` (`0x53`) control BLE for the current runtime session. `GET_STATUS` reports aggregate BLE state; `GET_PEER_STATUS` reports the state of a specific peer.
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
@@ -256,7 +256,7 @@ The BLE packet protocol uses little-endian fields and CRC-16/CCITT-FALSE (poly `
 
 Each packet begins with the one-byte type field. CRC is appended after the body. The DATA header is seven bytes and CRC is two bytes. Fragment payload capacity is `ATT_MTU - 12` (three ATT bytes, seven DATA header bytes, two CRC bytes). The firmware requests and caps its local ATT MTU at 256; actual fragment size still follows the negotiated peer MTU. The maximum application message is 496 bytes; the minimum ATT MTU of 23 therefore needs at most 46 fragments. Empty application messages are represented by one DATA fragment with zero payload. A 16-bit `message_id` wraps naturally, and zero is a valid identifier.
 
-NACK codes are: `1 RX_QUEUE_FULL` (retryable), `2 RX_BUSY` (retryable), `3 MESSAGE_TOO_LARGE` (permanent), `4 INVALID_FRAGMENT` (permanent), `5 METADATA_MISMATCH` (permanent), and `6 UNSUPPORTED_VERSION` (reserved for packet-level use; version mismatch is currently rejected during the GATT handshake). Each DATA fragment is acknowledged after it is accepted into the bounded reassembly buffer. Duplicate fragments are acknowledged again without being inserted twice. Incomplete reassembly state expires after a fixed 1,500 ms inactivity window; this is separate from the configurable complete-message consumption timeout.
+NACK codes are: `1 RX_QUEUE_FULL` (retryable), `2 RX_BUSY` (retryable), `3 MESSAGE_TOO_LARGE` (permanent), `4 INVALID_FRAGMENT` (permanent), `5 METADATA_MISMATCH` (permanent), and `6 UNSUPPORTED_VERSION` (reserved for packet-level version errors). GATT peers with an unsupported protocol version are rejected during the identity handshake. Each DATA fragment is acknowledged after it is accepted into the bounded reassembly buffer. Duplicate fragments are acknowledged again without being inserted twice. Incomplete reassembly state expires after a fixed 1,500 ms inactivity window; this is separate from the configurable complete-message consumption timeout.
 
 The complete-message lifecycle is separate from fragment ACKs. After all fragments are reassembled, `BLE_DATA_RECEIVED` notifies the local host. The host retrieves the payload with `GET_RECEIVED_DATA`; this consumes the unread message and causes `MESSAGE_RESULT: CONSUMED` to be sent to the sender. Only then does the sender emit `BLE_DATA_SENT`. If the host does not retrieve the message before `ble_rx_message_timeout_ms`, it is discarded, `BLE_DATA_EXPIRED` is emitted locally, and `MESSAGE_RESULT: CONSUMPTION_TIMEOUT` is returned to the sender. DATA fragment ACKs use a fixed 300 ms response timeout; MESSAGE_RESULT delivery uses a fixed 400 ms response timeout. Retransmissions are bounded by `ble_max_retries`, which counts additional attempts after the initial transmission. Incomplete reassembly expires after 1,500 ms without a valid fragment. MESSAGE_RESULT packets are retransmitted until acknowledged or the configured retry limit is exhausted. A lost final outcome is reported as indeterminate; the firmware does not automatically re-send the application message after reconnection.
 
@@ -320,7 +320,7 @@ The response begins with a count byte (`0–8`), followed by that many 44-byte r
 | 28 | 4 | `scheduled_tx_timestamp_low:u32`; calculated low 32 bits of scheduled TX timestamp including TX antenna delay; zero for non-delayed TX |
 | 32 | 2 | `peer:u16` |
 | 34 | 2 | `job_id:u16` |
-| 36 | 1 | `event:u8`; currently `1` means `dwt_starttx()` returned `DWT_ERROR` |
+| 36 | 1 | `event:u8`; value `1` indicates that `dwt_starttx()` returned `DWT_ERROR` |
 | 37 | 1 | `state:u8`; application radio state at capture |
 | 38 | 1 | `function:u8` |
 | 39 | 1 | `radio_seq:u8` |
