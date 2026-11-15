@@ -929,6 +929,12 @@ void Manager::maintainHubConnections() {
       emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_SCAN_STOP, -1);
       return;
     }
+    // GAP scan cancellation completes asynchronously. Do not submit the
+    // connection request until NimBLE reports discovery as inactive.
+    if (scan->isScanning()) {
+      scanning_ = true;
+      return;
+    }
     scanning_ = false;
 
     if (!candidate->client) {
