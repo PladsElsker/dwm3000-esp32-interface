@@ -159,6 +159,13 @@ class Manager {
     uint8_t retryCount = 0;
     uint32_t lastActionMs = 0;
   };
+  struct PeerFailure {
+    bool used = false;
+    uint16_t peerId = 0;
+    uint8_t reason = 0;
+    uint8_t stage = 0;
+    int16_t detail = 0;
+  };
   struct Link {
     bool used = false;
     bool serverSide = false;
@@ -179,9 +186,6 @@ class Manager {
     uint8_t address[6]{};
     uint8_t addressType = 0;
     int disconnectReason = 0;
-    uint8_t lastFailureReason = 0;
-    uint8_t lastFailureStage = 0;
-    int16_t lastFailureDetail = 0;
     uint32_t connectStartedMs = 0;
     uint32_t nextAttemptMs = 0;
     uint32_t lastSeenMs = 0;
@@ -231,6 +235,8 @@ class Manager {
   void refreshConnectedSummary();
   void emitConnectionFailure(uint16_t peerId, uint8_t reason,
                              uint8_t stage, int16_t detail);
+  const PeerFailure* findPeerFailure(uint16_t peerId) const;
+  void clearPeerFailure(uint16_t peerId);
   void maintainHubConnections();
   void processLinkEvents();
   uint16_t mtuForPeer(uint16_t peerId) const;
@@ -252,6 +258,8 @@ class Manager {
   uint16_t connectedPeerId_ = 0;
   bool advertisingRestartPending_ = false;
   Link links_[MAX_ACTIVE_CONNECTIONS]{};
+  PeerFailure peerFailures_[MAX_PEERS]{};
+  uint8_t peerFailureReplaceIndex_ = 0;
 
   PacketSlot rxPackets_[RX_PACKET_QUEUE_SIZE]{};
   volatile uint8_t rxHead_ = 0;
