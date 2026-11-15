@@ -479,6 +479,25 @@ function bleDiagnosticCodeName(code: number) {
         26: 'BLE event queue full', 27: 'BLE receive queue full'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
+function bleDiagnosticStageText(record: BleDiagnosticRecord) {
+    if (record.code === 2 && record.stage) {
+        return ({
+            1: 'NimBLE init', 2: 'Set ATT MTU', 3: 'Register GAP callback',
+            4: 'Create GATT server', 5: 'Create GATT service',
+            6: 'Create GATT characteristics', 7: 'Start GATT server',
+            8: 'Get Central scanner'
+        } as Record<number, string>)[record.stage] ?? `init step ${record.stage}`;
+    }
+    if (record.code === 4 && record.stage) {
+        const subsystem = record.reason === 2 ? 'advertising' : record.reason === 3 ? 'Central scan' : 'BLE role';
+        const step = record.stage === 1 ? 'object unavailable' : 'start call failed';
+        return `${subsystem}: ${step}`;
+    }
+    if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
+        return bleConnectionStageName(record.stage);
+    }
+    return record.stage ? `stage ${record.stage}` : '';
+}
 function bleDiagnosticLine(record: BleDiagnosticRecord) {
     const mode = (record.stateFlags >> 3) & 0x03;
     const state = [
@@ -498,15 +517,19 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
     const peripheralRejectReason = ({
         1: 'BLE disabled', 2: 'wrong BLE role', 3: 'eight-link limit reached'
     } as Record<number, string>)[record.reason];
+    const startFailureSubsystem = ({
+        1: 'invalid or idle mode', 2: 'advertising', 3: 'Central scan'
+    } as Record<number, string>)[record.reason];
     const reason = record.code === 12 || record.code === 25 ? (connectionReason ?? '') :
         record.code === 17 ? (peripheralRejectReason ?? '') :
+        record.code === 4 ? (startFailureSubsystem ?? '') :
         record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
         record.reason ? `reason ${record.reason}` : '';
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
         bleDiagnosticCodeName(record.code),
         record.peerId ? `peer ${record.peerId}` : 'peer unknown',
-        record.stage ? bleConnectionStageName(record.stage) : '',
+        bleDiagnosticStageText(record),
         reason,
         record.detail || record.code === 25 ? detail : '',
         `${record.activeLinks}/8 links`,
