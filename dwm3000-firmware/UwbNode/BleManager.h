@@ -117,6 +117,16 @@ struct Diagnostics {
   uint8_t eventQueueDepth = 0;
 };
 
+struct LastError {
+  bool valid = false;
+  uint32_t uptimeMs = 0;
+  uint8_t code = 0;
+  uint16_t peerId = 0;
+  uint8_t reason = 0;
+  uint8_t stage = 0;
+  int16_t detail = 0;
+};
+
 class Manager {
  public:
   Manager();
@@ -138,6 +148,7 @@ class Manager {
   void getStatistics(Statistics& statistics) const;
   void clearStatistics();
   void getDiagnostics(Diagnostics& diagnostics) const;
+  bool getLastError(LastError& error) const;
   uint16_t getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const;
   const Config& config() const { return config_; }
   bool enabled() const { return enabled_; }
@@ -334,6 +345,7 @@ class Manager {
   uint8_t diagnosticTraceHead_ = 0;
   uint8_t diagnosticTraceCount_ = 0;
   Statistics statistics_{};
+  LastError lastError_{};
   uint32_t lastScanStartFailureMs_ = 0;
   bool scanStartFailureSeen_ = false;
 
