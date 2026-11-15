@@ -1693,18 +1693,18 @@ onUnmounted(() => {
                                             <input type="number" min="20" max="60000" v-model.number="draft.period" />
                                             <small>Requested period for each target.</small>
                                         </label>
-                                        <label>Transaction timeout <span class="field-help">50–5000 ms</span>
-                                            <input type="number" min="50" max="5000" v-model.number="draft.timeout" />
-                                            <small>Maximum wait for a ranging transaction.</small>
-                                        </label>
-                                        <label>UWB transaction retries <span class="field-help">0–5</span>
-                                            <input type="number" min="0" max="5" v-model.number="draft.retries" />
-                                            <small>Additional initiator attempts after a failed transaction.</small>
-                                        </label>
                                         <div class="schedule-preview">
                                             <span>Saved requested period</span><b>{{ draft.period }} ms / target</b>
                                             <small>Loaded from NVS; live test scheduling may temporarily differ.</small>
                                         </div>
+                                        <label>UWB transaction retries <span class="field-help">0–5</span>
+                                            <input type="number" min="0" max="5" v-model.number="draft.retries" />
+                                            <small>Additional initiator attempts after a failed transaction.</small>
+                                        </label>
+                                        <label>Transaction timeout <span class="field-help">50–5000 ms</span>
+                                            <input type="number" min="50" max="5000" v-model.number="draft.timeout" />
+                                            <small>Maximum wait for a ranging transaction.</small>
+                                        </label>
                                     </div>
                                 </div>
 
