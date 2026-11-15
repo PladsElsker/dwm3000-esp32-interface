@@ -26,11 +26,12 @@ def config_args(peers):
         ble_connection_timeout_ms=5000,
         ble_retries=3,
         ble_rx_message_timeout_ms=1000,
+        ble_auto_start=False,
     )
 
 
-# The extension stays 16 bytes plus two bytes for each peer. Byte 7 is
-# reserved, always written as zero, and does not represent an enable switch.
+# The extension stays 16 bytes plus two bytes for each peer. Byte 7
+# independently persists whether BLE should start automatically after boot.
 extension = module.encode_ble_config(config_args([2, 3]))
 assert len(extension) == 20
 assert extension[7] == 0
@@ -38,12 +39,23 @@ decoded_config = module.decode_ble_config(extension)
 assert decoded_config["ble_mode"] == "hub"
 assert decoded_config["ble_peers"] == [2, 3]
 assert decoded_config["ble_retry_interval_ms"] == 1000
-assert "ble_reconnect_enabled" not in decoded_config
+assert decoded_config["ble_auto_start"] is False
 
-# The reserved byte is ignored on decode; enabled state is not encoded here.
-reserved_nonzero = bytearray(extension)
-reserved_nonzero[7] = 0xA5
-assert module.decode_ble_config(bytes(reserved_nonzero)) == decoded_config
+auto_start_args = config_args([2, 3])
+auto_start_args.ble_auto_start = True
+auto_start_extension = module.encode_ble_config(auto_start_args)
+assert auto_start_extension[7] == 1
+assert module.decode_ble_config(auto_start_extension)["ble_auto_start"] is True
+
+# Values other than 0 or 1 are invalid boot-preference flags.
+invalid_auto_start = bytearray(extension)
+invalid_auto_start[7] = 2
+try:
+    module.decode_ble_config(bytes(invalid_auto_start))
+except ValueError:
+    pass
+else:
+    raise AssertionError("invalid BLE auto-start flag accepted")
 
 # Open mode is represented by an empty peer list.
 open_extension = module.encode_ble_config(config_args([]))
@@ -89,12 +101,14 @@ for removed_command in ("ble-connect", "ble-disconnect", "save-config"):
         raise AssertionError(f"removed command was accepted: {removed_command}")
 sys.argv = [
     "pi_client.py", "set-config", "1", "4660", "5", "16384", "16384",
-    "--ble-mode", "hub", "--ble-retry-interval-ms", "1500"
+    "--ble-mode", "hub", "--ble-retry-interval-ms", "1500", "--ble-auto-start"
 ]
 try:
     parsed_args = module.parse_args()
     assert parsed_args.ble_retry_interval_ms == 1500
-    assert module.decode_ble_config(module.encode_ble_config(parsed_args))["ble_retry_interval_ms"] == 1500
+    roundtrip = module.decode_ble_config(module.encode_ble_config(parsed_args))
+    assert roundtrip["ble_retry_interval_ms"] == 1500
+    assert roundtrip["ble_auto_start"] is True
     sys.argv = [
         "pi_client.py", "set-config", "1", "4660", "5", "16384", "16384",
         "--ble-mode", "hub", "--ble-reconnect"
