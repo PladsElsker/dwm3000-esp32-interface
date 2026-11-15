@@ -468,7 +468,7 @@ function bleDiagnosticCodeName(code: number) {
         3: 'BLE role started', 4: 'BLE role start failed', 5: 'BLE stopped',
         6: 'Central scan started', 7: 'Central scan start failed',
         8: 'Central scan stop failed', 9: 'Peer discovered',
-        10: 'Central client allocation failed', 11: 'Central connect attempt',
+        10: 'Central peer/client slot allocation failed', 11: 'Central connect attempt',
         12: 'Connection failure', 13: 'Central GAP connected',
         14: 'Central GATT handshake step', 15: 'Central handshake complete',
         16: 'Peripheral accepted GAP connection', 17: 'Peripheral rejected incoming GAP connection',
