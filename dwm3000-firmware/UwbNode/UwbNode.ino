@@ -1973,7 +1973,9 @@ static void processBleEvents() {
                                  (static_cast<uint16_t>(event.payload[4]) << 8);
       const uint32_t context = uint32_t(messageId) |
           (uint32_t(event.payload[5]) << 16) | (uint32_t(event.payload[6]) << 24);
-      rememberError(event.payload[6], ERROR_SUBSYSTEM_BLE, peerId, context);
+      rememberError(event.payload[6], ERROR_SUBSYSTEM_BLE, peerId,
+                    uint32_t(messageId) | (uint32_t(event.payload[5]) << 16) |
+                    (uint32_t(event.payload[0]) << 24));
     } else if (event.code == UwbBle::EVENT_CONNECTION_FAILED && event.length >= 6) {
       const uint16_t peerId = static_cast<uint16_t>(event.payload[0]) |
                               (static_cast<uint16_t>(event.payload[1]) << 8);
@@ -2020,7 +2022,7 @@ void setup() {
     rememberError(ERR_INTERNAL);
   }
 
-  if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE);
+  if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE, ERROR_SUBSYSTEM_UWB);
   for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
   // Start from the persistent boot policy, not from any prior runtime test state.
   if (radioReady && autoStartRanging && role != ROLE_IDLE &&
