@@ -21,8 +21,8 @@ type BleMessage = {
 };
 const defaultBleConfig = (): BleConfig => ({
     mode: 0, advertisingIntervalMs: 160, scanIntervalMs: 160, scanWindowMs: 80,
-    retryIntervalMs: 1000, connectionTimeoutMs: 5000,
-    maxRetries: 1, rxMessageTimeoutMs: 1000, autoStart: false, peers: []
+    autoStart: false, retryIntervalMs: 1000, connectionTimeoutMs: 5000,
+    maxRetries: 1, rxMessageTimeoutMs: 1000, peers: []
 });
 const bleDraft = reactive<BleConfig>(defaultBleConfig());
 const ble = reactive({
