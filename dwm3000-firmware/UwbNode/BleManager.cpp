@@ -217,6 +217,11 @@ bool Manager::begin(uint16_t localDeviceId) {
   recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 4, -1);
 #endif
   s_manager = this;
+  {
+    const NimBLEAddress ownAddress = NimBLEDevice::getAddress();
+    if (!ownAddress.isNull())
+      recordBleAddress(localDeviceId_, 0, ownAddress.getVal(), ownAddress.getType());
+  }
   if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) {
     recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 2, -1);
     return false;
@@ -463,13 +468,18 @@ bool Manager::start() {
     recordDiagnostic(DIAG_PERIPHERAL_ADVERTISING_CONFIG, 0,
                      BLE_GAP_CONN_MODE_UND, 1,
                      static_cast<int16_t>(connectableConfigured ? 0 : -1));
+    // The whitelist filter is explicitly disabled; authorize peers at the
+    // application identity handshake rather than in the controller filter.
+    recordDiagnostic(DIAG_PERIPHERAL_ADVERTISING_CONFIG, 0, 0, 2, 0);
+    const uint16_t units = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
+    recordDiagnostic(DIAG_PERIPHERAL_ADVERTISING_CONFIG, 0, 0, 3,
+                     static_cast<int16_t>(units));
     if (!connectableConfigured) {
       enabled_ = false;
       recordDiagnostic(DIAG_START_FAILED, 0, 2, 2, -1);
       return false;
     }
 
-    const uint16_t units = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
     advertising->setMinInterval(units);
     advertising->setMaxInterval(units);
     const bool started = advertising->start();
@@ -647,6 +657,23 @@ void Manager::enqueueClientPacket(const uint8_t* data, size_t length, void* char
   if (link && link->connected) enqueueReceivedPacket(data, length, link->peerId);
 }
 
+void Manager::recordBleAddress(uint16_t peerId, uint8_t source,
+                               const uint8_t* address, uint8_t addressType) {
+  if (!address) return;
+  // One metadata record (source + address type), then the six on-air address
+  // bytes in three raw-order pairs. This lets Diagnostics compare the local
+  // Peripheral address with the Central's discovered and connect-target address.
+  recordDiagnostic(DIAG_BLE_ADDRESS, peerId, source, 0,
+                   static_cast<int16_t>(addressType));
+  for (uint8_t part = 0; part < 3; ++part) {
+    const uint16_t value = static_cast<uint16_t>(address[part * 2]) |
+                           (static_cast<uint16_t>(address[part * 2 + 1]) << 8);
+    recordDiagnostic(DIAG_BLE_ADDRESS, peerId, source,
+                     static_cast<uint8_t>(part + 1),
+                     static_cast<int16_t>(value));
+  }
+}
+
 void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_t addressType) {
   if (!enabled_ || config_.mode != MODE_HUB || !peerConfigured(peerId) || !address) return;
   Link* link = allocateLink(peerId, false);
@@ -677,6 +704,7 @@ void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_
   if (firstDiscovery) {
     link->foundNotified = true;
     recordDiagnostic(DIAG_PEER_DISCOVERED, peerId);
+    recordBleAddress(peerId, 1, address, addressType);
     uint8_t payload[2]; writeU16(payload, peerId);
     enqueueEvent(EVENT_PEER_FOUND, payload, sizeof(payload));
   }
@@ -1297,6 +1325,7 @@ void Manager::maintainHubConnections() {
                      static_cast<int16_t>(config_.connectionTimeoutMs));
     client->setConnectTimeout(config_.connectionTimeoutMs);
     const NimBLEAddress address(candidate->address, candidate->addressType);
+    recordBleAddress(candidate->peerId, 2, address.getVal(), address.getType());
     candidate->connecting = true;
     candidate->connectStartedMs = now;
     candidate->nextAttemptMs = 0;
