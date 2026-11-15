@@ -105,6 +105,7 @@ enum Opcode : uint8_t {
   OP_SET_PEERS = 0x50, OP_GET_PEERS = 0x51, OP_START_BLE = 0x52,
   OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x56,
   OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
+  OP_GET_BLE_DIAGNOSTIC_TRACE = 0x59,
   EV_RANGE_RESULT = 0x80, EV_RANGE_FAILED = 0x81,
   EV_STATE_CHANGED = 0x82, EV_ERROR = 0x83,
   EV_HISTORY_OVERRUN = 0x84, EV_DEVICE_READY = 0x85,
@@ -1697,6 +1698,13 @@ static void processRequest(HostTransport &source, const Frame &q) {
       out[11] = status.lastFailureStage;
       putU16(out + 12, static_cast<uint16_t>(status.lastFailureDetail));
       outLen = 14;
+      break;
+    }
+
+    case OP_GET_BLE_DIAGNOSTIC_TRACE: {
+      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
+      outLen = ble.getDiagnosticTrace(out, sizeof(out));
+      if (!outLen) error = ERR_INTERNAL;
       break;
     }
 
