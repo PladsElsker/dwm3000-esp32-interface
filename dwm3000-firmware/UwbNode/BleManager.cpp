@@ -583,6 +583,45 @@ uint16_t Manager::mtuForPeer(uint16_t peerId) const {
 
 uint16_t Manager::negotiatedMtu() const { return mtuForPeer(connectedPeerId_); }
 
+void Manager::getStatistics(Statistics& statistics) const {
+  portENTER_CRITICAL(&mux_);
+  statistics = statistics_;
+  portEXIT_CRITICAL(&mux_);
+}
+
+void Manager::clearStatistics() {
+  portENTER_CRITICAL(&mux_);
+  statistics_ = Statistics();
+  portEXIT_CRITICAL(&mux_);
+}
+
+void Manager::getDiagnostics(Diagnostics& diagnostics) const {
+  diagnostics.mode = config_.mode;
+  diagnostics.enabled = enabled_ ? 1 : 0;
+  diagnostics.advertising = advertising_ ? 1 : 0;
+  diagnostics.scanning = scanning_ ? 1 : 0;
+  diagnostics.activeLinks = activeConnectionCount();
+  portENTER_CRITICAL(&mux_);
+  diagnostics.rxQueueDepth = rxCount_;
+  diagnostics.eventQueueDepth = eventCount_;
+  portEXIT_CRITICAL(&mux_);
+}
+
+void Manager::incrementStatistic(uint8_t index) {
+  portENTER_CRITICAL(&mux_);
+  switch (index) {
+    case 0: ++statistics_.messagesSent; break;
+    case 1: ++statistics_.messagesReceived; break;
+    case 2: ++statistics_.txErrors; break;
+    case 3: ++statistics_.rxErrors; break;
+    case 4: ++statistics_.connectionFailures; break;
+    case 5: ++statistics_.rxQueueOverflows; break;
+    case 6: ++statistics_.eventQueueOverflows; break;
+    default: break;
+  }
+  portEXIT_CRITICAL(&mux_);
+}
+
 bool Manager::transmitPacket(const uint8_t* packet, uint16_t length) {
   if (!packet || !length || length > MAX_PACKET_LENGTH) return false;
   Link* link = findLink(selectedPeerId_);
@@ -597,6 +636,7 @@ bool Manager::transmitPacket(const uint8_t* packet, uint16_t length) {
 
 bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length) {
   if (length > sizeof(Event::payload)) {
+    incrementStatistic(6);
     recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
     return false;
   }
@@ -610,7 +650,10 @@ bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length)
     ++eventCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
-  if (!ok) recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
+  if (!ok) {
+    incrementStatistic(6);
+    recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
+  }
   return ok;
 }
 
@@ -640,6 +683,7 @@ bool Manager::enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t
   }
   portEXIT_CRITICAL(&mux_);
   if (!ok) {
+    incrementStatistic(5);
     recordDiagnostic(DIAG_RX_QUEUE_FULL, peerId, NACK_RX_BUSY, 0,
                      static_cast<int16_t>(length));
     emitError(1, peerId, 0, 0xFF, NACK_RX_BUSY);
@@ -927,6 +971,7 @@ bool Manager::sendMessageResult(uint16_t messageId, uint8_t status) {
 
 void Manager::emitError(uint8_t direction, uint16_t peerId, uint16_t messageId,
                         uint8_t fragmentIndex, uint8_t errorCode) {
+  incrementStatistic(direction == 0 ? 2 : 3);
   uint8_t payload[8]; payload[0] = direction;
   writeU16(payload + 1, peerId); writeU16(payload + 3, messageId);
   payload[5] = fragmentIndex; payload[6] = errorCode; payload[7] = 0;
@@ -1019,6 +1064,7 @@ void Manager::handleData(const uint8_t* p, uint16_t length) {
     link->lastCompletedValid = true;
     uint8_t payload[6]; writeU16(payload, selectedPeerId_);
     writeU16(payload + 2, link->readyMessageId); writeU16(payload + 4, link->readyLength);
+    incrementStatistic(1);
     enqueueEvent(EVENT_DATA_RECEIVED, payload, sizeof(payload));
   }
 }
@@ -1056,6 +1102,7 @@ void Manager::handleMessageResult(const uint8_t* p, uint16_t length) {
   if (status > RESULT_CONSUMPTION_TIMEOUT) { emitError(0, selectedPeerId_, id, 0xFF, 11); return; }
   if (link->tx.active && link->tx.messageId == id) {
     if (status == RESULT_CONSUMED) {
+      incrementStatistic(0);
       uint8_t payload[6]; writeU16(payload, link->tx.peerId);
       writeU16(payload + 2, id); writeU16(payload + 4, link->tx.totalLength);
       enqueueEvent(EVENT_DATA_SENT, payload, sizeof(payload));
@@ -1215,6 +1262,7 @@ uint16_t Manager::getDiagnosticTrace(uint8_t* destination, uint16_t capacity) co
 
 void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
                                     uint8_t stage, int16_t detail) {
+  incrementStatistic(4);
   recordDiagnostic(DIAG_CONNECTION_FAILED, peerId, reason, stage, detail);
   // Keep bounded diagnostic history outside the live connection slots so
   // repeated rejected Peripheral handshakes cannot consume link capacity.
