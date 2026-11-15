@@ -224,7 +224,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
 function encodeBleConfigExtension(c: BleConfig) {
     return [
         c.mode, ...u16(c.advertisingIntervalMs), ...u16(c.scanIntervalMs), ...u16(c.scanWindowMs),
-        0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved; automatic connection retries are controlled by enabled state.
+        0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved.
         c.maxRetries, ...u16(c.rxMessageTimeoutMs), c.peers.length, ...c.peers.flatMap(u16)
     ];
 }
