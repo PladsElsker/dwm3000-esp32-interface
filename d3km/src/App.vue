@@ -487,15 +487,21 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.stateFlags & 2 ? 'advertising' : '',
         record.stateFlags & 4 ? 'scanning' : ''
     ].filter(Boolean).join(', ');
-    const detail = record.detail < 0 ? String(record.detail) :
-        `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    const detail = [3, 4].includes(record.stage)
+        ? bleConnectionDetailText(record.stage, record.detail)
+        : record.detail < 0 ? String(record.detail)
+            : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    const reason = ({
+        1: 'local setup', 3: 'identity rejected',
+        5: 'GATT/handshake failure', 6: 'GAP failure'
+    } as Record<number, string>)[record.reason] ?? (record.reason ? `reason ${record.reason}` : '');
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
         bleDiagnosticCodeName(record.code),
         record.peerId ? `peer ${record.peerId}` : 'peer unknown',
         record.stage ? bleConnectionStageName(record.stage) : '',
-        record.reason ? `reason ${record.reason}` : '',
-        record.detail || record.code === 25 ? `detail ${detail}` : '',
+        reason,
+        record.detail || record.code === 25 ? detail : '',
         `${record.activeLinks}/8 links`,
         state
     ].filter(Boolean).join(' · ');
