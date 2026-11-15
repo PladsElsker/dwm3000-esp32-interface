@@ -116,7 +116,8 @@ class Manager {
   uint16_t connectedPeerId() const { return connectedPeerId_; }
   uint16_t negotiatedMtu() const;
 
-  // NimBLE callback entry points; all application work is deferred to poll().
+  // NimBLE callback entry points; trace writes are bounded and connection
+  // state-machine work is deferred to poll().
   void notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_t addressType);
   void noteServerConnected(uint16_t connectionHandle);
   void noteServerDisconnected(uint16_t connectionHandle, int reason);
