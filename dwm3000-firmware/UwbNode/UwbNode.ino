@@ -2031,9 +2031,9 @@ void setup() {
   UartTransport.name = "UART1";
   loadConfig();
   if (!ble.begin(cfg.deviceId) || !ble.configure(bleCfg)) {
-    rememberError(ERR_INTERNAL);
+    rememberError(ERR_INTERNAL, ERROR_SUBSYSTEM_BLE, 0, OP_START_BLE);
   } else if (bleCfg.autoStart && bleCfg.mode != UwbBle::MODE_IDLE && !ble.start()) {
-    rememberError(ERR_INTERNAL);
+    rememberError(ERR_INTERNAL, ERROR_SUBSYSTEM_BLE, 0, OP_START_BLE);
   }
 
   if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE, ERROR_SUBSYSTEM_UWB);
