@@ -1348,9 +1348,27 @@ static void processRequest(HostTransport &source, const Frame &q) {
 
     case OP_GET_LAST_ERROR: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = lastErrorSubsystem; out[1] = lastErrorCode;
-      putU64(out + 2, lastErrorMonoUs); putU16(out + 10, lastErrorPeerId);
-      putU32(out + 12, lastErrorContext); outLen = 16; break;
+      uint8_t subsystem = lastErrorSubsystem;
+      uint8_t code = lastErrorCode;
+      uint64_t errorTimeUs = lastErrorMonoUs;
+      uint16_t peerId = lastErrorPeerId;
+      uint32_t context = lastErrorContext;
+      UwbBle::LastError bleError;
+      if (ble.getLastError(bleError)) {
+        const uint64_t bleErrorTimeUs = uint64_t(bleError.uptimeMs) * 1000ULL;
+        if (bleErrorTimeUs > errorTimeUs) {
+          subsystem = ERROR_SUBSYSTEM_BLE;
+          code = bleError.code;
+          errorTimeUs = bleErrorTimeUs;
+          peerId = bleError.peerId;
+          context = uint32_t(bleError.reason) |
+                    (uint32_t(bleError.stage) << 8) |
+                    (uint32_t(static_cast<uint16_t>(bleError.detail)) << 16);
+        }
+      }
+      out[0] = subsystem; out[1] = code;
+      putU64(out + 2, errorTimeUs); putU16(out + 10, peerId);
+      putU32(out + 12, context); outLen = 16; break;
     }
 
     case OP_GET_CONFIG: {
