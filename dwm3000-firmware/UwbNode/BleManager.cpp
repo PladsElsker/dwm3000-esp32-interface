@@ -865,14 +865,16 @@ void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
   Link* link = nullptr;
   // Prefer the in-progress Peripheral link when an incoming identity is
   // rejected, even if another connected link already has the same peer ID.
-  for (auto& candidate : links_) {
-    if (candidate.used && candidate.serverSide && !candidate.connected &&
-        (!peerId || candidate.peerId == peerId)) {
-      link = &candidate;
-      break;
+  if (peerId) {
+    for (auto& candidate : links_) {
+      if (candidate.used && candidate.serverSide && !candidate.connected &&
+          candidate.peerId == peerId) {
+        link = &candidate;
+        break;
+      }
     }
+    if (!link) link = findLink(peerId);
   }
-  if (!link && peerId) link = findLink(peerId);
   if (link) {
     link->lastFailureReason = reason;
     link->lastFailureStage = stage;
