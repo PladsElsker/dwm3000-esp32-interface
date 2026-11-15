@@ -169,7 +169,7 @@ function decodeTraceEnvelope(payload:number[], source:number, recordSize:number)
    return [count, ...payload.slice(3)];
 }
 function decodeRadioTrace(p:number[]) {
-  if (!p.length) throw new Error('GET_RADIO_TRACE returned an empty payload.');
+  if (!p.length) throw new Error('GET_TRACE radio source returned an empty payload.');
   const count = p[0];
   if (count > 8 || p.length !== 1 + count * 28) throw new Error(`Invalid radio trace payload: count=${count}, bytes=${p.length}. Expected ${1 + count * 28}.`);
   return Array.from({length:count},(_,i) => {
@@ -187,11 +187,11 @@ async function loadRadioTrace() {
   } catch(e:any) {
     const message=String(e); traceError.value=message;
     if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceSupported.value=false;
-    log(`GET_RADIO_TRACE failed · ${message}`);
+    log(`GET_TRACE radio source failed · ${message}`);
   } finally { traceBusy.value=false; }
 }
 function decodeRadioTraceDetail(p:number[]) {
-  if (!p.length) throw new Error('GET_RADIO_TRACE_DETAIL returned an empty payload.');
+  if (!p.length) throw new Error('GET_TRACE detailed-radio source returned an empty payload.');
   const count=p[0];
   if (count>8 || p.length!==1+count*44) throw new Error(`Invalid detailed trace payload: count=${count}, bytes=${p.length}. Expected ${1+count*44}.`);
   return Array.from({length:count},(_,i)=>{
@@ -213,12 +213,12 @@ async function loadRadioTraceDetail() {
     radioTraceDetail.value=decodeRadioTraceDetail(p);
     traceDetailSupported.value=true;
     traceDetailFetchedAt.value=new Date().toLocaleString();
-    log(`GET_RADIO_TRACE_DETAIL · ${radioTraceDetail.value.length} record(s)`);
+    log(`GET_TRACE detailed-radio · ${radioTraceDetail.value.length} record(s)`);
     if (!radioTraceDetail.value.length) notice.value='Detailed TX trace read successfully; no failed TX-start records are retained.';
   } catch(e:any) {
     const message=String(e); traceDetailError.value=message;
     if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceDetailSupported.value=false;
-    log(`GET_RADIO_TRACE_DETAIL failed · ${message}`);
+    log(`GET_TRACE detailed-radio source failed · ${message}`);
   } finally { traceDetailBusy.value=false; }
 }
 const failureHintName=(n:number)=>({0:'Unknown / inconclusive',1:'HPDWARN observed after call',2:'TXERR state observed after call'} as Record<number,string>)[n] ?? `Unknown hint ${n}`;
