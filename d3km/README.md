@@ -7,10 +7,10 @@ D3KM is a Tauri 2 desktop application built with Vue 3 and TypeScript. It config
 - Connects to a node over USB serial and displays connection and device status.
 - Configures node identity, UWB ranging settings and Bluetooth transport settings.
 - Starts ranging operations and displays measurements and history.
-- Configures BLE role and peer policy, toggles the persisted Bluetooth enabled state, monitors up to eight peer links, and sends peer-directed test messages through the firmware.
+- Configures BLE role and peer policy, sets whether Bluetooth automatically starts after boot, controls the current runtime enabled state, monitors up to eight peer links, and sends peer-directed test messages through the firmware.
 - Displays device diagnostics and protocol events.
 
-The Rust backend owns the serial connection and protocol transactions. The Vue frontend configures the BLE network, toggles its persisted enabled state, and displays per-peer connection state. BLE discovery, connections, reconnection, and unicast routing are performed autonomously by the node firmware; D3KM does not establish or manage direct BLE links. An empty peer list selects open mode; a non-empty list acts as an allow-list.
+The Rust backend owns the serial connection and protocol transactions. The Vue frontend configures the BLE network, persists the independent auto-start-after-boot preference, controls the current runtime enabled state, and displays per-peer connection state. BLE discovery, connections, reconnection, and unicast routing are performed autonomously by the node firmware; D3KM does not establish or manage direct BLE links. An empty peer list selects open mode; a non-empty list acts as an allow-list.
 
 ## Requirements
 
