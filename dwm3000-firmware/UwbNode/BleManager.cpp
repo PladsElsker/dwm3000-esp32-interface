@@ -858,28 +858,45 @@ void Manager::serviceResultRetry(Link& link) {
   sendMessageResult(link.result.messageId, link.result.status);
 }
 
+const Manager::PeerFailure* Manager::findPeerFailure(uint16_t peerId) const {
+  for (const auto& failure : peerFailures_)
+    if (failure.used && failure.peerId == peerId) return &failure;
+  return nullptr;
+}
+
+void Manager::clearPeerFailure(uint16_t peerId) {
+  for (auto& failure : peerFailures_) {
+    if (failure.used && failure.peerId == peerId) {
+      failure = PeerFailure();
+      return;
+    }
+  }
+}
+
 void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
-                                        uint8_t stage, int16_t detail) {
-  // Keep the original peer_id + reason prefix; stage and signed detail extend
-  // the event for hosts that can display connection diagnostics.
-  Link* link = nullptr;
-  // Prefer the in-progress Peripheral link when an incoming identity is
-  // rejected, even if another connected link already has the same peer ID.
+                                    uint8_t stage, int16_t detail) {
+  // Keep bounded diagnostic history outside the live connection slots so
+  // repeated rejected Peripheral handshakes cannot consume link capacity.
   if (peerId) {
-    for (auto& candidate : links_) {
-      if (candidate.used && candidate.serverSide && !candidate.connected &&
-          candidate.peerId == peerId) {
-        link = &candidate;
+    PeerFailure* record = nullptr;
+    for (auto& failure : peerFailures_) {
+      if (failure.used && failure.peerId == peerId) {
+        record = &failure;
         break;
       }
+      if (!failure.used && !record) record = &failure;
     }
-    if (!link) link = findLink(peerId);
+    if (!record) {
+      record = &peerFailures_[peerFailureReplaceIndex_];
+      peerFailureReplaceIndex_ = (peerFailureReplaceIndex_ + 1) % MAX_PEERS;
+    }
+    record->used = true;
+    record->peerId = peerId;
+    record->reason = reason;
+    record->stage = stage;
+    record->detail = detail;
   }
-  if (link) {
-    link->lastFailureReason = reason;
-    link->lastFailureStage = stage;
-    link->lastFailureDetail = detail;
-  }
+
   uint8_t payload[6]{};
   writeU16(payload, peerId);
   payload[2] = reason;
@@ -1005,19 +1022,7 @@ void Manager::processLinkEvents() {
         link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
       if (config_.mode == MODE_PERIPHERAL && link.serverSide) {
         advertisingRestartPending_ = true;
-        const uint16_t peer = link.peerId;
-        const uint8_t failureReason = link.lastFailureReason;
-        const uint8_t failureStage = link.lastFailureStage;
-        const int16_t failureDetail = link.lastFailureDetail;
         link = Link();
-        // Retain the most recent rejected/failed peer handshake for GET_PEER_STATUS.
-        if (peer && failureReason) {
-          link.used = true;
-          link.peerId = peer;
-          link.lastFailureReason = failureReason;
-          link.lastFailureStage = failureStage;
-          link.lastFailureDetail = failureDetail;
-        }
       }
     }
 
@@ -1031,14 +1036,6 @@ void Manager::processLinkEvents() {
     if (link.used && link.identityPending) {
       link.identityPending = false;
       const uint16_t peer = link.pendingIdentity;
-      // Replace a retained diagnostic-only record for this peer with the
-      // current incoming link so GET_PEER_STATUS resolves to the live link.
-      for (auto& other : links_) {
-        if (&other != &link && other.used && !other.serverSide &&
-            !other.connected && !other.connecting && other.peerId == peer) {
-          other = Link();
-        }
-      }
       bool duplicate = false;
       for (const auto& other : links_)
         if (&other != &link && other.used && other.connected && other.peerId == peer) duplicate = true;
@@ -1050,8 +1047,7 @@ void Manager::processLinkEvents() {
         if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
       } else {
         link.peerId = peer; link.connected = true; link.connecting = false;
-        link.lastFailureReason = link.lastFailureStage = 0;
-        link.lastFailureDetail = 0;
+        clearPeerFailure(peer);
         link.mtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(link.connectionHandle);
         uint8_t payload[2]; writeU16(payload, peer);
         enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -1103,8 +1099,7 @@ void Manager::processLinkEvents() {
         fail(5, FAILURE_STAGE_NOTIFY_SUBSCRIBE, -1); continue;
       }
       link.remoteRx = remoteRx; link.remoteTx = remoteTx;
-      link.lastFailureReason = link.lastFailureStage = 0;
-      link.lastFailureDetail = 0;
+      clearPeerFailure(link.peerId);
       link.mtu = client->getMTU(); link.connected = true; link.connecting = false;
       uint8_t payload[2]; writeU16(payload, link.peerId);
       enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -1130,9 +1125,6 @@ bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
   if (link) {
     status.connected = link->connected ? 1 : 0;
     status.mtu = link->connected ? link->mtu : 23;
-    status.lastFailureReason = link->lastFailureReason;
-    status.lastFailureStage = link->lastFailureStage;
-    status.lastFailureDetail = link->lastFailureDetail;
     if (link->connected) status.state = PEER_CONNECTED;
     else if (link->connecting) status.state = link->serverSide ? PEER_HANDSHAKING : PEER_CONNECTING;
     else if (link->nextAttemptMs &&
@@ -1152,6 +1144,11 @@ bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
         }
       }
     }
+  }
+  if (const PeerFailure* failure = findPeerFailure(peerId)) {
+    status.lastFailureReason = failure->reason;
+    status.lastFailureStage = failure->stage;
+    status.lastFailureDetail = failure->detail;
   }
   return true;
 }
