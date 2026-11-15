@@ -210,6 +210,12 @@ bool Manager::begin(uint16_t localDeviceId) {
 #else
   recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 3, -1);
 #endif
+#if defined(MYNEWT_VAL_BLE_MAX_CONNECTIONS)
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 4,
+                   static_cast<int16_t>(MYNEWT_VAL_BLE_MAX_CONNECTIONS));
+#else
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 4, -1);
+#endif
   s_manager = this;
   if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) {
     recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 2, -1);
