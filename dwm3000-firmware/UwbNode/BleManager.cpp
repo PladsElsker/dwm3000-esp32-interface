@@ -862,6 +862,20 @@ void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
                                         uint8_t stage, int16_t detail) {
   // Keep the original peer_id + reason prefix; stage and signed detail extend
   // the event for hosts that can display connection diagnostics.
+  Link* link = peerId ? findLink(peerId) : nullptr;
+  if (!link && !peerId) {
+    for (auto& candidate : links_) {
+      if (candidate.used && candidate.serverSide && !candidate.connected) {
+        link = &candidate;
+        break;
+      }
+    }
+  }
+  if (link) {
+    link->lastFailureReason = reason;
+    link->lastFailureStage = stage;
+    link->lastFailureDetail = detail;
+  }
   uint8_t payload[6]{};
   writeU16(payload, peerId);
   payload[2] = reason;
@@ -1017,6 +1031,8 @@ void Manager::processLinkEvents() {
         if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
       } else {
         link.peerId = peer; link.connected = true; link.connecting = false;
+        link.lastFailureReason = link.lastFailureStage = 0;
+        link.lastFailureDetail = 0;
         link.mtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(link.connectionHandle);
         uint8_t payload[2]; writeU16(payload, peer);
         enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -1066,6 +1082,8 @@ void Manager::processLinkEvents() {
         fail(5, FAILURE_STAGE_NOTIFY_SUBSCRIBE, -1); continue;
       }
       link.remoteRx = remoteRx; link.remoteTx = remoteTx;
+      link.lastFailureReason = link.lastFailureStage = 0;
+      link.lastFailureDetail = 0;
       link.mtu = client->getMTU(); link.connected = true; link.connecting = false;
       uint8_t payload[2]; writeU16(payload, link.peerId);
       enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -1091,6 +1109,9 @@ bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
   if (link) {
     status.connected = link->connected ? 1 : 0;
     status.mtu = link->connected ? link->mtu : 23;
+    status.lastFailureReason = link->lastFailureReason;
+    status.lastFailureStage = link->lastFailureStage;
+    status.lastFailureDetail = link->lastFailureDetail;
     if (link->connected) status.state = PEER_CONNECTED;
     else if (link->connecting) status.state = link->serverSide ? PEER_HANDSHAKING : PEER_CONNECTING;
     else if (link->nextAttemptMs &&
