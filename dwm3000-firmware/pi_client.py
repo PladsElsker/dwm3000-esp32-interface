@@ -170,10 +170,11 @@ def encode_ble_config(args: argparse.Namespace) -> bytes:
         raise ValueError("BLE retries must be 0..5")
     if not 100 <= args.ble_rx_message_timeout_ms <= 2000:
         raise ValueError("BLE RX message timeout must be 100..2000 ms")
+    ble_auto_start = bool(getattr(args, "ble_auto_start", False))
     fixed = struct.pack(
         "<BHHHBHHBHB",
         mode, args.ble_advertising_interval_ms, args.ble_scan_interval_ms,
-        args.ble_scan_window_ms, 0,
+        args.ble_scan_window_ms, int(ble_auto_start),
         args.ble_retry_interval_ms, args.ble_connection_timeout_ms,
         args.ble_retries, args.ble_rx_message_timeout_ms, len(peers))
     return fixed + (struct.pack("<" + "H" * len(peers), *peers) if peers else b"")
@@ -182,13 +183,13 @@ def encode_ble_config(args: argparse.Namespace) -> bytes:
 def decode_ble_config(payload: bytes) -> dict:
     if len(payload) < 16:
         return {}
-    mode, adv, scan_i, scan_w, _reserved, retry_i, conn_timeout, retries, rx_timeout, count = struct.unpack_from(
+    mode, adv, scan_i, scan_w, auto_start, retry_i, conn_timeout, retries, rx_timeout, count = struct.unpack_from(
         "<BHHH BHH BHB", payload)
     if count > 8 or len(payload) != 16 + count * 2:
         raise ValueError("invalid BLE config extension length")
     peers = list(struct.unpack_from("<" + "H" * count, payload, 16)) if count else []
-    if mode not in BLE_MODE_NAMES:
-        raise ValueError("invalid BLE mode")
+    if mode not in BLE_MODE_NAMES or auto_start not in (0, 1):
+        raise ValueError("invalid BLE mode or auto-start flag")
     if not 20 <= adv <= 10240 or not 10 <= scan_i <= 10240 or not 10 <= scan_w <= scan_i:
         raise ValueError("invalid BLE advertising or scan interval")
     if not 100 <= retry_i <= 60000 or not 100 <= conn_timeout <= 30000:
@@ -199,7 +200,7 @@ def decode_ble_config(payload: bytes) -> dict:
         raise ValueError("invalid BLE peer list")
     return {"ble_mode": BLE_MODE_NAMES.get(mode, mode), "ble_advertising_interval_ms": adv,
             "ble_scan_interval_ms": scan_i, "ble_scan_window_ms": scan_w,
-            "ble_retry_interval_ms": retry_i, "ble_connection_timeout_ms": conn_timeout,
+            "ble_auto_start": bool(auto_start), "ble_retry_interval_ms": retry_i, "ble_connection_timeout_ms": conn_timeout,
             "ble_max_retries": retries,
             "ble_rx_message_timeout_ms": rx_timeout, "ble_peers": peers}
 
@@ -364,6 +365,8 @@ def parse_args():
     p.add_argument("--ble-advertising-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-window-ms", type=int, default=80)
+    p.add_argument("--ble-auto-start", action="store_true",
+                   help="automatically start the configured BLE role after boot")
     p.add_argument("--ble-retry-interval-ms", type=int, default=1000,
                    help="delay between automatic connection attempts (100..60000 ms)")
     p.add_argument("--ble-connection-timeout-ms", type=int, default=5000)
@@ -379,6 +382,8 @@ def parse_args():
     p.add_argument("--ble-mode", choices=BLE_MODE_NAMES.values(), default="idle")
     p.add_argument("--ble-advertising-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-interval-ms", type=int, default=160); p.add_argument("--ble-scan-window-ms", type=int, default=80)
+    p.add_argument("--ble-auto-start", action="store_true",
+                   help="automatically start the configured BLE role after boot")
     p.add_argument("--ble-retry-interval-ms", type=int, default=1000,
                    help="delay between automatic connection attempts (100..60000 ms)")
     p.add_argument("--ble-connection-timeout-ms", type=int, default=5000)
