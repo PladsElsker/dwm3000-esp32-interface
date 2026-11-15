@@ -598,7 +598,8 @@ void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_
 void Manager::noteServerConnected(uint16_t handle) {
   const uint8_t active = activeConnectionCount();
   if (!enabled_ || config_.mode != MODE_PERIPHERAL || active >= MAX_ACTIVE_CONNECTIONS) {
-    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, 1, 0, active);
+    const uint8_t rejectReason = !enabled_ ? 1 : config_.mode != MODE_PERIPHERAL ? 2 : 3;
+    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, rejectReason, 0, active);
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
@@ -608,12 +609,12 @@ void Manager::noteServerConnected(uint16_t handle) {
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
-  recordDiagnostic(DIAG_SERVER_CONNECTED, 0, 0, 0,
-                   static_cast<int16_t>(handle));
   link->connectionHandle = handle;
   link->connectStartedMs = millis();
   link->mtu = 23;
   link->connecting = true; // Count unauthenticated server links against the eight-link limit.
+  recordDiagnostic(DIAG_SERVER_CONNECTED, 0, 0, 0,
+                   static_cast<int16_t>(handle));
   advertisingRestartPending_ = true;
 }
 
