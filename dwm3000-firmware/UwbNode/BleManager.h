@@ -119,7 +119,7 @@ struct Diagnostics {
 
 struct LastError {
   bool valid = false;
-  uint32_t uptimeMs = 0;
+  uint64_t monotonicUs = 0;
   uint8_t code = 0;
   uint16_t peerId = 0;
   uint8_t reason = 0;
