@@ -157,6 +157,17 @@ const traceBusy = ref(false);
 const traceEventName = (n:number) => ({1:'dwt_starttx() failed',2:'dwt_rxenable() failed',3:'TXFRS completion timeout',4:'DW3000 RX error bits'} as Record<number,string>)[n] ?? `Unknown event ${n}`;
 const radioFunctionName = (n:number) => ({0xe0:'POLL',0xe1:'RESP',0xe2:'FINAL',0xe3:'REPORT'} as Record<number,string>)[n] ?? hex(n,2);
 const radioStateName = (n:number) => ({0:'READY',1:'RX_LISTEN',2:'WAIT_RESP',3:'WAIT_FINAL'} as Record<number,string>)[n] ?? `State ${n}`;
+function decodeTraceEnvelope(payload:number[], source:number, recordSize:number) {
+   if (payload.length < 3) throw new Error('GET_TRACE returned a truncated response header.');
+   if (payload[0] !== source || payload[1] !== recordSize) {
+     throw new Error(`GET_TRACE header mismatch: source=${payload[0]}, record size=${payload[1]}.`);
+   }
+   const count = payload[2];
+   if (payload.length !== 3 + count * recordSize) {
+     throw new Error(`GET_TRACE payload length mismatch: ${payload.length} bytes for ${count} record(s) of ${recordSize} bytes.`);
+   }
+   return [count, ...payload.slice(3)];
+}
 function decodeRadioTrace(p:number[]) {
   if (!p.length) throw new Error('GET_RADIO_TRACE returned an empty payload.');
   const count = p[0];
@@ -169,9 +180,9 @@ function decodeRadioTrace(p:number[]) {
 async function loadRadioTrace() {
   traceBusy.value=true; traceError.value='';
   try {
-    const p=await cmd(0x36);
+    const p=decodeTraceEnvelope(await cmd(0x38, [0]), 0, 28);
     radioTrace.value=decodeRadioTrace(p); traceSupported.value=true; traceFetchedAt.value=new Date().toLocaleString();
-    log(`GET_RADIO_TRACE · ${radioTrace.value.length} record(s)`);
+    log(`GET_TRACE · radio · ${radioTrace.value.length} record(s)`);
     if (!radioTrace.value.length) notice.value='Radio trace read successfully; no failure records are retained.';
   } catch(e:any) {
     const message=String(e); traceError.value=message;
@@ -198,7 +209,7 @@ function decodeRadioTraceDetail(p:number[]) {
 async function loadRadioTraceDetail() {
   traceDetailBusy.value=true; traceDetailError.value='';
   try {
-    const p=await cmd(0x37);
+    const p=decodeTraceEnvelope(await cmd(0x38, [1]), 1, 44);
     radioTraceDetail.value=decodeRadioTraceDetail(p);
     traceDetailSupported.value=true;
     traceDetailFetchedAt.value=new Date().toLocaleString();
@@ -212,7 +223,7 @@ async function loadRadioTraceDetail() {
 }
 const failureHintName=(n:number)=>({0:'Unknown / inconclusive',1:'HPDWARN observed after call',2:'TXERR state observed after call'} as Record<number,string>)[n] ?? `Unknown hint ${n}`;
 function buildDebugReport() {
-  return { reportFormat:'D3KM device debug report', reportVersion:3, protocolSpecVersion:'1.4', capturedAt:new Date().toISOString(), port:selectedPort.value, appProtocolVersion:1, device:{ info:device.info, status:device.status, savedConfig:device.config, savedTargets:device.savedTargets, runtimeConfig:device.runtimeConfig, runtimeSchedule:device.schedule, runtimeTargets:device.targets, stats:device.stats, diagnostics:device.diagnostics, lastError:device.lastError }, bluetooth:{ supported:ble.supported, runtime:{ ...ble.runtime }, runtimeConfig:cloneBleConfig(ble.runtimeConfig), savedConfig:cloneBleConfig(ble.savedConfig), peerStatuses:ble.peerStatuses.map(item => ({ ...item })), discoveredPeers:[...ble.discoveredPeers], receivedCount:ble.inbox.length, sentCount:ble.outgoing.length, incomingMessageMetadata:ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata:ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, radioTrace:{ supported:traceSupported.value, fetchedAt:traceFetchedAt.value, records:radioTrace.value }, radioTraceDetail:{ supported:traceDetailSupported.value, fetchedAt:traceDetailFetchedAt.value, records:radioTraceDetail.value }, antennaCalibration:{ phase:calibration.phase, referenceId:calibration.referenceId, requestedDelay:calibration.requestedDelay, appliedTx:calibration.appliedTx, appliedRx:calibration.appliedRx, savedTx:calibration.savedTx, savedRx:calibration.savedRx, averageMm:calibration.averageMm, latestMm:calibration.latestMm, windowSize:CAL_WINDOW_SIZE, validSamples:calibration.validSamples, failedSamples:calibration.failedSamples, isSaved:calibration.isSaved }, recentEvents:events.value.slice(0,40), recentMeasurements:measurements.value.slice(0,20) };
+  return { reportFormat:'D3KM device debug report', reportVersion:3, protocolSpecVersion:'2.2', capturedAt:new Date().toISOString(), port:selectedPort.value, appProtocolVersion:1, device:{ info:device.info, status:device.status, savedConfig:device.config, savedTargets:device.savedTargets, runtimeConfig:device.runtimeConfig, runtimeSchedule:device.schedule, runtimeTargets:device.targets, stats:device.stats, diagnostics:device.diagnostics, lastError:device.lastError }, bluetooth:{ supported:ble.supported, runtime:{ ...ble.runtime }, runtimeConfig:cloneBleConfig(ble.runtimeConfig), savedConfig:cloneBleConfig(ble.savedConfig), peerStatuses:ble.peerStatuses.map(item => ({ ...item })), discoveredPeers:[...ble.discoveredPeers], receivedCount:ble.inbox.length, sentCount:ble.outgoing.length, incomingMessageMetadata:ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata:ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, radioTrace:{ supported:traceSupported.value, fetchedAt:traceFetchedAt.value, records:radioTrace.value }, radioTraceDetail:{ supported:traceDetailSupported.value, fetchedAt:traceDetailFetchedAt.value, records:radioTraceDetail.value }, antennaCalibration:{ phase:calibration.phase, referenceId:calibration.referenceId, requestedDelay:calibration.requestedDelay, appliedTx:calibration.appliedTx, appliedRx:calibration.appliedRx, savedTx:calibration.savedTx, savedRx:calibration.savedRx, averageMm:calibration.averageMm, latestMm:calibration.latestMm, windowSize:CAL_WINDOW_SIZE, validSamples:calibration.validSamples, failedSamples:calibration.failedSamples, isSaved:calibration.isSaved }, recentEvents:events.value.slice(0,40), recentMeasurements:measurements.value.slice(0,20) };
 }
 async function copyDebugReport() {
   try { await navigator.clipboard.writeText(JSON.stringify(buildDebugReport(),null,2)); notice.value='Debug report copied to clipboard'; log('Debug report copied'); }
@@ -273,14 +284,15 @@ function decodeSavedConfig(p: number[]) {
     if (p.length < 19) throw new Error(`GET_SAVED_CONFIG payload too short: ${p.length} bytes.`);
     const count = p[17];
     const baseLength = 19 + count * 2;
-    if (count > 16 || p.length < baseLength) throw new Error(`Invalid GET_SAVED_CONFIG payload: target count ${count}, length ${p.length}.`);
-    const bleConfigAvailable = p.length > baseLength;
-    const bleConfig = bleConfigAvailable ? decodeBleConfigExtension(p, baseLength) : defaultBleConfig();
+    if (count > 16 || p.length < baseLength + 16) {
+        throw new Error(`Invalid GET_SAVED_CONFIG payload: target count ${count}, length ${p.length}; complete BLE configuration is required.`);
+    }
+    const bleConfig = decodeBleConfigExtension(p, baseLength);
     return {
         deviceId: get16(p, 0), panId: get16(p, 2), channel: p[4], tx: get16(p, 5), rx: get16(p, 7),
         period: get32(p, 9), timeout: get16(p, 13), retries: p[15], role: p[16],
         targets: Array.from({ length: count }, (_, i) => get16(p, 18 + i * 2)),
-        autoStart: p[18 + count * 2] === 1, bleConfig, bleConfigAvailable
+        autoStart: p[18 + count * 2] === 1, bleConfig, bleConfigAvailable: true
     };
 }
 function readString(p: number[]) { return String.fromCharCode(...p) }
@@ -664,11 +676,11 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
     ].filter(Boolean).join(' · ');
 }
 function decodeBleDiagnosticTrace(payload: number[]): BleDiagnosticRecord[] {
-    if (!payload.length) throw new Error('GET_BLE_DIAGNOSTIC_TRACE returned an empty payload.');
+    if (!payload.length) throw new Error('GET_TRACE returned an empty payload.');
     const count = payload[0];
     const recordSize = 13;
     if (count > 32 || payload.length !== 1 + count * recordSize) {
-        throw new Error(`GET_BLE_DIAGNOSTIC_TRACE returned ${payload.length} bytes for ${count} record(s).`);
+        throw new Error(`GET_TRACE returned ${payload.length} bytes for ${count} record(s).`);
     }
     return Array.from({ length: count }, (_, index) => {
         const offset = 1 + index * recordSize;
@@ -689,7 +701,7 @@ async function refreshBleDiagnosticTrace(silent = false) {
     if (!connected.value || bleDiagnosticTraceBusy.value) return;
     bleDiagnosticTraceBusy.value = true;
     try {
-        const payload = await cmd(0x59);
+        const payload = decodeTraceEnvelope(await cmd(0x38, [2]), 2, 13);
         bleDiagnosticTrace.value = decodeBleDiagnosticTrace(payload);
         bleDiagnosticTraceSupported.value = true;
         bleDiagnosticTraceError.value = '';
@@ -1055,8 +1067,8 @@ async function refreshAll() {
         ]);
         const saved = decodeSavedConfig(savedPayload);
         applyBleStatusPayload(s);
-        const runtimeBleConfig = runtime.length >= 32 ? decodeBleConfigExtension(runtime, 16) : defaultBleConfig();
-        ble.supported = ble.supported && runtime.length >= 32 && saved.bleConfigAvailable;
+        const runtimeBleConfig = decodeBleConfigExtension(runtime, 16);
+        ble.supported = i[12] === 1 && s.length >= 27 && runtime.length >= 32 && saved.bleConfigAvailable;
         Object.assign(ble.runtimeConfig, cloneBleConfig(runtimeBleConfig));
         Object.assign(ble.savedConfig, cloneBleConfig(saved.bleConfig));
         Object.assign(bleDraft, cloneBleConfig(saved.bleConfig));
@@ -1065,7 +1077,10 @@ async function refreshAll() {
         ble.discoveredPeers = [];
         device.info = {
             version: `${i[0]}.${i[1]}.${i[2]}`, protocol: i[3], id: get16(i, 4),
-            maxTargets: i[6], history: get16(i, 7), radio: i[9], maxPayload: get16(i, 10)
+            maxTargets: i[6], history: get16(i, 7), radio: i[9], maxPayload: get16(i, 10),
+            bleSupported: i[12] === 1, bleModeMask: i[13], maxBlePeers: i[14],
+            maxBleConnections: i[15], maxBleMessageLength: get16(i, 16),
+            maxBleMtu: get16(i, 18), bleProtocolVersion: i[20]
         };
         device.status = {
             role: s[0], ranging: s[1] === 1, radio_ready: s[2] === 1, standby: s[3] === 1,
@@ -1082,10 +1097,15 @@ async function refreshAll() {
             retries: saved.retries, role: saved.role, autoStart: saved.autoStart
         };
         device.savedTargets = [...saved.targets];
+        if (st.length !== 68) throw new Error(`GET_STATISTICS returned ${st.length} bytes; expected 68.`);
         device.stats = {
             ok: get32(st), failed: get32(st, 4), rx: get32(st, 8), tx: get32(st, 12),
             timeouts: get32(st, 16), protocol: get32(st, 20), overflows: get32(st, 24),
-            overwrites: get32(st, 28), malformed: get32(st, 32), duplicates: get32(st, 36)
+            overwrites: get32(st, 28), malformed: get32(st, 32), duplicates: get32(st, 36),
+            bleMessagesSent: get32(st, 40), bleMessagesReceived: get32(st, 44),
+            bleTxErrors: get32(st, 48), bleRxErrors: get32(st, 52),
+            bleConnectionFailures: get32(st, 56), bleRxQueueOverflows: get32(st, 60),
+            bleEventQueueOverflows: get32(st, 64)
         };
         // These commands intentionally describe current RAM state for the Ranging test page.
         device.targets = Array.from({ length: t[0] }, (_, j) => get16(t, 1 + j * 2));
@@ -1093,11 +1113,19 @@ async function refreshAll() {
             period: get32(sc), timeout: get16(sc, 4), retries: sc[6], targetCount: sc[7],
             queued: sc[8], active: sc[9] === 1, effective: get32(sc, 10), average: get32(sc, 14)
         };
+        if (d.length !== 29) throw new Error(`GET_DIAGNOSTICS returned ${d.length} bytes; expected 29.`);
         device.diagnostics = {
             radio: get32(d), live: get32(d, 4), malformed: get32(d, 8), rx: get32(d, 12),
-            tx: get32(d, 16), state: d[20], standby: d[21] === 1
+            tx: get32(d, 16), state: d[20], standby: d[21] === 1,
+            bleMode: d[22], bleEnabled: d[23] === 1, bleAdvertising: d[24] === 1,
+            bleScanning: d[25] === 1, bleActiveLinks: d[26],
+            bleRxQueueDepth: d[27], bleEventQueueDepth: d[28]
         };
-        device.lastError = { code: le[0], time: get64(le, 1).toString() };
+        if (le.length !== 16) throw new Error(`GET_LAST_ERROR returned ${le.length} bytes; expected 16.`);
+        device.lastError = {
+            subsystem: le[0], code: le[1], time: get64(le, 2).toString(),
+            peerId: get16(le, 10), context: get32(le, 12)
+        };
         syncDraft();
         lastRefresh.value = new Date().toLocaleTimeString();
     } finally {
