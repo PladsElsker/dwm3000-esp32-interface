@@ -1378,7 +1378,8 @@ onMounted(async () => {
             polling = true;
             try {
                 await refreshStatus();
-                if (active.value === 'diagnostics' && Date.now() - lastBleDiagnosticTraceRefreshAt >= 1200) {
+                if (active.value === 'diagnostics' && bleDiagnosticTraceSupported.value !== false &&
+                    Date.now() - lastBleDiagnosticTraceRefreshAt >= 1200) {
                     lastBleDiagnosticTraceRefreshAt = Date.now();
                     await refreshBleDiagnosticTrace(true);
                 }
