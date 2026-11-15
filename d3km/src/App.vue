@@ -438,17 +438,22 @@ function bleConnectionStageName(stage: number) {
         12: 'Peripheral identity validation', 13: 'Peripheral handshake timeout'
     } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
 }
+function bleConnectionDetailText(stage: number, detail: number) {
+    if (detail === -1 || (detail === 0 && [6, 7, 10, 11, 13].includes(stage))) return 'detail unavailable';
+    const hexDetail = `0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
+    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail}`;
+    if (stage === 9) return `reported peer ID ${hexDetail}`;
+    if (stage === 12) return `validation code ${detail}`;
+    return `detail ${hexDetail}`;
+}
 function bleConnectionFailureText(status?: BlePeerStatus) {
     if (!status?.lastFailureReason) return '';
     const reason = ({
         1: 'Local connection setup failed', 3: 'Peer identity rejected',
-        4: 'Connection attempt timed out', 5: 'Peripheral handshake timed out',
-        6: 'GAP connection failed'
+        5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
     } as Record<number, string>)[status.lastFailureReason] ?? `Failure ${status.lastFailureReason}`;
-    const detail = status.lastFailureDetail === -1
-        ? ' · no status code'
-        : ` · status 0x${(status.lastFailureDetail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
-    return `${reason} · ${bleConnectionStageName(status.lastFailureStage)}${detail}`;
+    const detail = bleConnectionDetailText(status.lastFailureStage, status.lastFailureDetail);
+    return `${reason} · ${bleConnectionStageName(status.lastFailureStage)} · ${detail}`;
 }
 function bleErrorName(code: number, direction = 0) {
     const names: Record<number, string> = {
@@ -529,16 +534,14 @@ function handleEvent(e: FrameEvent) {
         const peerId = get16(p);
         const reason = ({
             1: 'Local setup failed', 3: 'Peer identity rejected',
-            4: 'Connection timed out', 5: 'Peripheral handshake timed out',
-            6: 'GAP connection failed'
+            5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
         } as Record<number, string>)[p[2]] ?? `Failure ${p[2]}`;
         if (p.length >= 6) {
             const detailRaw = get16(p, 4);
             const detail = detailRaw >= 0x8000 ? detailRaw - 0x10000 : detailRaw;
-            const code = detail === -1 ? 'status unavailable' :
-                `NimBLE status 0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
             const stage = bleConnectionStageName(p[3]);
-            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason} · ${stage} · ${code}`);
+            const detailText = bleConnectionDetailText(p[3], detail);
+            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason} · ${stage} · ${detailText}`);
         } else {
             log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason}`);
         }
