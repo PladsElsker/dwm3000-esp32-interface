@@ -36,7 +36,7 @@ struct Config {
   uint16_t scanIntervalMs = 160;
   uint16_t scanWindowMs = 80;
   uint16_t reconnectIntervalMs = 1000; // Automatic retry interval; no opt-in switch.
-  uint8_t enabled = 0;              // Persisted desired state, owned by firmware NVS.
+  uint8_t autoStart = 0;            // Persisted boot preference; independent of runtime enablement.
   uint16_t connectionTimeoutMs = 5000;
   uint8_t maxRetries = 1;              // Message-delivery retries only.
   uint16_t rxMessageTimeoutMs = 1000;
