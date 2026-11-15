@@ -229,9 +229,9 @@ Peer state values returned by `GET_PEER_STATUS` are:
 | 5 | `HANDSHAKING` | Internal Peripheral identity-validation phase; no peer ID is available for a status query yet |
 | 6 | `BACKOFF` | The next automatic connection attempt is pending |
 
-The 14-byte `GET_PEER_STATUS` response appends the most recent connection failure: `last_failure_reason:u8`, `last_failure_stage:u8`, and signed `last_failure_detail:i16`. The failure fields are zero until a failure is recorded and clear when the link connects successfully. For GAP failures, `last_failure_detail` contains the NimBLE host status code when available; `-1` means no status code was available.
+The 14-byte `GET_PEER_STATUS` response appends the most recent connection failure: `last_failure_reason:u8`, `last_failure_stage:u8`, and signed `last_failure_detail:i16`. The failure fields are zero until a failure is recorded and clear when the link connects successfully. For GAP failures, `last_failure_detail` contains the NimBLE host status code when available; `-1` means no status code was available. Stage 8 reports the peer ID read from the remote Device ID characteristic, and stage 11 reports the Peripheral identity-validation code.
 
-`BLE_CONNECTION_FAILED` preserves the peer ID and reason prefix and appends the stage and signed detail fields. Reasons are: `1` local setup failure, `3` peer identity rejection, `5` GATT or identity-handshake failure, and `6` GAP connection procedure failure. A peer ID of zero identifies a Peripheral-side handshake failure that occurred before a remote ID was accepted.
+`BLE_CONNECTION_FAILED` preserves the peer ID and reason prefix and appends the stage and signed detail fields. Reasons are: `1` local setup failure, `3` peer identity rejection, `5` GATT or identity-handshake failure, including Peripheral identity-handshake timeout, and `6` GAP connection procedure failure. A peer ID of zero identifies a Peripheral-side handshake failure that occurred before a remote ID was accepted.
 
 Connection failure stages are:
 
@@ -241,15 +241,14 @@ Connection failure stages are:
 | 2 | Allocate NimBLE client |
 | 3 | Start GAP connection procedure |
 | 4 | GAP connection result callback |
-| 5 | GAP connection timeout |
-| 6 | Discover GATT service |
-| 7 | Validate GATT characteristics |
-| 8 | Validate BLE protocol version |
-| 9 | Validate peer identity |
-| 10 | Write local device identity |
-| 11 | Subscribe to peer notifications |
-| 12 | Validate Peripheral-side peer identity |
-| 13 | Peripheral identity-handshake timeout |
+| 5 | Discover GATT service |
+| 6 | Validate GATT characteristics |
+| 7 | Validate BLE protocol version |
+| 8 | Validate peer identity |
+| 9 | Write local device identity |
+| 10 | Subscribe to peer notifications |
+| 11 | Validate Peripheral-side peer identity |
+| 12 | Peripheral identity-handshake timeout |
 
 Each peer link has independent transmit, receive/reassembly, unread-message, acknowledgement, and final-delivery state. There is one outgoing in-flight message and one unread complete incoming message per peer. Link and message state are volatile. Connections are re-established automatically while BLE remains enabled, but interrupted application messages are not replayed automatically.
 
