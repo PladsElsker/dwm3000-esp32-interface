@@ -363,7 +363,11 @@ void Manager::refreshConnectedSummary() {
 }
 
 bool Manager::start() {
-  if (!initialized_ || config_.mode == MODE_IDLE) return false;
+  if (!initialized_ || config_.mode == MODE_IDLE) {
+    recordDiagnostic(DIAG_START_FAILED, 0, 1, 0,
+                     static_cast<int16_t>(config_.mode));
+    return false;
+  }
   if (enabled_) return true;
   enabled_ = true;
   if (config_.mode == MODE_PERIPHERAL) {
@@ -403,6 +407,7 @@ bool Manager::start() {
     scanning_ = scan->start(0);
     if (!scanning_) {
       enabled_ = false;
+      recordDiagnostic(DIAG_SCAN_START_FAILED, 0, 3, 0, -1);
       recordDiagnostic(DIAG_START_FAILED, 0, 3, 2, -1);
       return false;
     }
@@ -1082,6 +1087,11 @@ void Manager::maintainHubConnections() {
   NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
   if (!scan) {
     scanning_ = false;
+    if (!scanStartFailureSeen_ || elapsed(millis(), lastScanStartFailureMs_, 2000)) {
+      scanStartFailureSeen_ = true;
+      lastScanStartFailureMs_ = millis();
+      recordDiagnostic(DIAG_SCAN_START_FAILED, 0, 3, 1, -1);
+    }
     return;
   }
 
