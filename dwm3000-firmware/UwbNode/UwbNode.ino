@@ -84,7 +84,7 @@ Preferences preferences;
 enum Opcode : uint8_t {
   OP_PING = 0x01, OP_GET_INFO = 0x02, OP_GET_STATUS = 0x03,
   OP_GET_STATS = 0x04, OP_CLEAR_STATS = 0x05, OP_GET_LAST_ERROR = 0x06,
-  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11, OP_SAVE_CONFIG = 0x12,
+  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11,
   OP_RESET_CONFIG = 0x13, OP_TIME_SYNC = 0x14,
   OP_GET_ANTENNA_DELAYS = 0x15, OP_SET_ANTENNA_DELAYS = 0x16,
   // Persistent configuration extensions. These keep NVS reads/writes separate
@@ -1454,16 +1454,6 @@ static void processRequest(HostTransport &source, const Frame &q) {
       if (!radioStandby) radioReady = radioInitialize();
       if (!radioReady) { error = ERR_RADIO_FAILURE; break; }
       outLen = 0;
-      break;
-    }
-
-    case OP_SAVE_CONFIG: {
-      // Deprecated: a generic RAM-to-NVS commit can accidentally persist a
-      // temporary Ranging-test role/configuration. Use OP_APPLY_SAVE_CONFIG
-      // with an explicit settings snapshot, or OP_SAVE_ANTENNA_DELAYS for
-      // the calibration wizard's narrowly scoped TX/RX persistence.
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      error = ERR_NOT_SUPPORTED;
       break;
     }
 
