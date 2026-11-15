@@ -226,7 +226,7 @@ Peer state values returned by `GET_PEER_STATUS` are:
 | 2 | `FOUND` | A matching peer advertisement has been discovered |
 | 3 | `CONNECTED` | The connection and identity handshake are complete |
 | 4 | `CONNECTING` | A Central connection attempt is in progress |
-| 5 | `HANDSHAKING` | A Peripheral connection is awaiting peer identity validation |
+| 5 | `HANDSHAKING` | Internal Peripheral identity-validation phase; no peer ID is available for a status query yet |
 | 6 | `BACKOFF` | The next automatic connection attempt is pending |
 
 Each peer link has independent transmit, receive/reassembly, unread-message, acknowledgement, and final-delivery state. There is one outgoing in-flight message and one unread complete incoming message per peer. Link and message state are volatile. Connections are re-established automatically while BLE remains enabled, but interrupted application messages are not replayed automatically.
