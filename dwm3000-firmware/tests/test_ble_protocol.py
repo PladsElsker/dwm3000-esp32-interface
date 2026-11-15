@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Host-side tests for the V2.1 BLE config and packet helpers."""
 import argparse
+import contextlib
 import importlib.util
+import io
 import pathlib
 import struct
 import sys
@@ -72,6 +74,40 @@ assert 0x55 not in module.OPS.values()
 assert module.OPS["start-ble"] == 0x52
 assert module.OPS["stop-ble"] == 0x53
 assert module.OPS["peer-status"] == 0x56
+
+# The CLI rejects removed connection-management and generic save commands,
+# and no longer accepts a reconnect-enable switch.
+original_argv = sys.argv
+for removed_command in ("ble-connect", "ble-disconnect", "save-config"):
+    sys.argv = ["pi_client.py", removed_command]
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            module.parse_args()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError(f"removed command was accepted: {removed_command}")
+sys.argv = [
+    "pi_client.py", "set-config", "1", "4660", "5", "16384", "16384",
+    "--ble-mode", "hub", "--ble-retry-interval-ms", "1500"
+]
+try:
+    parsed_args = module.parse_args()
+    assert parsed_args.ble_retry_interval_ms == 1500
+    assert module.decode_ble_config(module.encode_ble_config(parsed_args))["ble_retry_interval_ms"] == 1500
+    sys.argv = [
+        "pi_client.py", "set-config", "1", "4660", "5", "16384", "16384",
+        "--ble-mode", "hub", "--ble-reconnect"
+    ]
+    try:
+        with contextlib.redirect_stderr(io.StringIO()):
+            module.parse_args()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("removed BLE reconnect switch was accepted")
+finally:
+    sys.argv = original_argv
 
 # GET_STATUS exposes aggregate link presence plus a representative peer/MTU.
 status_payload = bytearray(27)
