@@ -978,18 +978,6 @@ void Manager::processLinkEvents() {
                               static_cast<int16_t>(failureReason));
       }
     }
-    if (enabled_ && config_.mode == MODE_HUB && !link.serverSide && link.connecting &&
-        !link.connected && elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
-      // Clear the state before cancelling so a resulting onConnectFail callback
-      // cannot report the same attempt a second time.
-      link.connecting = false;
-      link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
-      const int lastError = link.client
-          ? static_cast<NimBLEClient*>(link.client)->getLastError() : 0;
-      if (link.client) static_cast<NimBLEClient*>(link.client)->cancelConnect();
-      emitConnectionFailure(link.peerId, 4, FAILURE_STAGE_GAP_TIMEOUT,
-                            static_cast<int16_t>(lastError));
-    }
     if (link.disconnectPending) {
       link.disconnectPending = false;
       const uint16_t peer = link.peerId;
@@ -1045,8 +1033,10 @@ void Manager::processLinkEvents() {
       if (!enabled_ || !client || !client->isConnected()) continue;
       auto fail = [&](uint8_t reason, uint8_t stage, int16_t detail) {
         emitConnectionFailure(link.peerId, reason, stage, detail);
-        link.connecting = false;
-        link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
+        // Keep the Central slot marked busy until NimBLE confirms disconnect;
+        // this prevents the scanner or another connection attempt from racing
+        // the GATT failure teardown.
+        link.connecting = true;
         if (client->isConnected()) client->disconnect();
       };
       NimBLERemoteService* service = client->getService(SERVICE_UUID);
