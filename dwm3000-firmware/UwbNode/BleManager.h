@@ -71,8 +71,6 @@ class Manager {
   bool setLocalDeviceId(uint16_t localDeviceId);
   bool start();
   void stop();
-  bool connect(uint16_t peerId);    // Compatibility API; HUB connections are maintained autonomously.
-  bool disconnect(uint16_t peerId); // Compatibility API; an enabled HUB reconnects automatically.
   void poll();
 
   bool sendToPeer(uint16_t peerId, const uint8_t* data, uint16_t length, uint16_t& messageId);
