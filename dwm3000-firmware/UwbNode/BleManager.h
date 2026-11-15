@@ -45,7 +45,10 @@ enum DiagnosticCode : uint8_t {
   DIAG_SERVER_IDENTITY_ACCEPTED, DIAG_SERVER_IDENTITY_REJECTED, DIAG_HANDSHAKE_TIMEOUT,
   DIAG_PEER_DISCONNECTED, DIAG_ADVERTISING_RESTART_FAILED, DIAG_SCAN_RESTART_FAILED,
   DIAG_GAP_EVENT_CALLBACK, DIAG_EVENT_QUEUE_FULL, DIAG_RX_QUEUE_FULL,
-  DIAG_STACK_CAPACITY
+  DIAG_STACK_CAPACITY, DIAG_GAP_EVENT_DETAIL, DIAG_SERVER_CONNECT_CALLBACK,
+  DIAG_SERVER_ADMISSION_DECISION, DIAG_SERVER_IDENTITY_WRITE,
+  DIAG_SERVER_IDENTITY_DECISION, DIAG_CENTRAL_CONNECT_RETURN,
+  DIAG_GAP_CONNECTION_LOOKUP
 };
 enum EventCode : uint8_t {
   EVENT_STATE_CHANGED = 0, EVENT_PEER_FOUND, EVENT_PEER_CONNECTED,
@@ -127,8 +130,8 @@ class Manager {
   void noteClientConnectFailed(void* client, int reason);
   void noteClientDisconnected(void* client, int reason);
   void notePeripheralConnectFailed(int reason);
-  void noteGapConnectResult(int status);
-  void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId);
+  void noteGapEvent(uint8_t eventType, int16_t detail, uint16_t connectionHandle);
+  void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId, uint16_t valueLength);
   void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
   void enqueueClientPacket(const uint8_t* data, size_t length, void* characteristic);
 
