@@ -449,9 +449,11 @@ function bleConnectionStageName(stage: number) {
 }
 function nimbleStatusName(status: number) {
     return ({
-        0x0008: 'Connection timeout',
-        0x000d: 'Connection rejected due to limited resources',
-        0x003e: 'Connection failed to be established'
+        0x0008: 'Operation disabled at compile time',
+        0x000d: 'Operation timed out (NimBLE host)',
+        0x0208: 'Connection timeout (HCI)',
+        0x020d: 'Connection rejected due to limited resources (HCI)',
+        0x023e: 'Connection failed to be established (HCI)'
     } as Record<number, string>)[status] ?? 'Unmapped NimBLE status';
 }
 function bleConnectionDetailText(stage: number, detail: number) {
@@ -485,7 +487,8 @@ function bleDiagnosticCodeName(code: number) {
         34: 'Central connect() return value',
         35: 'GAP connection handle lookup',
         36: 'Peripheral disconnect callback',
-        37: 'Raw GAP connection handle'
+        37: 'Raw GAP connection handle',
+        38: 'Central configured connection timeout'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
 function bleDiagnosticStageText(record: BleDiagnosticRecord) {
@@ -502,6 +505,7 @@ function bleDiagnosticStageText(record: BleDiagnosticRecord) {
         const step = record.stage === 1 ? 'object unavailable' : 'start call failed';
         return `${subsystem}: ${step}`;
     }
+    if (record.code === 38) return 'configured Central GAP timeout';
     if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
         return bleConnectionStageName(record.stage);
     }
@@ -543,10 +547,12 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.stateFlags & 2 ? 'advertising' : '',
         record.stateFlags & 4 ? 'scanning' : ''
     ].filter(Boolean).join(', ');
-    const detail = [3, 4].includes(record.stage)
-        ? bleConnectionDetailText(record.stage, record.detail)
-        : record.detail < 0 ? String(record.detail)
-            : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    const detail = record.code === 38
+        ? `${record.detail} ms`
+        : [3, 4].includes(record.stage)
+            ? bleConnectionDetailText(record.stage, record.detail)
+            : record.detail < 0 ? String(record.detail)
+                : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
     const connectionReason = ({
         1: 'local setup', 3: 'identity rejected',
         5: 'GATT/handshake failure', 6: 'GAP failure'
