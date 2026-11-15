@@ -343,6 +343,7 @@ function parseBlePeerIds(input: string): number[] {
 }
 function validateBleConfig(c: BleConfig) {
     if (!Number.isInteger(c.mode) || c.mode < 0 || c.mode > 2) throw new Error('Select a valid Bluetooth mode.');
+    if (c.autoStart && c.mode === 0) throw new Error('Bluetooth auto-start requires HUB or PERIPHERAL mode.');
     if (!Number.isInteger(c.advertisingIntervalMs) || c.advertisingIntervalMs < 20 || c.advertisingIntervalMs > 10240) throw new Error('Bluetooth advertising interval must be 20–10240 ms.');
     if (!Number.isInteger(c.scanIntervalMs) || c.scanIntervalMs < 10 || c.scanIntervalMs > 10240) throw new Error('Bluetooth scan interval must be 10–10240 ms.');
     if (!Number.isInteger(c.scanWindowMs) || c.scanWindowMs < 10 || c.scanWindowMs > c.scanIntervalMs) throw new Error('Bluetooth scan window must be 10 ms or greater and cannot exceed the scan interval.');
