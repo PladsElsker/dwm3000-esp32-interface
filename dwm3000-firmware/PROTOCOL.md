@@ -240,7 +240,7 @@ Connection failure stages are:
 | 1 | Stop Central scan |
 | 2 | Allocate NimBLE client |
 | 3 | Start GAP connection procedure |
-| 4 | GAP connection result callback |
+| 4 | GAP connection result callback, including connection timeout |
 | 5 | Discover GATT service |
 | 6 | Validate GATT characteristics |
 | 7 | Validate BLE protocol version |
