@@ -1,6 +1,7 @@
 #include "BleManager.h"
 
 #include <NimBLEDevice.h>
+#include <esp_timer.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1243,7 +1244,7 @@ void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
   if (diagnosticTraceCount_ < BLE_DIAGNOSTIC_TRACE_CAPACITY) ++diagnosticTraceCount_;
   if (failure) {
     lastError_.valid = true;
-    lastError_.uptimeMs = record.uptimeMs;
+    lastError_.monotonicUs = static_cast<uint64_t>(esp_timer_get_time());
     lastError_.code = code;
     lastError_.peerId = peerId;
     lastError_.reason = reason;
