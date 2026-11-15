@@ -409,23 +409,6 @@ void Manager::stop() {
   enqueueEvent(EVENT_STATE_CHANGED, state, sizeof(state));
 }
 
-bool Manager::connect(uint16_t peerId) {
-  if (!enabled_ || config_.mode != MODE_HUB || !peerConfigured(peerId)) return false;
-  Link* link = allocateLink(peerId, false);
-  if (!link) return false;
-  link->nextAttemptMs = 0;
-  maintainHubConnections();
-  return true;
-}
-
-bool Manager::disconnect(uint16_t peerId) {
-  Link* link = findLink(peerId);
-  if (!link || !link->connected) return false;
-  if (link->serverSide)
-    return server_ && static_cast<NimBLEServer*>(server_)->disconnect(link->connectionHandle);
-  return link->client && static_cast<NimBLEClient*>(link->client)->disconnect();
-}
-
 uint16_t Manager::mtuForPeer(uint16_t peerId) const {
   const Link* link = findLink(peerId);
   return (link && link->mtu >= 23) ? link->mtu : 23;
