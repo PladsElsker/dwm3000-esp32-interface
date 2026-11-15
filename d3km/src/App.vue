@@ -2587,7 +2587,7 @@ onUnmounted(() => {
                             <span class="tag neutral">{{ bleDiagnosticTraceBusy ? 'Reading…' : `${bleDiagnosticTrace.length} retained` }}</span>
                         </div>
                         <div v-if="bleDiagnosticTraceSupported === false" class="empty-state">
-                            BLE trace retrieval is not supported by this firmware. Update the node firmware to the branch containing the diagnostics trace command.
+                            BLE trace retrieval is not supported by this firmware. Update the node firmware with GET_TRACE support.
                         </div>
                         <div v-else-if="bleDiagnosticTraceError" class="empty-state">
                             Could not read BLE trace: {{ bleDiagnosticTraceError }}
