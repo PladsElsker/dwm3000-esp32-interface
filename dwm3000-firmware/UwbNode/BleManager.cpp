@@ -607,16 +607,16 @@ void Manager::getDiagnostics(Diagnostics& diagnostics) const {
   portEXIT_CRITICAL(&mux_);
 }
 
-void Manager::incrementStatistic(uint8_t index) {
+void Manager::incrementStatistic(StatisticCounter counter) {
   portENTER_CRITICAL(&mux_);
-  switch (index) {
-    case 0: ++statistics_.messagesSent; break;
-    case 1: ++statistics_.messagesReceived; break;
-    case 2: ++statistics_.txErrors; break;
-    case 3: ++statistics_.rxErrors; break;
-    case 4: ++statistics_.connectionFailures; break;
-    case 5: ++statistics_.rxQueueOverflows; break;
-    case 6: ++statistics_.eventQueueOverflows; break;
+  switch (counter) {
+    case STAT_MESSAGES_SENT: ++statistics_.messagesSent; break;
+    case STAT_MESSAGES_RECEIVED: ++statistics_.messagesReceived; break;
+    case STAT_TX_ERRORS: ++statistics_.txErrors; break;
+    case STAT_RX_ERRORS: ++statistics_.rxErrors; break;
+    case STAT_CONNECTION_FAILURES: ++statistics_.connectionFailures; break;
+    case STAT_RX_QUEUE_OVERFLOWS: ++statistics_.rxQueueOverflows; break;
+    case STAT_EVENT_QUEUE_OVERFLOWS: ++statistics_.eventQueueOverflows; break;
     default: break;
   }
   portEXIT_CRITICAL(&mux_);
@@ -636,7 +636,7 @@ bool Manager::transmitPacket(const uint8_t* packet, uint16_t length) {
 
 bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length) {
   if (length > sizeof(Event::payload)) {
-    incrementStatistic(6);
+    incrementStatistic(STAT_EVENT_QUEUE_OVERFLOWS);
     recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
     return false;
   }
@@ -651,7 +651,7 @@ bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length)
   }
   portEXIT_CRITICAL(&mux_);
   if (!ok) {
-    incrementStatistic(6);
+    incrementStatistic(STAT_EVENT_QUEUE_OVERFLOWS);
     recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
   }
   return ok;
@@ -683,7 +683,7 @@ bool Manager::enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t
   }
   portEXIT_CRITICAL(&mux_);
   if (!ok) {
-    incrementStatistic(5);
+    incrementStatistic(STAT_RX_QUEUE_OVERFLOWS);
     recordDiagnostic(DIAG_RX_QUEUE_FULL, peerId, NACK_RX_BUSY, 0,
                      static_cast<int16_t>(length));
     emitError(1, peerId, 0, 0xFF, NACK_RX_BUSY);
@@ -971,7 +971,7 @@ bool Manager::sendMessageResult(uint16_t messageId, uint8_t status) {
 
 void Manager::emitError(uint8_t direction, uint16_t peerId, uint16_t messageId,
                         uint8_t fragmentIndex, uint8_t errorCode) {
-  incrementStatistic(direction == 0 ? 2 : 3);
+  incrementStatistic(direction == 0 ? STAT_TX_ERRORS : STAT_RX_ERRORS);
   uint8_t payload[8]; payload[0] = direction;
   writeU16(payload + 1, peerId); writeU16(payload + 3, messageId);
   payload[5] = fragmentIndex; payload[6] = errorCode; payload[7] = 0;
@@ -1064,7 +1064,7 @@ void Manager::handleData(const uint8_t* p, uint16_t length) {
     link->lastCompletedValid = true;
     uint8_t payload[6]; writeU16(payload, selectedPeerId_);
     writeU16(payload + 2, link->readyMessageId); writeU16(payload + 4, link->readyLength);
-    incrementStatistic(1);
+    incrementStatistic(STAT_MESSAGES_RECEIVED);
     enqueueEvent(EVENT_DATA_RECEIVED, payload, sizeof(payload));
   }
 }
@@ -1102,7 +1102,7 @@ void Manager::handleMessageResult(const uint8_t* p, uint16_t length) {
   if (status > RESULT_CONSUMPTION_TIMEOUT) { emitError(0, selectedPeerId_, id, 0xFF, 11); return; }
   if (link->tx.active && link->tx.messageId == id) {
     if (status == RESULT_CONSUMED) {
-      incrementStatistic(0);
+      incrementStatistic(STAT_MESSAGES_SENT);
       uint8_t payload[6]; writeU16(payload, link->tx.peerId);
       writeU16(payload + 2, id); writeU16(payload + 4, link->tx.totalLength);
       enqueueEvent(EVENT_DATA_SENT, payload, sizeof(payload));
