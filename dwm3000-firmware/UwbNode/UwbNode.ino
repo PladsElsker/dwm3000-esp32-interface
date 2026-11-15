@@ -537,7 +537,18 @@ static void sendResponse(HostTransport &source, const Frame &request, uint8_t er
     e.valid = true; e.seq = request.seq; e.opcode = request.opcode;
     e.payloadCrc = crc16(request.payload, request.length); e.response = r;
   }
-  if (error != ERR_OK) rememberError(error, error == ERR_RADIO_FAILURE ? ERROR_SUBSYSTEM_UWB : ERROR_SUBSYSTEM_SYSTEM);
+  if (error != ERR_OK) {
+    uint8_t subsystem = error == ERR_RADIO_FAILURE ? ERROR_SUBSYSTEM_UWB : ERROR_SUBSYSTEM_SYSTEM;
+    uint16_t peerId = 0;
+    if (request.opcode >= OP_SET_PEERS && request.opcode <= OP_GET_BLE_DIAGNOSTIC_TRACE) {
+      subsystem = ERROR_SUBSYSTEM_BLE;
+      if ((request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
+           request.opcode == OP_GET_RECEIVED_DATA) && request.length >= 2) {
+        peerId = getU16(request.payload);
+      }
+    }
+    rememberError(error, subsystem, peerId, request.opcode);
+  }
 }
 
 static void emitEvent(uint8_t opcode, const uint8_t *payload, uint16_t length, bool force = false) {
