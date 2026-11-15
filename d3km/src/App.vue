@@ -488,7 +488,9 @@ function bleDiagnosticCodeName(code: number) {
         35: 'GAP connection handle lookup',
         36: 'Peripheral disconnect callback',
         37: 'Raw GAP connection handle',
-        38: 'Central configured connection timeout'
+        38: 'Central configured connection timeout',
+        39: 'Peripheral advertising configuration',
+        40: 'BLE address detail'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
 function bleDiagnosticStageText(record: BleDiagnosticRecord) {
@@ -506,6 +508,12 @@ function bleDiagnosticStageText(record: BleDiagnosticRecord) {
         return `${subsystem}: ${step}`;
     }
     if (record.code === 38) return 'configured Central GAP timeout';
+    if (record.code === 39) {
+        return ({ 1: 'connectable advertising mode', 2: 'connection whitelist filter', 3: 'advertising interval' } as Record<number, string>)[record.stage] ?? `advertising setting ${record.stage}`;
+    }
+    if (record.code === 40) {
+        return ({ 0: 'address type', 1: 'address bytes 0–1', 2: 'address bytes 2–3', 3: 'address bytes 4–5' } as Record<number, string>)[record.stage] ?? `address part ${record.stage}`;
+    }
     if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
         return bleConnectionStageName(record.stage);
     }
@@ -549,10 +557,25 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
     ].filter(Boolean).join(', ');
     const detail = record.code === 38
         ? `${record.detail} ms`
-        : [3, 4].includes(record.stage)
-            ? bleConnectionDetailText(record.stage, record.detail)
-            : record.detail < 0 ? String(record.detail)
-                : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+        : record.code === 39 && record.stage === 1
+            ? (record.detail === 0 ? 'set successfully' : 'set failed')
+            : record.code === 39 && record.stage === 2
+                ? 'disabled'
+                : record.code === 39 && record.stage === 3
+                    ? `${record.detail} units (${(record.detail * 0.625).toFixed(1)} ms)`
+                    : record.code === 40 && record.stage === 0
+                        ? (record.detail === 0 ? 'Public (0)' : record.detail === 1 ? 'Random (1)' : `type ${record.detail}`)
+                        : record.code === 40
+                            ? (() => {
+                                const value = record.detail & 0xffff;
+                                const low = (value & 0xff).toString(16).toUpperCase().padStart(2, '0');
+                                const high = ((value >> 8) & 0xff).toString(16).toUpperCase().padStart(2, '0');
+                                return `${low}:${high}`;
+                            })()
+                            : [3, 4].includes(record.stage)
+                                ? bleConnectionDetailText(record.stage, record.detail)
+                                : record.detail < 0 ? String(record.detail)
+                                    : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
     const connectionReason = ({
         1: 'local setup', 3: 'identity rejected',
         5: 'GATT/handshake failure', 6: 'GAP failure'
@@ -587,6 +610,11 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
             `connection handle lookup failed: ${record.detail}`) :
         record.code === 36 ? `disconnect reason ${record.reason}, handle ${record.detail < 0 ? 'none' : record.detail}` :
         record.code === 37 ? `handle ${record.detail < 0 ? 'none' : record.detail}` :
+        record.code === 39 && record.stage === 1 ? 'undirected connectable' :
+        record.code === 40 ? ({
+            0: 'local device address', 1: 'advertiser address observed by scan',
+            2: 'address used by Central connect()'
+        } as Record<number, string>)[record.reason] ?? `address source ${record.reason}` :
         record.reason ? `reason ${record.reason}` : '';
     const capacityDetail = record.code === 28
         ? record.detail < 0 ? 'capacity macro unavailable' :
@@ -601,7 +629,7 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.peerId ? `peer ${record.peerId}` : 'peer unknown',
         bleDiagnosticStageText(record),
         reason,
-        capacityDetail || (record.detail || record.code === 25 ? detail : ''),
+        capacityDetail || (record.detail || [25, 39, 40].includes(record.code) ? detail : ''),
         `${record.activeLinks}/8 links`,
         state
     ].filter(Boolean).join(' · ');
