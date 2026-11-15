@@ -30,7 +30,7 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 ## Build and flash firmware
 
-Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.2**. The NimBLE host is configured for nine connection slots, allowing the firmware to maintain up to eight application peer links.
+Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.0**. The NimBLE host is configured for nine connection slots, allowing the firmware to maintain up to eight application peer links.
 
 Run the compile command from this directory:
 
