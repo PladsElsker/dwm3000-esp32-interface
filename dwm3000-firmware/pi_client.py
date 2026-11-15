@@ -27,7 +27,7 @@ MAX_PAYLOAD = 500
 OPS = {
     "ping": 0x01, "get-info": 0x02, "status": 0x03, "stats": 0x04,
     "clear-stats": 0x05, "last-error": 0x06, "get-config": 0x10, "get-saved-config": 0x17,
-    "set-config": 0x11, "save-config": 0x12, "reset-config": 0x13,
+    "set-config": 0x11, "reset-config": 0x13,
     "apply-save-config": 0x18,
     "time-sync": 0x14, "get-ant-delays": 0x15, "set-ant-delays": 0x16,
     "set-role": 0x20, "set-targets": 0x21, "get-targets": 0x22,
@@ -343,7 +343,7 @@ def parse_args():
     ap.add_argument("--timeout", type=float, default=1.5)
     sub = ap.add_subparsers(dest="command", required=True)
     for name in ("ping", "get-info", "status", "stats", "clear-stats", "last-error", "get-config",
-                 "get-saved-config", "save-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
+                 "get-saved-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
                  "stop", "clear-history", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
                  "get-peers", "start-ble", "stop-ble"):
         sub.add_parser(name)
