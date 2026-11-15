@@ -52,6 +52,10 @@ The response `flags` byte contains one of these values:
 
 An error response normally has an empty payload. Commands that sleep or reboot send their successful response before the device enters the requested state.
 
+### Last-error record
+
+`GET_LAST_ERROR` returns the latest recorded error from any subsystem. `subsystem` is `0` System/protocol, `1` UWB/radio, or `2` BLE. The `code` is interpreted within that subsystem. `monotonic_us` is device monotonic time since boot. `peer_id` is zero when the error is not attributable to a BLE peer. `context` is subsystem-specific: for BLE message errors, bits 0–15 are `message_id`, bits 16–23 are `fragment_index`, and bits 24–31 are direction (`0` transmit, `1` receive); for BLE connection failures, bits 0–7 are failure stage and bits 8–23 are signed detail encoded as `u16`; for a BLE receive-consumption timeout, bits 0–15 are `message_id`. Context is zero when no additional value is available.
+
 ## Commands
 
 Unless specified otherwise, the request payload is empty. Fields are encoded little-endian. A dash in the response column means an empty response payload.
@@ -60,11 +64,13 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 |---:|---|---|---|
 | `0x01` | `PING` | — | ASCII `PONG` (4 bytes) |
 | `0x02` | `GET_INFO` | — | `major:u8, minor:u8, patch:u8, protocol:u8, device_id:u16, max_targets:u8, history_capacity:u16, radio_type:u8, max_payload:u16, ble_supported:u8, ble_mode_mask:u8, max_ble_peers:u8, max_ble_connections:u8, max_ble_message_length:u16, max_ble_mtu:u16, ble_protocol_version:u8` (21 bytes); radio type `1` is DWM3000 |
+
+`GET_INFO` reports BLE capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state, while `GET_DIAGNOSTICS` adds BLE runtime and queue diagnostics.
 | `0x03` | `GET_STATUS` | — | 18-byte UWB status followed by 9-byte aggregate BLE status: `ble_mode:u8, ble_enabled:u8, any_peer_connected:u8, representative_peer_id:u16, advertising:u8, scanning:u8, representative_peer_mtu:u16` (27 bytes total) |
 | `0x04` | `GET_STATISTICS` | — | Seventeen `u32` counters: ten UWB/host counters followed by `ble_messages_sent, ble_messages_received, ble_tx_errors, ble_rx_errors, ble_connection_failures, ble_rx_queue_overflows, ble_event_queue_overflows` (68 bytes total) |
 | `0x05` | `CLEAR_STATISTICS` | — | —; clears UWB and BLE counters |
 | `0x06` | `GET_LAST_ERROR` | — | `subsystem:u8, code:u8, monotonic_us:u64, peer_id:u16, context:u32` (16 bytes) |
-| `0x10` | `GET_CONFIG` | — | 16-byte UWB config followed by the BLE configuration extension described below |
+| `0x10` | `GET_CONFIG` | — | 16-byte UWB config followed by the mandatory complete BLE configuration extension |
 | `0x11` | `SET_CONFIG` | 9-byte UWB config followed by the mandatory complete BLE configuration extension | — |
 | `0x13` | `RESET_CONFIG` | — | — |
 | `0x14` | `TIME_SYNC` | Host Unix time in microseconds `u64` | Device monotonic time at handling `u64`, then signed epoch offset encoded as `u64` |
@@ -90,6 +96,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x35` | `GET_DIAGNOSTICS` | — | 22-byte UWB snapshot followed by `ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8` (29 bytes total) |
 | `0x36` | `GET_RADIO_TRACE` (legacy) | — | Legacy radio trace response: `count:u8`, then 28-byte records; use `GET_TRACE` |
 | `0x37` | `GET_RADIO_TRACE_DETAIL` (legacy) | — | Legacy detailed radio trace response: `count:u8`, then 44-byte records; use `GET_TRACE` |
+| `0x38` | `GET_TRACE` | `trace_source:u8` (`0` UWB radio, `1` detailed UWB TX-start, `2` BLE lifecycle) | `trace_source:u8, record_size:u8, count:u8`, then `count` records; record sizes are 28, 44, and 13 bytes respectively |
 | `0x40` | `UWB_SLEEP` | — | `sleep_kind:u8`; `1` means radio `IDLE_RC` standby |
 | `0x41` | `UWB_WAKE` | — | `0` means woke/reinitialized; `1` means already awake |
 | `0x42` | `SYSTEM_SLEEP` | Timer duration in milliseconds `u32` | Accepted duration `u32`; ESP32 restarts after timer wake |
@@ -101,7 +108,6 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16` (14 bytes) |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
-| `0x38` | `GET_TRACE` | `trace_source:u8` (`0` radio, `1` detailed radio TX-start, `2` BLE lifecycle) | `trace_source:u8, record_size:u8, count:u8`, then `count` records; record sizes are 28, 44, and 13 bytes respectively |
 | `0x59` | `GET_BLE_DIAGNOSTIC_TRACE` (legacy) | — | Legacy BLE lifecycle trace response: `count:u8`, then 13-byte records; use `GET_TRACE` |
 
 ### Configuration state and persistence
@@ -217,7 +223,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 The BLE transport uses NimBLE-Arduino 2.5.0 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
-The saved BLE configuration contains the operating mode, peer policy, timing parameters, and `ble_auto_start` preference. `APPLY_SAVE_CONFIG` persists these settings. When auto-start is enabled and the saved mode is HUB or PERIPHERAL, the firmware starts that role during boot. `START_BLE` (`0x52`) and `STOP_BLE` (`0x53`) control BLE for the current runtime session. `GET_STATUS` reports aggregate BLE state; `GET_PEER_STATUS` reports the state of a specific peer.
+`GET_INFO` reports BLE hardware/stack capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state; `GET_DIAGNOSTICS` reports BLE runtime and queue diagnostics; `GET_PEER_STATUS` reports the state of a specific peer.
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
