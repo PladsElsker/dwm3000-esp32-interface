@@ -102,10 +102,37 @@ watch(() => calibration.requestedDelay, value => {
 let calibrationLoopPromise: Promise<void> | null = null;
 const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void; reject: (e: Error) => void; timer: number }>();
 const calibrationJobResults = new Map<number, CalJobResult>();
-let poller: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
+let poller: number | undefined, eventDrainTimer: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
 let lastBleRefreshAt = 0;
 let lastBleDiagnosticTraceRefreshAt = 0;
-let commandQueue: Promise<void> = Promise.resolve();
+let commandInFlight = false;
+let eventDrainBusy = false;
+const priorityCommandQueue: Array<() => Promise<void>> = [];
+const normalCommandQueue: Array<() => Promise<void>> = [];
+
+function runNextDeviceCommand() {
+    if (commandInFlight) return;
+    const next = priorityCommandQueue.shift() ?? normalCommandQueue.shift();
+    if (!next) return;
+    commandInFlight = true;
+    void next();
+}
+function queueDeviceCommand<T>(operation: () => Promise<T>, priority = false): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const run = async (): Promise<void> => {
+            try {
+                resolve(await operation());
+            } catch (e) {
+                reject(e);
+            } finally {
+                commandInFlight = false;
+                runNextDeviceCommand();
+            }
+        };
+        (priority ? priorityCommandQueue : normalCommandQueue).push(run);
+        runNextDeviceCommand();
+    });
+}
 const device = reactive<any>({ info: null, status: null, stats: null,
     // config/savedTargets always describe NVS; runtimeConfig/schedule/targets describe RAM.
     config: { deviceId: 1, panId: 0xDECA, channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, autoStart: false },
@@ -257,10 +284,12 @@ function decodeSavedConfig(p: number[]) {
     };
 }
 function readString(p: number[]) { return String.fromCharCode(...p) }
-async function cmd(op: number, payload: number[] = []) {
+async function cmd(op: number, payload: number[] = [], priority = false) {
     if (!connected.value) throw new Error('Connect a device first');
-    const task = commandQueue.then(() => invoke<{ payload: number[]; events: FrameEvent[] }>('send_command', { opcode: op, payload }));
-    commandQueue = task.then(() => undefined, () => undefined);
+    const task = queueDeviceCommand(
+        () => invoke<{ payload: number[]; events: FrameEvent[] }>('send_command', { opcode: op, payload }),
+        priority
+    );
     try {
         return (await task).payload;
     } catch (e: any) {
@@ -817,7 +846,9 @@ async function retrieveBleMessage(peerId: number, messageId: number, announcedLe
     if (retrievingBleMessages.has(key)) return;
     retrievingBleMessages.add(key);
     try {
-        const p = await cmd(0x58, [...u16(peerId), ...u16(messageId)]);
+        // Message fetches have a short firmware consumption deadline. Run
+        // them ahead of queued UI refreshes and other not-yet-started commands.
+        const p = await cmd(0x58, [...u16(peerId), ...u16(messageId)], true);
         if (p.length < 4) throw new Error(`GET_RECEIVED_DATA returned only ${p.length} bytes.`);
         const returnedId = get16(p, 0), length = get16(p, 2);
         if (returnedId !== messageId || length !== p.length - 4 || length !== announcedLength) {
@@ -1503,9 +1534,28 @@ function fmtRange(mm: number | null) { return mm === null || mm < 0 ? '—' : `$
 watch(connected, (isConnected) => {
     if (!isConnected) active.value = 'overview';
 });
+async function drainDeviceEvents() {
+    // The Tauri serial reader only runs while a command is waiting for its
+    // response. Keep a lightweight GET_STATUS read active while BLE is enabled
+    // so unsolicited BLE_DATA_RECEIVED events reach the UI well before the
+    // firmware's receive-consumption deadline. Any command already in flight
+    // is itself reading the port, so do not queue a redundant poll behind it.
+    if (!connected.value || !ble.supported || !ble.runtime.enabled || eventDrainBusy ||
+        polling || commandInFlight || priorityCommandQueue.length || normalCommandQueue.length) return;
+    eventDrainBusy = true;
+    try {
+        await cmd(0x03);
+    } catch (e: any) {
+        if (isUsbDisconnectError(e)) void handleUsbLoss('USB connection lost. Reconnect the device to continue.');
+    } finally {
+        eventDrainBusy = false;
+    }
+}
+
 onMounted(async () => {
     await refreshPorts();
     unlisten = await listen<FrameEvent>('uwb-event', e => handleEvent(e.payload));
+    eventDrainTimer = window.setInterval(() => { void drainDeviceEvents(); }, 50);
     poller = window.setInterval(async () => {
         await refreshPorts();
         if (connected.value && !polling && !savingConfig.value && !calibration.active && !calibration.processing && !calibration.activeJobId) {
@@ -1533,6 +1583,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
     if (poller) clearInterval(poller);
+    if (eventDrainTimer) clearInterval(eventDrainTimer);
     unlisten?.();
 });
 </script>
@@ -2081,7 +2132,7 @@ onUnmounted(() => {
                                         </label>
                                         <label>Receive-consumption timeout <span class="field-help">100–2000 ms</span>
                                             <input type="number" min="100" max="2000" step="1" v-model.number="bleDraft.rxMessageTimeoutMs" />
-                                            <small>Unread complete messages expire after this interval.</small>
+                                            <small>Time allowed for the desktop app to fetch a complete message. BLE event reads are pumped every 50 ms while enabled.</small>
                                         </label>
                                     </div>
                                 </div>
