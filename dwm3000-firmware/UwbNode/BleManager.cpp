@@ -862,15 +862,17 @@ void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
                                         uint8_t stage, int16_t detail) {
   // Keep the original peer_id + reason prefix; stage and signed detail extend
   // the event for hosts that can display connection diagnostics.
-  Link* link = peerId ? findLink(peerId) : nullptr;
-  if (!link && !peerId) {
-    for (auto& candidate : links_) {
-      if (candidate.used && candidate.serverSide && !candidate.connected) {
-        link = &candidate;
-        break;
-      }
+  Link* link = nullptr;
+  // Prefer the in-progress Peripheral link when an incoming identity is
+  // rejected, even if another connected link already has the same peer ID.
+  for (auto& candidate : links_) {
+    if (candidate.used && candidate.serverSide && !candidate.connected &&
+        (!peerId || candidate.peerId == peerId)) {
+      link = &candidate;
+      break;
     }
   }
+  if (!link && peerId) link = findLink(peerId);
   if (link) {
     link->lastFailureReason = reason;
     link->lastFailureStage = stage;
