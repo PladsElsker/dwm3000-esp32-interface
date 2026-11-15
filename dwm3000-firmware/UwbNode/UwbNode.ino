@@ -103,8 +103,8 @@ enum Opcode : uint8_t {
   OP_UWB_SLEEP = 0x40, OP_UWB_WAKE = 0x41,
   OP_SYSTEM_SLEEP = 0x42, OP_REBOOT = 0x43,
   OP_SET_PEERS = 0x50, OP_GET_PEERS = 0x51, OP_START_BLE = 0x52,
-  OP_STOP_BLE = 0x53, OP_BLE_CONNECT = 0x54, OP_BLE_DISCONNECT = 0x55,
-  OP_GET_PEER_STATUS = 0x56, OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
+  OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x56,
+  OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
   EV_RANGE_RESULT = 0x80, EV_RANGE_FAILED = 0x81,
   EV_STATE_CHANGED = 0x82, EV_ERROR = 0x83,
   EV_HISTORY_OVERRUN = 0x84, EV_DEVICE_READY = 0x85,
@@ -1712,20 +1712,6 @@ static void processRequest(HostTransport &source, const Frame &q) {
       bleCfg.enabled = 0;
       if (!ble.configure(bleCfg)) { error = ERR_INTERNAL; break; }
       outLen = 0; break;
-    }
-
-    case OP_BLE_CONNECT: {
-      if (n != 2) { error = ERR_BAD_ARGUMENT; break; }
-      if (!ble.connect(getU16(p))) { error = ble.connected() ? ERR_BUSY : ERR_BAD_STATE; break; }
-      outLen = 0;
-      break;
-    }
-
-    case OP_BLE_DISCONNECT: {
-      if (n != 2) { error = ERR_BAD_ARGUMENT; break; }
-      if (!ble.disconnect(getU16(p))) { error = ERR_NOT_FOUND; break; }
-      outLen = 0;
-      break;
     }
 
     case OP_GET_PEER_STATUS: {
