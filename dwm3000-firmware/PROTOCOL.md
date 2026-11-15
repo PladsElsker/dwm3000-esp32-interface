@@ -54,7 +54,7 @@ An error response normally has an empty payload. Commands that sleep or reboot s
 
 ### Last-error record
 
-`GET_LAST_ERROR` returns the latest recorded error from any subsystem. `subsystem` is `0` System/protocol, `1` UWB/radio, or `2` BLE. The `code` is interpreted within that subsystem. `monotonic_us` is device monotonic time since boot. `peer_id` is zero when the error is not attributable to a BLE peer. For command-level errors, `context` contains the request opcode; for BLE message errors, bits 0–15 are `message_id`, bits 16–23 are `fragment_index`, and bits 24–31 are direction (`0` transmit, `1` receive); for BLE connection failures, bits 0–7 are failure stage and bits 8–23 are signed detail encoded as `u16`; for a BLE receive-consumption timeout, bits 0–15 are `message_id`. Context is zero when no additional value is available.
+`GET_LAST_ERROR` returns the latest recorded error from any subsystem. `subsystem` is `0` System/protocol, `1` UWB/radio, or `2` BLE. The `code` is interpreted within that subsystem. `monotonic_us` is device monotonic time since boot. `peer_id` is zero when the error is not attributable to a BLE peer. For command-level errors, `context` contains the request opcode; for BLE message errors, bits 0–15 are `message_id`, bits 16–23 are `fragment_index`, and bits 24–31 are direction (`0` transmit, `1` receive); for BLE connection failures, bits 0–7 are failure stage and bits 8–23 are signed detail encoded as `u16`; for a BLE receive-consumption timeout, `code` is `1` (`CONSUMPTION_TIMEOUT`) and bits 0–15 are `message_id`. Context is zero when no additional value is available.
 
 ## Commands
 
