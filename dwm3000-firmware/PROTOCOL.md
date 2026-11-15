@@ -1,6 +1,6 @@
 # UWB Node Host Protocol V2.1
 
-This document specifies the V2.1 host protocol implemented by the UWB Node firmware. The same protocol is available over UART1 and USB CDC. V2.1 describes the current command semantics and BLE management model; the serial frame header's wire-version byte remains `1`, so the COBS frame format and CRC are unchanged. Hosts should continue to use the existing frame version and command payload layouts unless a change is explicitly documented below.
+This document defines the host command, event, and payload formats implemented by the UWB Node firmware. The protocol is available over UART1 and USB CDC. Binary frames use wire version `1`.
 
 ## Transport
 
@@ -64,9 +64,8 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x04` | `GET_STATS` | — | Ten `u32` counters, in order: `ranges_ok, ranges_failed, rx_errors, tx_errors, transaction_timeouts, protocol_errors, uart_overflows, history_overwrites, malformed_radio_frames, duplicate_requests` |
 | `0x05` | `CLEAR_STATS` | — | — |
 | `0x06` | `GET_LAST_ERROR` | — | `last_error_code:u8, last_error_monotonic_us:u64` |
-| `0x10` | `GET_CONFIG` | — | Existing 16-byte UWB config followed by the BLE configuration extension described below |
-| `0x11` | `SET_CONFIG` | Existing 9-byte UWB config, optionally followed by the BLE configuration extension | — |
-| `0x12` | `SAVE_CONFIG` | — | —; currently returns `NOT_SUPPORTED` |
+| `0x10` | `GET_CONFIG` | — | 16-byte UWB config followed by the BLE configuration extension described below |
+| `0x11` | `SET_CONFIG` | 9-byte UWB config, optionally followed by the BLE configuration extension | — |
 | `0x13` | `RESET_CONFIG` | — | — |
 | `0x14` | `TIME_SYNC` | Host Unix time in microseconds `u64` | Device monotonic time at handling `u64`, then signed epoch offset encoded as `u64` |
 | `0x15` | `GET_ANTENNA_DELAYS` | — | `tx_delay:u16, rx_delay:u16` |
@@ -99,8 +98,6 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x51` | `GET_PEERS` | — | `count:u8, peer_ids:u16[]` |
 | `0x52` | `START_BLE` / enable BLE | — | —; enables the configured BLE role and persists enabled state in NVS; advertising/scanning and peer connections then run autonomously |
 | `0x53` | `STOP_BLE` / disable BLE | — | —; disables BLE, disconnects active links, stops advertising/scanning, and persists disabled state in NVS |
-| `0x54` | `BLE_CONNECT` | `peer_id:u16` | —; legacy compatibility hint for requesting a HUB connection. Normal operation is autonomous; this command is not required for discovery or reconnection |
-| `0x55` | `BLE_DISCONNECT` | `peer_id:u16` | —; compatibility disconnect request. An enabled HUB may reconnect automatically; disable BLE to keep all links down |
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16` |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
@@ -128,7 +125,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | 18 | 2 × count | `target_ids:u16[]` |
 | 18 + 2×count | 1 | `auto_start:u8` (`0` or `1`) |
 
-The total base payload length is `19 + 2×target_count` bytes. For the BLE-capable protocol revision, `GET_SAVED_CONFIG` appends the BLE configuration extension after `auto_start`. `APPLY_SAVE_CONFIG` accepts the same extension after the base snapshot. Legacy payloads ending after `auto_start` remain accepted and preserve the current BLE configuration.
+The base payload length is `19 + 2×target_count` bytes. The BLE configuration extension follows `auto_start` in `GET_SAVED_CONFIG` responses and `APPLY_SAVE_CONFIG` requests. The extension is optional in `APPLY_SAVE_CONFIG`; when omitted, the current BLE configuration is retained.
 
 The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` bytes:
 
@@ -138,21 +135,19 @@ The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` 
 | 1 | 2 | `ble_advertising_interval_ms:u16` (20–10240) |
 | 3 | 2 | `ble_scan_interval_ms:u16` (10–10240) |
 | 5 | 2 | `ble_scan_window_ms:u16` (10 through scan interval) |
-| 7 | 1 | Reserved legacy reconnect byte; V2.1 transmitters write `0`. Reconnection is automatic whenever BLE is enabled; receivers ignore this byte |
-| 8 | 2 | `ble_reconnect_interval_ms:u16` (100–60000) |
+| 7 | 1 | `reserved:u8`; write `0` |
+| 8 | 2 | `ble_retry_interval_ms:u16` (100–60000) |
 | 10 | 2 | `ble_connection_timeout_ms:u16` (100–30000) |
 | 12 | 1 | `ble_max_retries:u8` (0–5 additional attempts) |
 | 13 | 2 | `ble_rx_message_timeout_ms:u16` (100–2000) |
 | 15 | 1 | `peer_count:u8` (0–8) |
 | 16 | 2 × count | `peer_ids:u16[]`; IDs must be unique and in 1–65534 |
 
-`SET_CONFIG` accepts either its legacy 9-byte UWB-only payload or the 9-byte UWB payload followed by the complete BLE extension. `GET_CONFIG` always returns its 16-byte UWB prefix followed by the BLE extension. For BLE configuration changes, stop BLE before changing the role, peer policy, advertising/scan intervals, retry interval, connection timeout, or message timeout; an active BLE session or connection can cause the manager to reject a changed configuration with `BUSY`. `SET_PEERS` updates and persists only the peer list. It can be changed while BLE is enabled only when no BLE connections are active; otherwise it returns `BUSY`. Use `APPLY_SAVE_CONFIG` to persist the complete configuration snapshot. A peer count of zero means open mode: any valid remote peer ID is eligible. A non-empty list is an allow-list. Device ID and target IDs must be nonzero, not `0xFFFF`, and target IDs must be unique and different from the device ID. Period is 20–60000 ms, timeout is 50–5000 ms, retries is 0–5, and channel is 5 or 9. `auto_start=1` requires a non-idle role; initiator auto-start also requires at least one target. Applying a snapshot is rejected with `BUSY` while ranging, a transaction, or queued one-shot jobs are active.
+`SET_CONFIG` accepts a 9-byte UWB payload, optionally followed by the complete BLE configuration extension. `GET_CONFIG` returns its 16-byte UWB prefix followed by the BLE extension. Stop BLE before changing its role, peer policy, advertising or scan intervals, retry interval, connection timeout, or message timeout. BLE configuration changes are rejected with `BUSY` while BLE is enabled. `SET_PEERS` updates and persists only the peer list and also requires BLE to be disabled. Use `APPLY_SAVE_CONFIG` to persist the complete configuration snapshot. A peer count of zero selects open mode: any valid remote peer ID is eligible. A non-empty list is an allow-list. Device ID and target IDs must be nonzero, not `0xFFFF`, and target IDs must be unique and different from the device ID. Period is 20–60000 ms, timeout is 50–5000 ms, retries is 0–5, and channel is 5 or 9. `auto_start=1` requires a non-idle role; initiator auto-start also requires at least one target. Applying a snapshot is rejected with `BUSY` while ranging, a transaction, or queued one-shot jobs are active.
 
 `SAVE_ANTENNA_DELAYS` persists only the current TX and RX antenna delay values. It is rejected while ranging or a transaction is active.
 
-`SAVE_CONFIG` (`0x12`) is retained as a command identifier for compatibility, but currently returns `NOT_SUPPORTED` for an empty request. Use `APPLY_SAVE_CONFIG` to persist a complete explicit configuration snapshot, or `SAVE_ANTENNA_DELAYS` to persist only antenna delays.
-
-`RESET_CONFIG` clears saved settings and restores compiled defaults, including BLE disabled. At boot, the firmware restores the saved BLE desired state from NVS. If BLE was enabled and its mode is not IDLE, BLE starts autonomously without a host command. `START_BLE` and `STOP_BLE` update that persisted desired state. This is independent of the UWB `auto_start` ranging preference; manual UWB ranging start/stop does not change either saved policy.
+`RESET_CONFIG` clears saved settings and restores compiled defaults, with BLE disabled. At boot, the firmware restores the BLE enabled state from NVS. If BLE is enabled and its mode is not IDLE, the configured BLE role starts automatically. `START_BLE` and `STOP_BLE` persist the enabled state. BLE enablement is independent of the UWB `auto_start` ranging preference.
 
 ### Role, targets, and scheduling
 
@@ -210,17 +205,33 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 ## BLE peer transport
 
-The BLE transport uses NimBLE-Arduino 2.5.2 on the ESP32-C3. `ble_mode` selects IDLE, HUB (Central), or PERIPHERAL. The firmware manager maintains up to eight simultaneous application peer links in either role. The Arduino CLI build configures the NimBLE host for nine connection slots, leaving one host slot beyond the eight application links. Actual concurrent operation remains subject to controller resources, RF conditions, and memory availability.
+The BLE transport uses NimBLE-Arduino 2.5.2 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
-BLE enabled state is a separate persisted desired-state toggle; it is not part of the 16-byte BLE configuration extension. `START_BLE` (`0x52`) enables the configured mode and writes the enabled state to NVS. At boot, an enabled non-IDLE configuration starts automatically. `STOP_BLE` (`0x53`) stops advertising/scanning, disconnects active links, and persists disabled state. Setting `ble_mode` configures the role but does not itself enable BLE. The enable state is reported by `GET_STATUS` and `GET_PEER_STATUS`; it is intentionally not encoded in `GET_CONFIG`, `GET_SAVED_CONFIG`, or the BLE configuration extension.
+BLE enablement is a persisted runtime setting. `START_BLE` (`0x52`) enables the configured role and saves the enabled state in NVS. At boot, an enabled non-IDLE role starts automatically. `STOP_BLE` (`0x53`) disables BLE, stops scanning or advertising, disconnects active peers, and saves the disabled state. Selecting a BLE mode does not enable BLE. `GET_STATUS` and `GET_PEER_STATUS` report the current enabled state.
 
-An empty peer list is open mode: HUB mode discovers valid devices named `UWB-XXXX` and can connect to any discovered valid peer ID; PERIPHERAL mode accepts any valid remote peer ID. A non-empty peer list is an allow-list applied to the peer identity handshake. The eight-entry peer list is a configured identity policy, while the runtime connection limit is also eight. In open HUB mode, the eight active peer slots represent the current set of peers being tracked; stale, inactive discovered slots may be reused for other peers.
+A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
-When BLE is enabled, HUB mode continuously scans, initiates connections for eligible discovered peers, and retries unavailable or disconnected peers using `ble_reconnect_interval_ms` and `ble_connection_timeout_ms`. Reconnection is not optional and is not controlled by the reserved byte at offset 7. PERIPHERAL mode advertises while capacity remains, validates each incoming Central's peer identity, and resumes advertising after a link disconnects when capacity is available. The host configures mode, peer policy, and timing; enables/disables BLE; and monitors status/events. It does not need to initiate ordinary connections or reconnections. `BLE_CONNECT` and `BLE_DISCONNECT` remain compatibility commands, not the normal connection-management workflow. A Central disconnect request is not a persistent ban: an enabled HUB may reconnect according to policy.
+While enabled in HUB mode, the node continuously scans, connects to eligible discovered peers, and retries unavailable or disconnected peers. `ble_retry_interval_ms` sets the delay between connection attempts; `ble_connection_timeout_ms` sets the connection and identity-handshake timeout. Retry behavior is always active while BLE is enabled. In PERIPHERAL mode, advertising remains active while connection capacity is available; the node validates each incoming peer identity and resumes advertising when a connection closes and capacity becomes available.
 
-Application messages are always peer-directed unicast. `SEND_TO_PEER(peer_id, ...)` selects one connected peer; the transport does not broadcast application payloads to all active links. Each active peer has independent message transmit, receive/reassembly, unread-message, and final-delivery state. There is one in-flight outgoing message and one unread complete incoming message per peer. Link state and in-flight message state are volatile; links are re-established automatically while enabled, but a message interrupted by disconnect is not automatically replayed.
+The host configures the BLE mode, peer policy, and timing; enables or disables BLE; and monitors peer state and events. It does not manage individual connection lifecycles. Application messages are peer-directed unicast: `SEND_TO_PEER` sends to the requested connected peer ID and never broadcasts application payloads to all links.
 
-The GATT service and characteristic UUIDs, identity handshake, BLE packet types, CRC-16, fragmentation, ACK/NACK behavior, and delivery-result handshake remain unchanged from V2.0. The BLE protocol-version characteristic remains `1:u8`; V2.1 changes the manager's connection behavior, not the on-air packet encoding.
+`GET_STATUS` contains an aggregate BLE summary. `any_peer_connected` is true when at least one peer link is connected. `representative_peer_id` and `representative_peer_mtu` describe one connected peer; they are zero and the default MTU when no peer is connected. Use `GET_PEER_STATUS` for the state of a specific peer.
+
+Peer state values returned by `GET_PEER_STATUS` are:
+
+| Value | State | Meaning |
+|---:|---|---|
+| 0 | `UNKNOWN` | No peer state is available |
+| 1 | `CONFIGURED` | The peer ID is eligible under the current peer policy |
+| 2 | `FOUND` | A matching peer advertisement has been discovered |
+| 3 | `CONNECTED` | The connection and identity handshake are complete |
+| 4 | `CONNECTING` | A Central connection attempt is in progress |
+| 5 | `HANDSHAKING` | A Peripheral connection is awaiting peer identity validation |
+| 6 | `BACKOFF` | The next automatic connection attempt is pending |
+
+Each peer link has independent transmit, receive/reassembly, unread-message, acknowledgement, and final-delivery state. There is one outgoing in-flight message and one unread complete incoming message per peer. Link and message state are volatile. Connections are re-established automatically while BLE remains enabled, but interrupted application messages are not replayed automatically.
+
+The custom GATT service does not require pairing or encryption. Device IDs identify peers but are not authentication credentials; this link is not protected against an active nearby attacker.
 
 The GATT service and characteristics are:
 
@@ -249,7 +260,7 @@ NACK codes are: `1 RX_QUEUE_FULL` (retryable), `2 RX_BUSY` (retryable), `3 MESSA
 
 The complete-message lifecycle is separate from fragment ACKs. After all fragments are reassembled, `BLE_DATA_RECEIVED` notifies the local host. The host retrieves the payload with `GET_RECEIVED_DATA`; this consumes the unread message and causes `MESSAGE_RESULT: CONSUMED` to be sent to the sender. Only then does the sender emit `BLE_DATA_SENT`. If the host does not retrieve the message before `ble_rx_message_timeout_ms`, it is discarded, `BLE_DATA_EXPIRED` is emitted locally, and `MESSAGE_RESULT: CONSUMPTION_TIMEOUT` is returned to the sender. DATA fragment ACKs use a fixed 300 ms response timeout; MESSAGE_RESULT delivery uses a fixed 400 ms response timeout. Retransmissions are bounded by `ble_max_retries`, which counts additional attempts after the initial transmission. Incomplete reassembly expires after 1,500 ms without a valid fragment. MESSAGE_RESULT packets are retransmitted until acknowledged or the configured retry limit is exhausted. A lost final outcome is reported as indeterminate; the firmware does not automatically re-send the application message after reconnection.
 
-The transport has one outgoing message, one incoming reassembly, one unread complete message, and one pending final-result record per active peer. The manager can maintain up to eight concurrent links and routes received packets and GATT notifications using the peer identity/connection handle associated with each link. In-flight messages and queues are volatile and cleared on disconnect/reboot. An empty configured peer list disables the peer-ID allow-list (open mode). The custom GATT service does not currently require pairing or encryption, so peer IDs are identifiers rather than authentication credentials; do not treat this link as secure against an active nearby attacker.
+The transport maintains one outgoing message, one incoming reassembly, one unread complete message, and one pending final-result record per active peer. It routes received packets and GATT notifications using the peer identity and connection handle associated with each link. In-flight messages and queues are volatile and cleared on disconnect or reboot.
 
 ## Statistics and diagnostics
 
