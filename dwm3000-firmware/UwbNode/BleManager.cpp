@@ -712,6 +712,8 @@ void Manager::noteServerConnected(uint16_t handle) {
 
 void Manager::noteServerDisconnected(uint16_t handle, int reason) {
   Link* link = findLinkByHandle(handle);
+  recordDiagnostic(DIAG_SERVER_DISCONNECT_CALLBACK, link ? link->peerId : 0,
+                   static_cast<uint8_t>(reason), 0, static_cast<int16_t>(handle));
   recordDiagnostic(DIAG_PEER_DISCONNECTED, link ? link->peerId : 0, 2, 0,
                    static_cast<int16_t>(reason));
   if (!link) return;
@@ -764,6 +766,12 @@ void Manager::noteGapEvent(uint8_t eventType, int16_t detail,
   // A GAP CONNECT success is checked independently before NimBLEServer's
   // onConnect callback, allowing us to identify a host handle-lookup failure.
   recordDiagnostic(DIAG_GAP_EVENT_DETAIL, 0, eventType, 0, detail);
+  if (eventType == BLE_GAP_EVENT_CONNECT ||
+      eventType == BLE_GAP_EVENT_LINK_ESTAB ||
+      eventType == BLE_GAP_EVENT_DISCONNECT) {
+    recordDiagnostic(DIAG_GAP_CONNECTION_HANDLE, 0, eventType, 0,
+                     static_cast<int16_t>(connectionHandle));
+  }
 
   if (eventType == BLE_GAP_EVENT_CONNECT) {
     if (detail != 0) {
