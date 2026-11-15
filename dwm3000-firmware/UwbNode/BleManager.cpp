@@ -1262,7 +1262,7 @@ uint16_t Manager::getDiagnosticTrace(uint8_t* destination, uint16_t capacity) co
 
 void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
                                     uint8_t stage, int16_t detail) {
-  incrementStatistic(4);
+  incrementStatistic(STAT_CONNECTION_FAILURES);
   recordDiagnostic(DIAG_CONNECTION_FAILED, peerId, reason, stage, detail);
   // Keep bounded diagnostic history outside the live connection slots so
   // repeated rejected Peripheral handshakes cannot consume link capacity.
