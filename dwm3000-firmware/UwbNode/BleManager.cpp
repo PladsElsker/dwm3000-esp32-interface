@@ -452,6 +452,23 @@ bool Manager::start() {
     advertising->setName(name);
     advertising->addServiceUUID(SERVICE_UUID);
     advertising->enableScanResponse(true);
+
+    // This node is a GATT Peripheral. Do not rely on the library's default
+    // advertising mode or connection filter policy: advertise connectably to
+    // any Central and enforce the peer allow-list after GAP establishment via
+    // the identity characteristic handshake.
+    const bool connectableConfigured =
+        advertising->setConnectableMode(BLE_GAP_CONN_MODE_UND);
+    advertising->setScanFilter(false, false);
+    recordDiagnostic(DIAG_PERIPHERAL_ADVERTISING_CONFIG, 0,
+                     BLE_GAP_CONN_MODE_UND, 1,
+                     static_cast<int16_t>(connectableConfigured ? 0 : -1));
+    if (!connectableConfigured) {
+      enabled_ = false;
+      recordDiagnostic(DIAG_START_FAILED, 0, 2, 2, -1);
+      return false;
+    }
+
     const uint16_t units = static_cast<uint16_t>(config_.advertisingIntervalMs * 8 / 5);
     advertising->setMinInterval(units);
     advertising->setMaxInterval(units);
