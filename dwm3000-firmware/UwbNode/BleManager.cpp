@@ -29,13 +29,55 @@ static constexpr uint8_t MAX_ADVERTISE_NAME = 16;
 
 static Manager* s_manager = nullptr;
 
-// NimBLEServer invokes onConnect only when an incoming link succeeds. Observe
-// failed Peripheral-side GAP connection results through NimBLE's global event
-// listener so controller rejections are visible to the host application.
+// Keep the GAP lifecycle events that distinguish an incoming connection
+// reaching the NimBLE host from one rejected below the application callbacks.
 static int onBleGlobalGapEvent(ble_gap_event* event, void* arg) {
   auto* manager = static_cast<Manager*>(arg);
-  if (manager && event && event->type == BLE_GAP_EVENT_CONNECT) {
-    manager->noteGapConnectResult(event->connect.status);
+  if (!manager || !event) return 0;
+
+  switch (event->type) {
+    case BLE_GAP_EVENT_CONNECT:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->connect.status),
+                            event->connect.conn_handle);
+      break;
+    case BLE_GAP_EVENT_LINK_ESTAB:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->link_estab.status),
+                            event->link_estab.conn_handle);
+      break;
+    case BLE_GAP_EVENT_DISCONNECT:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->disconnect.reason),
+                            event->disconnect.conn.conn_handle);
+      break;
+    case BLE_GAP_EVENT_ADV_COMPLETE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->adv_complete.reason),
+                            BLE_HS_CONN_HANDLE_NONE);
+      break;
+    case BLE_GAP_EVENT_DISC_COMPLETE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->disc_complete.reason),
+                            BLE_HS_CONN_HANDLE_NONE);
+      break;
+    case BLE_GAP_EVENT_CONN_UPDATE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->conn_update.status),
+                            event->conn_update.conn_handle);
+      break;
+    case BLE_GAP_EVENT_TERM_FAILURE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->term_failure.status),
+                            event->term_failure.conn_handle);
+      break;
+    case BLE_GAP_EVENT_ENC_CHANGE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->enc_change.status),
+                            event->enc_change.conn_handle);
+      break;
+    case BLE_GAP_EVENT_SUBSCRIBE:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->subscribe.reason),
+                            event->subscribe.conn_handle);
+      break;
+    case BLE_GAP_EVENT_MTU:
+      manager->noteGapEvent(event->type, static_cast<int16_t>(event->mtu.value),
+                            event->mtu.conn_handle);
+      break;
+    default:
+      break;
   }
   return 0;
 }
@@ -87,8 +129,10 @@ class BleNimBLEIdentityCallbacks : public NimBLECharacteristicCallbacks {
   void onWrite(NimBLECharacteristic* characteristic, NimBLEConnInfo& info) override {
     if (!s_manager || !characteristic) return;
     const NimBLEAttValue value = characteristic->getValue();
-    if (value.length() == 2)
-      s_manager->noteRemoteIdentity(info.getConnHandle(), Manager::readU16(value.data()));
+    s_manager->noteRemoteIdentity(
+        info.getConnHandle(),
+        value.length() == 2 ? Manager::readU16(value.data()) : 0,
+        static_cast<uint16_t>(value.length()));
   }
 };
 
@@ -146,11 +190,31 @@ bool Manager::begin(uint16_t localDeviceId) {
     recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 1, -1);
     return false;
   }
+  // Record the distinct capacities used by NimBLE-Arduino's C++ client pool,
+  // NimBLE host, and the ESP-IDF legacy sdkconfig alias. They can differ.
+#if defined(NIMBLE_MAX_CONNECTIONS)
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 1,
+                   static_cast<int16_t>(NIMBLE_MAX_CONNECTIONS));
+#else
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 1, -1);
+#endif
+#if defined(CONFIG_NIMBLE_MAX_CONNECTIONS)
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 2,
+                   static_cast<int16_t>(CONFIG_NIMBLE_MAX_CONNECTIONS));
+#else
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 2, -1);
+#endif
 #if defined(CONFIG_BT_NIMBLE_MAX_CONNECTIONS)
-  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 0,
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 3,
                    static_cast<int16_t>(CONFIG_BT_NIMBLE_MAX_CONNECTIONS));
 #else
-  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 0, -1);
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 3, -1);
+#endif
+#if defined(MYNEWT_VAL_BLE_MAX_CONNECTIONS)
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 4,
+                   static_cast<int16_t>(MYNEWT_VAL_BLE_MAX_CONNECTIONS));
+#else
+  recordDiagnostic(DIAG_STACK_CAPACITY, 0, MAX_ACTIVE_CONNECTIONS, 4, -1);
 #endif
   s_manager = this;
   if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) {
@@ -602,19 +666,41 @@ void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_
 }
 
 void Manager::noteServerConnected(uint16_t handle) {
+  // This callback is reached only after NimBLE has established an incoming GAP
+  // connection. A missing record means the failure occurred before this app
+  // admission logic was ever called.
+  recordDiagnostic(DIAG_SERVER_CONNECT_CALLBACK, 0, 0, 0,
+                   static_cast<int16_t>(handle));
+
   const uint8_t active = activeConnectionCount();
-  if (!enabled_ || config_.mode != MODE_PERIPHERAL || active >= MAX_ACTIVE_CONNECTIONS) {
-    const uint8_t rejectReason = !enabled_ ? 1 : config_.mode != MODE_PERIPHERAL ? 2 : 3;
-    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, rejectReason, 0, active);
+  if (!enabled_) {
+    recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 1, 1, active);
+    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, 1, 0, active);
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
+  if (config_.mode != MODE_PERIPHERAL) {
+    recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 2, 1, active);
+    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, 2, 0, active);
+    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
+    return;
+  }
+  if (active >= MAX_ACTIVE_CONNECTIONS) {
+    recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 3, 1, active);
+    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, 3, 0, active);
+    if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
+    return;
+  }
+
+  recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 0, 1, active);
   Link* link = allocateLink(0, true);
   if (!link) {
+    recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 4, 2, active);
     recordDiagnostic(DIAG_SERVER_SLOT_ALLOC_FAILED, 0, 2, 0, active);
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
+  recordDiagnostic(DIAG_SERVER_ADMISSION_DECISION, 0, 0, 2, active);
   link->connectionHandle = handle;
   link->connectStartedMs = millis();
   link->mtu = 23;
@@ -626,6 +712,8 @@ void Manager::noteServerConnected(uint16_t handle) {
 
 void Manager::noteServerDisconnected(uint16_t handle, int reason) {
   Link* link = findLinkByHandle(handle);
+  recordDiagnostic(DIAG_SERVER_DISCONNECT_CALLBACK, link ? link->peerId : 0,
+                   static_cast<uint8_t>(reason), 0, static_cast<int16_t>(handle));
   recordDiagnostic(DIAG_PEER_DISCONNECTED, link ? link->peerId : 0, 2, 0,
                    static_cast<int16_t>(reason));
   if (!link) return;
@@ -672,11 +760,34 @@ void Manager::noteClientDisconnected(void* client, int reason) {
   }
 }
 
-void Manager::noteGapConnectResult(int status) {
-  recordDiagnostic(DIAG_GAP_EVENT_CALLBACK, 0, status ? 6 : 0,
-                   status ? FAILURE_STAGE_GAP_RESULT : 0,
-                   static_cast<int16_t>(status));
-  if (status != 0) notePeripheralConnectFailed(status);
+void Manager::noteGapEvent(uint8_t eventType, int16_t detail,
+                           uint16_t connectionHandle) {
+  // reason carries the BLE_GAP_EVENT_* value; detail carries its status/reason.
+  // A GAP CONNECT success is checked independently before NimBLEServer's
+  // onConnect callback, allowing us to identify a host handle-lookup failure.
+  recordDiagnostic(DIAG_GAP_EVENT_DETAIL, 0, eventType, 0, detail);
+  if (eventType == BLE_GAP_EVENT_CONNECT ||
+      eventType == BLE_GAP_EVENT_LINK_ESTAB ||
+      eventType == BLE_GAP_EVENT_DISCONNECT) {
+    recordDiagnostic(DIAG_GAP_CONNECTION_HANDLE, 0, eventType, 0,
+                     static_cast<int16_t>(connectionHandle));
+  }
+
+  if (eventType == BLE_GAP_EVENT_CONNECT) {
+    if (detail != 0) {
+      notePeripheralConnectFailed(detail);
+    } else {
+      ble_gap_conn_desc connection{};
+      const int lookupStatus = ble_gap_conn_find(connectionHandle, &connection);
+      recordDiagnostic(DIAG_GAP_CONNECTION_LOOKUP, 0, eventType, 0,
+                       static_cast<int16_t>(lookupStatus));
+    }
+  } else if (eventType == BLE_GAP_EVENT_LINK_ESTAB && detail == 0) {
+    ble_gap_conn_desc connection{};
+    const int lookupStatus = ble_gap_conn_find(connectionHandle, &connection);
+    recordDiagnostic(DIAG_GAP_CONNECTION_LOOKUP, 0, eventType, 0,
+                     static_cast<int16_t>(lookupStatus));
+  }
 }
 
 void Manager::notePeripheralConnectFailed(int reason) {
@@ -688,11 +799,16 @@ void Manager::notePeripheralConnectFailed(int reason) {
                         static_cast<int16_t>(reason));
 }
 
-void Manager::noteRemoteIdentity(uint16_t handle, uint16_t peerId) {
-  if (Link* link = findLinkByHandle(handle)) {
-    link->pendingIdentity = peerId;
-    link->identityPending = true;
-  }
+void Manager::noteRemoteIdentity(uint16_t handle, uint16_t peerId,
+                                 uint16_t valueLength) {
+  Link* link = findLinkByHandle(handle);
+  const uint8_t writeResult = valueLength != 2 ? 1 : !link ? 2 : 0;
+  recordDiagnostic(DIAG_SERVER_IDENTITY_WRITE, valueLength == 2 ? peerId : 0,
+                   writeResult, FAILURE_STAGE_PERIPHERAL_IDENTITY,
+                   static_cast<int16_t>(valueLength));
+  if (writeResult != 0) return;
+  link->pendingIdentity = peerId;
+  link->identityPending = true;
 }
 
 uint16_t Manager::fragmentDataCapacity() const {
@@ -1167,8 +1283,12 @@ void Manager::maintainHubConnections() {
     candidate->connectFailedPending = false;
     recordDiagnostic(DIAG_CENTRAL_CONNECT_ATTEMPT, candidate->peerId, 0, 0,
                      static_cast<int16_t>(candidate->addressType));
-    if (!client->connect(address, true, true, true)) {
-      const int rc = client->getLastError();
+    const bool connectStarted = client->connect(address, true, true, true);
+    const int rc = connectStarted ? 0 : client->getLastError();
+    recordDiagnostic(DIAG_CENTRAL_CONNECT_RETURN, candidate->peerId,
+                     connectStarted ? 1 : 0, FAILURE_STAGE_GAP_START,
+                     static_cast<int16_t>(rc));
+    if (!connectStarted) {
       candidate->connecting = false;
       candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
       emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_GAP_START,
@@ -1243,9 +1363,16 @@ void Manager::processLinkEvents() {
       bool duplicate = false;
       for (const auto& other : links_)
         if (&other != &link && other.used && other.connected && other.peerId == peer) duplicate = true;
-      if (!enabled_ || !link.serverSide || link.handshakeTimedOut || !peerConfigured(peer) || duplicate) {
-        const int16_t detail = !enabled_ ? 1 : !link.serverSide ? 2 :
-                               link.handshakeTimedOut ? 3 : !peerConfigured(peer) ? 4 : 5;
+
+      // Preserve the exact boolean that rejected an otherwise established GAP
+      // link. reason=0 means accepted; 1..5 map to the checks below.
+      const uint8_t rejectReason = !enabled_ ? 1 : !link.serverSide ? 2 :
+          link.handshakeTimedOut ? 3 : !peerConfigured(peer) ? 4 : duplicate ? 5 : 0;
+      recordDiagnostic(DIAG_SERVER_IDENTITY_DECISION, peer, rejectReason,
+                       FAILURE_STAGE_PERIPHERAL_IDENTITY,
+                       static_cast<int16_t>(link.connectionHandle));
+      if (rejectReason) {
+        const int16_t detail = rejectReason;
         recordDiagnostic(DIAG_SERVER_IDENTITY_REJECTED, peer, 3,
                          FAILURE_STAGE_PERIPHERAL_IDENTITY, detail);
         link.peerId = peer;

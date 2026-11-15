@@ -477,7 +477,15 @@ function bleDiagnosticCodeName(code: number) {
         22: 'Peer disconnected', 23: 'Advertising restart failed',
         24: 'Central scan restart failed', 25: 'GAP connection callback',
         26: 'BLE event queue full', 27: 'BLE receive queue full',
-        28: 'NimBLE connection capacity'
+        28: 'NimBLE connection capacity', 29: 'GAP lifecycle event',
+        30: 'Peripheral onConnect callback entered',
+        31: 'Peripheral connection admission decision',
+        32: 'Peripheral peer identity write',
+        33: 'Peripheral peer identity decision',
+        34: 'Central connect() return value',
+        35: 'GAP connection handle lookup',
+        36: 'Peripheral disconnect callback',
+        37: 'Raw GAP connection handle'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
 function bleDiagnosticStageText(record: BleDiagnosticRecord) {
@@ -496,6 +504,34 @@ function bleDiagnosticStageText(record: BleDiagnosticRecord) {
     }
     if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
         return bleConnectionStageName(record.stage);
+    }
+    if (record.code === 28 && record.stage) {
+        return ({
+            1: 'NimBLE C++ client pool',
+            2: 'NimBLE host alias',
+            3: 'ESP-IDF legacy setting',
+            4: 'Effective Mynewt host setting'
+        } as Record<number, string>)[record.stage] ?? `capacity source ${record.stage}`;
+    }
+    if (record.code === 29) {
+        return ({
+            0: 'CONNECT', 1: 'DISCONNECT', 3: 'CONN_UPDATE',
+            6: 'TERM_FAILURE', 8: 'DISC_COMPLETE', 9: 'ADV_COMPLETE',
+            10: 'ENC_CHANGE', 14: 'SUBSCRIBE', 15: 'MTU',
+            38: 'LINK_ESTAB'
+        } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`;
+    }
+    if (record.code === 35) {
+        return record.reason === 0 ? 'after CONNECT' :
+            record.reason === 38 ? 'after LINK_ESTAB' : `after GAP event ${record.reason}`;
+    }
+    if (record.code === 37) {
+        return ({
+            0: 'CONNECT', 1: 'DISCONNECT', 38: 'LINK_ESTAB'
+        } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`;
+    }
+    if (record.code === 32) {
+        return ({ 0: 'write accepted', 1: 'invalid payload length', 2: 'no matching connection handle' } as Record<number, string>)[record.reason] ?? `write result ${record.reason}`;
     }
     return record.stage ? `stage ${record.stage}` : '';
 }
@@ -526,9 +562,32 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.code === 4 ? (startFailureSubsystem ?? '') :
         record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
         record.code === 28 ? `application link limit ${record.reason}` :
+        record.code === 29 ? '' :
+        record.code === 30 ? `connection handle ${record.detail}` :
+        record.code === 31 ? ({
+            0: record.stage === 1 ? 'application accepted incoming connection' : 'link slot allocated',
+            1: 'rejected: BLE disabled', 2: 'rejected: not in Peripheral mode',
+            3: 'rejected: application link limit reached',
+            4: 'rejected: no free application link slot'
+        } as Record<number, string>)[record.reason] ?? `admission reason ${record.reason}` :
+        record.code === 32 ? '' :
+        record.code === 33 ? ({
+            0: 'peer identity accepted', 1: 'rejected: BLE disabled',
+            2: 'rejected: not a Peripheral link', 3: 'rejected: handshake timed out',
+            4: 'rejected: peer is not allow-listed', 5: 'rejected: duplicate peer identity'
+        } as Record<number, string>)[record.reason] ?? `identity decision ${record.reason}` :
+        record.code === 34 ? (record.reason ? 'connect() started' : 'connect() rejected synchronously') :
+        record.code === 35 ? (record.detail === 0 ? 'connection handle lookup succeeded' :
+            `connection handle lookup failed: ${record.detail}`) :
+        record.code === 36 ? `disconnect reason ${record.reason}, handle ${record.detail < 0 ? 'none' : record.detail}` :
+        record.code === 37 ? `handle ${record.detail < 0 ? 'none' : record.detail}` :
         record.reason ? `reason ${record.reason}` : '';
     const capacityDetail = record.code === 28
-        ? record.detail < 0 ? 'host connection slots unavailable at compile time' : `NimBLE host slots ${record.detail}`
+        ? record.detail < 0 ? 'capacity macro unavailable' :
+            record.stage === 1 ? `NimBLE C++ client pool ${record.detail}` :
+            record.stage === 2 ? `NimBLE host alias ${record.detail}` :
+            record.stage === 3 ? `ESP-IDF legacy setting ${record.detail}` :
+            record.stage === 4 ? `effective host slots ${record.detail}` : `capacity ${record.detail}`
         : '';
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
