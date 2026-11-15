@@ -181,7 +181,7 @@ bool Manager::begin(uint16_t localDeviceId) {
 static bool sameBleConfig(const Config& a, const Config& b) {
   return a.mode == b.mode && a.advertisingIntervalMs == b.advertisingIntervalMs &&
          a.scanIntervalMs == b.scanIntervalMs && a.scanWindowMs == b.scanWindowMs &&
-         a.reconnectIntervalMs == b.reconnectIntervalMs && a.enabled == b.enabled &&
+         a.reconnectIntervalMs == b.reconnectIntervalMs && a.autoStart == b.autoStart &&
          a.connectionTimeoutMs == b.connectionTimeoutMs && a.maxRetries == b.maxRetries &&
          a.rxMessageTimeoutMs == b.rxMessageTimeoutMs && a.peerCount == b.peerCount &&
          memcmp(a.peers, b.peers, sizeof(a.peers)) == 0;
@@ -191,7 +191,7 @@ bool Manager::configure(const Config& config) { return configure(config, localDe
 
 bool Manager::configure(const Config& config, uint16_t localDeviceId) {
   if (!localDeviceId || localDeviceId == 0xFFFF || config.mode > MODE_PERIPHERAL ||
-      config.peerCount > MAX_PEERS || config.maxRetries > 5 || config.enabled > 1 ||
+      config.peerCount > MAX_PEERS || config.maxRetries > 5 || config.autoStart > 1 ||
       config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
       config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
       config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
