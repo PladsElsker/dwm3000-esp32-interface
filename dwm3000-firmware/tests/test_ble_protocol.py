@@ -65,6 +65,8 @@ for bad_peers in ([1, 1], [0], [65535], list(range(1, 10))):
 # Manual peer connection commands are not part of the V2.1 command surface.
 assert "ble-connect" not in module.OPS
 assert "ble-disconnect" not in module.OPS
+assert "save-config" not in module.OPS
+assert 0x12 not in module.OPS.values()
 assert 0x54 not in module.OPS.values()
 assert 0x55 not in module.OPS.values()
 assert module.OPS["start-ble"] == 0x52
