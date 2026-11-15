@@ -431,19 +431,19 @@ function bleModeName(mode: number) {
 function bleConnectionStageName(stage: number) {
     return ({
         1: 'Stopping scan', 2: 'Allocating client', 3: 'Starting GAP connection',
-        4: 'GAP connection result', 5: 'GAP connection timeout',
-        6: 'Finding GATT service', 7: 'Validating GATT characteristics',
-        8: 'Checking BLE protocol version', 9: 'Checking peer identity',
-        10: 'Writing local identity', 11: 'Subscribing to notifications',
-        12: 'Peripheral identity validation', 13: 'Peripheral handshake timeout'
+        4: 'GAP connection result', 5: 'Finding GATT service',
+        6: 'Validating GATT characteristics', 7: 'Checking BLE protocol version',
+        8: 'Checking peer identity', 9: 'Writing local identity',
+        10: 'Subscribing to notifications', 11: 'Peripheral identity validation',
+        12: 'Peripheral handshake timeout'
     } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
 }
 function bleConnectionDetailText(stage: number, detail: number) {
-    if (detail === -1 || (detail === 0 && [6, 7, 10, 11, 13].includes(stage))) return 'detail unavailable';
+    if (detail === -1 || (detail === 0 && [5, 6, 9, 10, 12].includes(stage))) return 'detail unavailable';
     const hexDetail = `0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
     if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail}`;
-    if (stage === 9) return `reported peer ID ${hexDetail}`;
-    if (stage === 12) return `validation code ${detail}`;
+    if (stage === 8) return `reported peer ID ${hexDetail}`;
+    if (stage === 11) return `validation code ${detail}`;
     return `detail ${hexDetail}`;
 }
 function bleConnectionFailureText(status?: BlePeerStatus) {
