@@ -9,7 +9,7 @@ type FrameEvent = { seq: number; opcode: number; payload: number[] };
 type BleConfig = {
     mode: number; advertisingIntervalMs: number; scanIntervalMs: number; scanWindowMs: number;
     retryIntervalMs: number; connectionTimeoutMs: number;
-    maxRetries: number; rxMessageTimeoutMs: number; peers: number[];
+    maxRetries: number; rxMessageTimeoutMs: number; autoStart: boolean; peers: number[];
 };
 type BlePeerStatus = {
     peerId: number; state: number; mode: number; enabled: boolean; advertising: boolean;
@@ -22,7 +22,7 @@ type BleMessage = {
 const defaultBleConfig = (): BleConfig => ({
     mode: 0, advertisingIntervalMs: 160, scanIntervalMs: 160, scanWindowMs: 80,
     retryIntervalMs: 1000, connectionTimeoutMs: 5000,
-    maxRetries: 1, rxMessageTimeoutMs: 1000, peers: []
+    maxRetries: 1, rxMessageTimeoutMs: 1000, autoStart: false, peers: []
 });
 const bleDraft = reactive<BleConfig>(defaultBleConfig());
 const ble = reactive({
@@ -203,11 +203,12 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
     const config: BleConfig = {
         mode: p[offset], advertisingIntervalMs: get16(p, offset + 1), scanIntervalMs: get16(p, offset + 3),
         scanWindowMs: get16(p, offset + 5),
+        autoStart: p[offset + 7] === 1,
         retryIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
         maxRetries: p[offset + 12], rxMessageTimeoutMs: get16(p, offset + 13),
         peers: Array.from({ length: peerCount }, (_, i) => get16(p, offset + 16 + i * 2))
     };
-    if (config.mode > 2 || config.maxRetries > 5 ||
+    if (config.mode > 2 || p[offset + 7] > 1 || config.maxRetries > 5 ||
         config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
         config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
         config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
@@ -224,7 +225,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
 function encodeBleConfigExtension(c: BleConfig) {
     return [
         c.mode, ...u16(c.advertisingIntervalMs), ...u16(c.scanIntervalMs), ...u16(c.scanWindowMs),
-        0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved.
+        c.autoStart ? 1 : 0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs),
         c.maxRetries, ...u16(c.rxMessageTimeoutMs), c.peers.length, ...c.peers.flatMap(u16)
     ];
 }
@@ -1771,8 +1772,12 @@ onUnmounted(() => {
                                     </div>
                                     <div class="callout info">
                                         <Bluetooth :size="16" />
-                                        <div><b>Automatic connection management</b><p>HUB nodes continuously discover and reconnect to peers. Peripheral nodes advertise and accept permitted peers. This remains active until Bluetooth is disabled.</p></div>
+                                        <div><b>Automatic connection management</b><p>HUB nodes continuously discover and reconnect to peers. Peripheral nodes advertise and accept permitted peers. This remains active while Bluetooth is enabled.</p></div>
                                     </div>
+                                    <label class="full-field auto-start-field">
+                                        <span class="auto-start-title"><input type="checkbox" v-model="bleDraft.autoStart" /> Automatically start Bluetooth after boot</span>
+                                        <small>Start the configured BLE role automatically after the next boot. This preference is independent of the Enable/Disable Bluetooth control and does not change the current radio state.</small>
+                                    </label>
                                     <div class="field-grid">
                                         <label>Reconnect interval <span class="field-help">100–60000 ms</span>
                                             <input type="number" min="100" max="60000" step="1" v-model.number="bleDraft.retryIntervalMs" />
