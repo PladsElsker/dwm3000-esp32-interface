@@ -101,6 +101,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16` (14 bytes) |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
+| `0x59` | `GET_BLE_DIAGNOSTIC_TRACE` | — | `count:u8`, then `count × 13-byte BLE diagnostic record` (up to 32 records) |
 
 ### Configuration state and persistence
 
@@ -200,6 +201,14 @@ Events are emitted only to transports subscribed to the corresponding event bit,
 | `0x8C` | `BLE_ERROR` | `direction:u8, peer_id:u16, message_id:u16, fragment_index:u8, error_code:u8, reserved:u8` |
 | `0x8D` | `BLE_DATA_SENT` | `peer_id:u16, message_id:u16, total_length:u16` |
 | `0x8E` | `BLE_DATA_EXPIRED` | `peer_id:u16, message_id:u16` |
+
+### BLE diagnostic trace (`GET_BLE_DIAGNOSTIC_TRACE`, `0x59`)
+
+The command returns up to 32 records from a RAM ring buffer, oldest first. The trace is independent of event subscriptions and is read directly by D3KM while the Diagnostics page is open. It is cleared on reboot. Each 13-byte record is `uptime_ms:u32, code:u8, peer_id:u16, reason:u8, stage:u8, detail:i16, active_links:u8, state_flags:u8`. The `detail` value is signed; for GAP events it preserves the raw NimBLE status. A peer ID of zero means that the remote device identity was not yet known.
+
+Diagnostic codes: `1` BLE stack initialized; `2` stack initialization failed; `3` BLE role started; `4` role start failed; `5` BLE stopped; `6` Central scan started; `7` Central scan start failed; `8` Central scan stop failed; `9` peer discovered; `10` Central client allocation failed; `11` Central connection attempt; `12` connection failure; `13` Central GAP connected; `14` Central GATT handshake step; `15` Central handshake complete; `16` Peripheral accepted GAP connection; `17` Peripheral rejected connection for capacity; `18` Peripheral link-slot allocation failed; `19` Peripheral accepted peer identity; `20` Peripheral rejected peer identity; `21` Peripheral identity-handshake timeout; `22` peer disconnected; `23` advertising restart failed; `24` Central scan restart failed; `25` global GAP connection callback; `26` BLE event queue full; `27` BLE receive queue full.
+
+The `state_flags` byte uses bit 0 for BLE enabled, bit 1 for advertising, bit 2 for scanning, and bits 3–4 for mode (`0` IDLE, `1` HUB/Central, `2` Peripheral). `active_links` is the number of application link slots currently marked connected or connecting.
 
 Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event opcodes `0x86`–`0x8E` use bits 6–14, respectively. `SUBSCRIBE` ORs the supplied mask into the transport's active mask. `UNSUBSCRIBE` clears the supplied bits.
 
