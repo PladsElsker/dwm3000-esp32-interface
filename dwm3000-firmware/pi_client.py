@@ -171,6 +171,8 @@ def encode_ble_config(args: argparse.Namespace) -> bytes:
     if not 100 <= args.ble_rx_message_timeout_ms <= 2000:
         raise ValueError("BLE RX message timeout must be 100..2000 ms")
     ble_auto_start = bool(getattr(args, "ble_auto_start", False))
+    if ble_auto_start and mode == 0:
+        raise ValueError("BLE auto-start requires HUB or PERIPHERAL mode")
     fixed = struct.pack(
         "<BHHHBHHBHB",
         mode, args.ble_advertising_interval_ms, args.ble_scan_interval_ms,
