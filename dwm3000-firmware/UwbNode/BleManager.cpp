@@ -86,6 +86,9 @@ class BleNimBLEClientCallbacks : public NimBLEClientCallbacks {
   void onConnect(NimBLEClient* client) override {
     if (s_manager) s_manager->noteClientConnected(client);
   }
+  void onConnectFail(NimBLEClient* client, int reason) override {
+    if (s_manager) s_manager->noteClientConnectFailed(client, reason);
+  }
   void onDisconnect(NimBLEClient* client, int reason) override {
     if (s_manager) s_manager->noteClientDisconnected(client, reason);
   }
@@ -544,6 +547,15 @@ void Manager::noteClientConnected(void* client) {
   if (Link* link = findLinkByClient(client)) link->connectComplete = true;
 }
 
+void Manager::noteClientConnectFailed(void* client, int reason) {
+  if (Link* link = findLinkByClient(client)) {
+    if (link->connecting && !link->connected) {
+      link->connectFailedReason = reason;
+      link->connectFailedPending = true;
+    }
+  }
+}
+
 void Manager::noteClientDisconnected(void* client, int reason) {
   if (Link* link = findLinkByClient(client)) {
     link->disconnectReason = reason;
@@ -846,48 +858,152 @@ void Manager::serviceResultRetry(Link& link) {
   sendMessageResult(link.result.messageId, link.result.status);
 }
 
-void Manager::maintainHubConnections() {
-  if (!enabled_ || config_.mode != MODE_HUB) return;
-  NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
-  if (scan && !scan->isScanning()) scanning_ = scan->start(0);
-  else if (scan) scanning_ = true;
+const Manager::PeerFailure* Manager::findPeerFailure(uint16_t peerId) const {
+  for (const auto& failure : peerFailures_)
+    if (failure.used && failure.peerId == peerId) return &failure;
+  return nullptr;
+}
 
-  const uint32_t now = millis();
-  for (auto& link : links_) {
-    if (!link.used || link.serverSide || link.connected || link.connecting || !link.addressReady) continue;
-    if (activeConnectionCount() >= MAX_ACTIVE_CONNECTIONS) break;
-    if (link.nextAttemptMs && static_cast<int32_t>(now - link.nextAttemptMs) < 0) continue;
-    if (!link.client) {
-      NimBLEClient* client = NimBLEDevice::createClient();
-      if (!client) { link.nextAttemptMs = now + config_.reconnectIntervalMs; continue; }
-      link.client = client;
-      client->setClientCallbacks(static_cast<NimBLEClientCallbacks*>(clientCallbacks_), false);
-    }
-    NimBLEClient* client = static_cast<NimBLEClient*>(link.client);
-    client->setConnectTimeout(config_.connectionTimeoutMs);
-    const NimBLEAddress address(link.address, link.addressType);
-    link.connecting = true;
-    link.connectStartedMs = now;
-    link.nextAttemptMs = 0;
-    if (!client->connect(address, true, true, true)) {
-      link.connecting = false;
-      link.nextAttemptMs = now + config_.reconnectIntervalMs;
-      uint8_t payload[3]; writeU16(payload, link.peerId); payload[2] = 1;
-      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+void Manager::clearPeerFailure(uint16_t peerId) {
+  for (auto& failure : peerFailures_) {
+    if (failure.used && failure.peerId == peerId) {
+      failure = PeerFailure();
+      return;
     }
   }
+}
+
+void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
+                                    uint8_t stage, int16_t detail) {
+  // Keep bounded diagnostic history outside the live connection slots so
+  // repeated rejected Peripheral handshakes cannot consume link capacity.
+  if (peerId) {
+    PeerFailure* record = nullptr;
+    for (auto& failure : peerFailures_) {
+      if (failure.used && failure.peerId == peerId) {
+        record = &failure;
+        break;
+      }
+      if (!failure.used && !record) record = &failure;
+    }
+    if (!record) {
+      record = &peerFailures_[peerFailureReplaceIndex_];
+      peerFailureReplaceIndex_ = (peerFailureReplaceIndex_ + 1) % MAX_PEERS;
+    }
+    record->used = true;
+    record->peerId = peerId;
+    record->reason = reason;
+    record->stage = stage;
+    record->detail = detail;
+  }
+
+  uint8_t payload[6]{};
+  writeU16(payload, peerId);
+  payload[2] = reason;
+  payload[3] = stage;
+  writeU16(payload + 4, static_cast<uint16_t>(detail));
+  enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+}
+
+void Manager::maintainHubConnections() {
+  if (!enabled_ || config_.mode != MODE_HUB) {
+    scanning_ = false;
+    return;
+  }
+
+  NimBLEScan* scan = static_cast<NimBLEScan*>(scan_);
+  if (!scan) {
+    scanning_ = false;
+    return;
+  }
+
+  const uint32_t now = millis();
+
+  // NimBLE-Arduino 2.5.0 stops an active scan when a Central connection
+  // procedure receives BLE_HS_EBUSY. Keep scanning stopped for the complete
+  // asynchronous connection and GATT identity handshake; restart it only
+  // after processLinkEvents() marks that attempt complete or failed.
+  for (const auto& link : links_) {
+    if (link.used && !link.serverSide && link.connecting) {
+      if (scan->isScanning()) scan->stop();
+      scanning_ = scan->isScanning();
+      return;
+    }
+  }
+
+  Link* candidate = nullptr;
+  for (auto& link : links_) {
+    if (!link.used || link.serverSide || link.connected || link.connecting ||
+        !link.addressReady) continue;
+    if (activeConnectionCount() >= MAX_ACTIVE_CONNECTIONS) break;
+    if (link.nextAttemptMs && static_cast<int32_t>(now - link.nextAttemptMs) < 0) continue;
+    candidate = &link;
+    break; // Run one Central connection procedure at a time; resume discovery between peers.
+  }
+
+  if (candidate) {
+    // Stop discovery explicitly before connecting instead of relying on the
+    // NimBLE client to cancel it after the first BLE_HS_EBUSY response.
+    if (scan->isScanning() && !scan->stop()) {
+      scanning_ = scan->isScanning();
+      candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
+      emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_SCAN_STOP, -1);
+      return;
+    }
+    // GAP scan cancellation completes asynchronously. Do not submit the
+    // connection request until NimBLE reports discovery as inactive.
+    if (scan->isScanning()) {
+      scanning_ = true;
+      return;
+    }
+    scanning_ = false;
+
+    if (!candidate->client) {
+      NimBLEClient* client = NimBLEDevice::createClient();
+      if (!client) {
+        candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
+        emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_CLIENT_ALLOCATE, -1);
+        return;
+      }
+      candidate->client = client;
+      client->setClientCallbacks(static_cast<NimBLEClientCallbacks*>(clientCallbacks_), false);
+    }
+
+    NimBLEClient* client = static_cast<NimBLEClient*>(candidate->client);
+    client->setConnectTimeout(config_.connectionTimeoutMs);
+    const NimBLEAddress address(candidate->address, candidate->addressType);
+    candidate->connecting = true;
+    candidate->connectStartedMs = now;
+    candidate->nextAttemptMs = 0;
+    candidate->connectFailedPending = false;
+    if (!client->connect(address, true, true, true)) {
+      const int rc = client->getLastError();
+      candidate->connecting = false;
+      candidate->nextAttemptMs = now + config_.reconnectIntervalMs;
+      emitConnectionFailure(candidate->peerId, 1, FAILURE_STAGE_GAP_START,
+                            static_cast<int16_t>(rc));
+    }
+    return;
+  }
+
+  if (!scan->isScanning()) scanning_ = scan->start(0);
+  else scanning_ = true;
 }
 
 void Manager::processLinkEvents() {
   for (auto& link : links_) {
     if (!link.used) continue;
-    if (enabled_ && config_.mode == MODE_HUB && !link.serverSide && link.connecting &&
-        !link.connected && elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
-      if (link.client) static_cast<NimBLEClient*>(link.client)->cancelConnect();
-      link.connecting = false;
-      link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
-      uint8_t timeoutPayload[3]; writeU16(timeoutPayload, link.peerId); timeoutPayload[2] = 4;
-      enqueueEvent(EVENT_CONNECTION_FAILED, timeoutPayload, sizeof(timeoutPayload));
+    if (link.connectFailedPending) {
+      const int failureReason = link.connectFailedReason;
+      link.connectFailedPending = false;
+      link.connectFailedReason = 0;
+      if (enabled_ && config_.mode == MODE_HUB && !link.serverSide &&
+          link.connecting && !link.connected) {
+        link.connecting = false;
+        link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
+        emitConnectionFailure(link.peerId, 6, FAILURE_STAGE_GAP_RESULT,
+                              static_cast<int16_t>(failureReason));
+      }
     }
     if (link.disconnectPending) {
       link.disconnectPending = false;
@@ -913,8 +1029,7 @@ void Manager::processLinkEvents() {
     if (link.used && link.serverSide && !link.connected && !link.handshakeTimedOut &&
         elapsed(millis(), link.connectStartedMs, config_.connectionTimeoutMs)) {
       link.handshakeTimedOut = true;
-      uint8_t payload[3]; writeU16(payload, 0); payload[2] = 5;
-      enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+      emitConnectionFailure(0, 5, FAILURE_STAGE_PERIPHERAL_HANDSHAKE_TIMEOUT, 0);
       if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
     }
 
@@ -925,11 +1040,14 @@ void Manager::processLinkEvents() {
       for (const auto& other : links_)
         if (&other != &link && other.used && other.connected && other.peerId == peer) duplicate = true;
       if (!enabled_ || !link.serverSide || link.handshakeTimedOut || !peerConfigured(peer) || duplicate) {
-        uint8_t payload[3]; writeU16(payload, peer); payload[2] = 3;
-        enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
+        const int16_t detail = !enabled_ ? 1 : !link.serverSide ? 2 :
+                               link.handshakeTimedOut ? 3 : !peerConfigured(peer) ? 4 : 5;
+        link.peerId = peer;
+        emitConnectionFailure(peer, 3, FAILURE_STAGE_PERIPHERAL_IDENTITY, detail);
         if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
       } else {
         link.peerId = peer; link.connected = true; link.connecting = false;
+        clearPeerFailure(peer);
         link.mtu = static_cast<NimBLEServer*>(server_)->getPeerMTU(link.connectionHandle);
         uint8_t payload[2]; writeU16(payload, peer);
         enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -940,14 +1058,16 @@ void Manager::processLinkEvents() {
       link.connectComplete = false;
       NimBLEClient* client = static_cast<NimBLEClient*>(link.client);
       if (!enabled_ || !client || !client->isConnected()) continue;
-      auto fail = [&](uint8_t reason) {
-        uint8_t payload[3]; writeU16(payload, link.peerId); payload[2] = reason;
-        enqueueEvent(EVENT_CONNECTION_FAILED, payload, sizeof(payload));
-        link.connecting = false;
+      auto fail = [&](uint8_t reason, uint8_t stage, int16_t detail) {
+        emitConnectionFailure(link.peerId, reason, stage, detail);
+        // Keep the Central slot marked busy until NimBLE confirms disconnect;
+        // this prevents the scanner or another connection attempt from racing
+        // the GATT failure teardown.
+        link.connecting = true;
         if (client->isConnected()) client->disconnect();
       };
       NimBLERemoteService* service = client->getService(SERVICE_UUID);
-      if (!service) { fail(5); continue; }
+      if (!service) { fail(5, FAILURE_STAGE_GATT_SERVICE, 0); continue; }
       auto* remoteRx = service->getCharacteristic(RX_UUID);
       auto* remoteTx = service->getCharacteristic(TX_UUID);
       auto* remoteIdRead = service->getCharacteristic(ID_READ_UUID);
@@ -955,18 +1075,31 @@ void Manager::processLinkEvents() {
       auto* remoteVersion = service->getCharacteristic(PROTOCOL_VERSION_UUID);
       if (!remoteRx || !remoteRx->canWrite() || !remoteTx || !remoteTx->canNotify() ||
           !remoteIdRead || !remoteIdRead->canRead() || !remoteIdWrite || !remoteIdWrite->canWrite() ||
-          !remoteVersion || !remoteVersion->canRead()) { fail(5); continue; }
+          !remoteVersion || !remoteVersion->canRead()) {
+        fail(5, FAILURE_STAGE_GATT_CHARACTERISTICS, 0); continue;
+      }
       const NimBLEAttValue version = remoteVersion->readValue();
+      if (version.length() != 1 || version.data()[0] != BLE_PROTOCOL_VERSION) {
+        const int16_t detail = version.length() == 1 ? version.data()[0] : -1;
+        fail(5, FAILURE_STAGE_PROTOCOL_VERSION, detail); continue;
+      }
       const NimBLEAttValue id = remoteIdRead->readValue();
-      if (version.length() != 1 || version.data()[0] != BLE_PROTOCOL_VERSION || id.length() != 2) {
-        fail(5); continue;
+      if (id.length() != 2) {
+        fail(5, FAILURE_STAGE_PEER_IDENTITY, static_cast<int16_t>(id.length())); continue;
       }
       const uint16_t remoteId = readU16(id.data());
-      if (remoteId != link.peerId || !peerConfigured(remoteId)) { fail(3); continue; }
+      if (remoteId != link.peerId || !peerConfigured(remoteId)) {
+        fail(3, FAILURE_STAGE_PEER_IDENTITY, static_cast<int16_t>(remoteId)); continue;
+      }
       uint8_t ownId[2]; writeU16(ownId, localDeviceId_);
-      if (!remoteIdWrite->writeValue(ownId, sizeof(ownId), true) ||
-          !remoteTx->subscribe(true, onRemoteNotify)) { fail(5); continue; }
+      if (!remoteIdWrite->writeValue(ownId, sizeof(ownId), true)) {
+        fail(5, FAILURE_STAGE_IDENTITY_WRITE, -1); continue;
+      }
+      if (!remoteTx->subscribe(true, onRemoteNotify)) {
+        fail(5, FAILURE_STAGE_NOTIFY_SUBSCRIBE, -1); continue;
+      }
       link.remoteRx = remoteRx; link.remoteTx = remoteTx;
+      clearPeerFailure(link.peerId);
       link.mtu = client->getMTU(); link.connected = true; link.connecting = false;
       uint8_t payload[2]; writeU16(payload, link.peerId);
       enqueueEvent(EVENT_PEER_CONNECTED, payload, sizeof(payload));
@@ -993,11 +1126,30 @@ bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
     status.connected = link->connected ? 1 : 0;
     status.mtu = link->connected ? link->mtu : 23;
     if (link->connected) status.state = PEER_CONNECTED;
-    else if (link->connecting) status.state = PEER_CONNECTING;
-    else if (link->serverSide && !link->peerId) status.state = PEER_HANDSHAKING;
+    else if (link->connecting) status.state = link->serverSide ? PEER_HANDSHAKING : PEER_CONNECTING;
+    else if (link->nextAttemptMs &&
+             static_cast<int32_t>(millis() - link->nextAttemptMs) < 0) status.state = PEER_BACKOFF;
     else if (link->addressReady) status.state = PEER_FOUND;
+    else if (config_.mode == MODE_PERIPHERAL) status.state = PEER_CONFIGURED;
     else status.state = PEER_BACKOFF;
-  } else if (peerConfigured(peerId)) status.state = PEER_CONFIGURED;
+  } else if (peerConfigured(peerId)) {
+    status.state = PEER_CONFIGURED;
+    if (config_.mode == MODE_PERIPHERAL) {
+      // Server-side links have no peer ID until the identity characteristic is
+      // written. Surface that pending handshake against configured peer rows.
+      for (const auto& pending : links_) {
+        if (pending.used && pending.serverSide && pending.connecting && !pending.peerId) {
+          status.state = PEER_HANDSHAKING;
+          break;
+        }
+      }
+    }
+  }
+  if (const PeerFailure* failure = findPeerFailure(peerId)) {
+    status.lastFailureReason = failure->reason;
+    status.lastFailureStage = failure->stage;
+    status.lastFailureDetail = failure->detail;
+  }
   return true;
 }
 

@@ -55,6 +55,6 @@ cargo check
 
 - Implement UI changes in the Vue frontend; keep serial I/O and device transactions in the Rust backend.
 - Keep command IDs, event IDs and payload layouts synchronized with the firmware [protocol reference](../dwm3000-firmware/PROTOCOL.md).
-- Use `GET_STATUS` for aggregate BLE state and `GET_PEER_STATUS` for an individual peer's connection state and negotiated MTU.
+- Use `GET_STATUS` for aggregate BLE state and `GET_PEER_STATUS` for an individual peer's connection state, negotiated MTU, and last connection failure. `BLE_CONNECTION_FAILED` events include the failure stage and raw status detail.
 - Test frontend changes with `npm run build` and backend changes with `cargo check`.
 - A successful software build does not verify serial interoperability, ranging accuracy or BLE operation. Test those with target hardware and a second compatible node.

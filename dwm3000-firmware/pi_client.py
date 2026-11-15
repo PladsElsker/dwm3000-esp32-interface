@@ -453,12 +453,16 @@ def record_response(op: int, payload: bytes) -> object:
         if len(payload) != 1 + count * 2:
             return {"parse_error": "peer list length mismatch"}
         return {"peers": list(struct.unpack_from("<" + "H" * count, payload, 1)) if count else []}
-    if op == 0x56 and len(payload) == 10:
-        return {"state": BLE_PEER_STATE_NAMES.get(payload[0], payload[0]),
-                "mode": BLE_MODE_NAMES.get(payload[1], payload[1]), "enabled": bool(payload[2]),
-                "advertising": bool(payload[3]), "scanning": bool(payload[4]),
-                "connected": bool(payload[5]), "peer_id": struct.unpack_from("<H", payload, 6)[0],
-                "mtu": struct.unpack_from("<H", payload, 8)[0]}
+    if op == 0x56 and len(payload) in (10, 14):
+        result = {"state": BLE_PEER_STATE_NAMES.get(payload[0], payload[0]),
+                  "mode": BLE_MODE_NAMES.get(payload[1], payload[1]), "enabled": bool(payload[2]),
+                  "advertising": bool(payload[3]), "scanning": bool(payload[4]),
+                  "connected": bool(payload[5]), "peer_id": struct.unpack_from("<H", payload, 6)[0],
+                  "mtu": struct.unpack_from("<H", payload, 8)[0]}
+        if len(payload) == 14:
+            (result["last_failure_reason"], result["last_failure_stage"],
+             result["last_failure_detail"]) = struct.unpack_from("<BBh", payload, 10)
+        return result
     if op == 0x57 and len(payload) == 2:
         return {"message_id": struct.unpack("<H", payload)[0], "accepted_for_transmission": True}
     if op == 0x58 and len(payload) >= 4:

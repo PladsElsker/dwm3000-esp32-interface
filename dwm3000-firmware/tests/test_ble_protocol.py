@@ -157,11 +157,20 @@ assert module.BLE_PEER_STATE_NAMES[3] == "connected"
 assert module.BLE_PEER_STATE_NAMES[4] == "connecting"
 assert module.BLE_PEER_STATE_NAMES[5] == "handshaking"
 assert module.BLE_PEER_STATE_NAMES[6] == "backoff"
-peer_status_payload = bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23)
+legacy_peer_status_payload = bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23)
+legacy_peer_status = module.record_response(0x56, legacy_peer_status_payload)
+assert legacy_peer_status["state"] == "backoff"
+assert "last_failure_reason" not in legacy_peer_status
+
+peer_status_payload = (bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23) +
+                        struct.pack("<BBh", 6, 4, -5))
 peer_status = module.record_response(0x56, peer_status_payload)
 assert peer_status["state"] == "backoff"
 assert peer_status["peer_id"] == 8
 assert peer_status["enabled"] is True
+assert peer_status["last_failure_reason"] == 6
+assert peer_status["last_failure_stage"] == 4
+assert peer_status["last_failure_detail"] == -5
 
 # Fragmentation and packet CRC at the supported MTUs.
 message = bytes(range(256)) + bytes(range(240))

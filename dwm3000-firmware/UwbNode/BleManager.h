@@ -19,6 +19,20 @@ enum PeerState : uint8_t {
   PEER_UNKNOWN = 0, PEER_CONFIGURED = 1, PEER_FOUND = 2, PEER_CONNECTED = 3,
   PEER_CONNECTING = 4, PEER_HANDSHAKING = 5, PEER_BACKOFF = 6
 };
+enum ConnectionFailureStage : uint8_t {
+  FAILURE_STAGE_SCAN_STOP = 1,
+  FAILURE_STAGE_CLIENT_ALLOCATE = 2,
+  FAILURE_STAGE_GAP_START = 3,
+  FAILURE_STAGE_GAP_RESULT = 4,
+  FAILURE_STAGE_GATT_SERVICE = 5,
+  FAILURE_STAGE_GATT_CHARACTERISTICS = 6,
+  FAILURE_STAGE_PROTOCOL_VERSION = 7,
+  FAILURE_STAGE_PEER_IDENTITY = 8,
+  FAILURE_STAGE_IDENTITY_WRITE = 9,
+  FAILURE_STAGE_NOTIFY_SUBSCRIBE = 10,
+  FAILURE_STAGE_PERIPHERAL_IDENTITY = 11,
+  FAILURE_STAGE_PERIPHERAL_HANDSHAKE_TIMEOUT = 12
+};
 enum EventCode : uint8_t {
   EVENT_STATE_CHANGED = 0, EVENT_PEER_FOUND, EVENT_PEER_CONNECTED,
   EVENT_PEER_DISCONNECTED, EVENT_CONNECTION_FAILED, EVENT_DATA_RECEIVED,
@@ -59,6 +73,9 @@ struct PeerStatus {
   uint8_t connected = 0;
   uint16_t peerId = 0;
   uint16_t mtu = 23;
+  uint8_t lastFailureReason = 0;
+  uint8_t lastFailureStage = 0;
+  int16_t lastFailureDetail = 0;
 };
 
 class Manager {
@@ -91,6 +108,7 @@ class Manager {
   void noteServerDisconnected(uint16_t connectionHandle, int reason);
   void noteServerMtuChanged(uint16_t connectionHandle, uint16_t mtu);
   void noteClientConnected(void* client);
+  void noteClientConnectFailed(void* client, int reason);
   void noteClientDisconnected(void* client, int reason);
   void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId);
   void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
@@ -141,6 +159,13 @@ class Manager {
     uint8_t retryCount = 0;
     uint32_t lastActionMs = 0;
   };
+  struct PeerFailure {
+    bool used = false;
+    uint16_t peerId = 0;
+    uint8_t reason = 0;
+    uint8_t stage = 0;
+    int16_t detail = 0;
+  };
   struct Link {
     bool used = false;
     bool serverSide = false;
@@ -149,6 +174,8 @@ class Manager {
     bool connected = false;
     bool connecting = false;
     bool connectComplete = false;
+    bool connectFailedPending = false;
+    int connectFailedReason = 0;
     bool disconnectPending = false;
     bool identityPending = false;
     bool handshakeTimedOut = false;
@@ -206,6 +233,10 @@ class Manager {
   Link* allocateLink(uint16_t peerId, bool serverSide = false);
   uint8_t activeConnectionCount() const;
   void refreshConnectedSummary();
+  void emitConnectionFailure(uint16_t peerId, uint8_t reason,
+                             uint8_t stage, int16_t detail);
+  const PeerFailure* findPeerFailure(uint16_t peerId) const;
+  void clearPeerFailure(uint16_t peerId);
   void maintainHubConnections();
   void processLinkEvents();
   uint16_t mtuForPeer(uint16_t peerId) const;
@@ -227,6 +258,8 @@ class Manager {
   uint16_t connectedPeerId_ = 0;
   bool advertisingRestartPending_ = false;
   Link links_[MAX_ACTIVE_CONNECTIONS]{};
+  PeerFailure peerFailures_[MAX_PEERS]{};
+  uint8_t peerFailureReplaceIndex_ = 0;
 
   PacketSlot rxPackets_[RX_PACKET_QUEUE_SIZE]{};
   volatile uint8_t rxHead_ = 0;
