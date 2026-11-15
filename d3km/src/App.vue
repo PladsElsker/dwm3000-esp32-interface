@@ -532,16 +532,19 @@ function handleEvent(e: FrameEvent) {
     }
     if (e.opcode === 138 && p.length >= 3) {
         const peerId = get16(p);
-        const reason = ({
-            1: 'Local setup failed', 3: 'Peer identity rejected',
-            5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
-        } as Record<number, string>)[p[2]] ?? `Failure ${p[2]}`;
+        const peripheralIncomingFailure = peerId === 0 && ble.runtimeConfig.mode === 2 && p[2] === 6;
+        const reason = peripheralIncomingFailure
+            ? 'Incoming Peripheral connection rejected'
+            : ({
+                1: 'Local setup failed', 3: 'Peer identity rejected',
+                5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
+            } as Record<number, string>)[p[2]] ?? `Failure ${p[2]}`;
         if (p.length >= 6) {
             const detailRaw = get16(p, 4);
             const detail = detailRaw >= 0x8000 ? detailRaw - 0x10000 : detailRaw;
             const stage = bleConnectionStageName(p[3]);
             const detailText = bleConnectionDetailText(p[3], detail);
-            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason} · ${stage} · ${detailText}`);
+            log(`BLE connection failed · ${peerId ? `peer ${peerId}` : 'incoming link'} · ${reason} · ${stage} · ${detailText}`);
         } else {
             log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason}`);
         }
