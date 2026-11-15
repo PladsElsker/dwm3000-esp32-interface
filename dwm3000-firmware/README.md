@@ -53,10 +53,10 @@ The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same 
 
 BLE uses NimBLE-Arduino 2.5.2 and runs independently of UWB ranging.
 
-- \`IDLE\` disables BLE; \`HUB\` runs as Central; \`PERIPHERAL\` advertises as a Peripheral.
-- The Configuration page has a separate \`Automatically start Bluetooth after boot\` preference, saved in NVS. When enabled, the node starts its configured non-IDLE BLE role during boot.
-- \`START_BLE\` and \`STOP_BLE\` control only the current runtime state; they do not change the boot auto-start preference.
-- Enabled HUB nodes continuously discover and reconnect to peers. Enabled Peripheral nodes advertise and accept incoming peers. The host monitors status and events; it does not need to manage connections.
+- `IDLE` leaves BLE stopped; `HUB` operates as a Central; `PERIPHERAL` advertises as a Peripheral.
+- Configuration stores the BLE role, peer policy, timing parameters, and the `Automatically start Bluetooth after boot` preference in NVS. At boot, the node starts the saved HUB or PERIPHERAL role when auto-start is enabled.
+- `START_BLE` and `STOP_BLE` start and stop BLE for the current runtime session. The boot auto-start preference is configured and saved separately.
+- While enabled, HUB nodes discover peers and maintain connection attempts. PERIPHERAL nodes advertise and accept permitted peers. The node manages scanning, advertising, connections, and reconnection autonomously; hosts read status and events.
 - Up to eight concurrent peer links are maintained. The NimBLE host build uses nine connection slots.
 - An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
 - Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
