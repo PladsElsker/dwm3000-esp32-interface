@@ -74,6 +74,9 @@ struct PeerStatus {
   uint8_t connected = 0;
   uint16_t peerId = 0;
   uint16_t mtu = 23;
+  uint8_t lastFailureReason = 0;
+  uint8_t lastFailureStage = 0;
+  int16_t lastFailureDetail = 0;
 };
 
 class Manager {
@@ -177,6 +180,9 @@ class Manager {
     uint8_t address[6]{};
     uint8_t addressType = 0;
     int disconnectReason = 0;
+    uint8_t lastFailureReason = 0;
+    uint8_t lastFailureStage = 0;
+    int16_t lastFailureDetail = 0;
     uint32_t connectStartedMs = 0;
     uint32_t nextAttemptMs = 0;
     uint32_t lastSeenMs = 0;
