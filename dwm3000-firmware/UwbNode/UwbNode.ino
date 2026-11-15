@@ -354,7 +354,6 @@ static void recordRadioTraceDetail(uint8_t function, bool delayed,
                                    uint32_t sysStateBefore, uint32_t sysStateAfter,
                                    uint32_t sysTimeBefore) {
   RadioTraceDetailRecord &r = radioTraceDetail[radioTraceDetailHead];
-  r.sequence = UwbBle::nextTraceSequence();
   r.uptimeMs = millis();
   r.statusBefore = statusBefore;
   r.statusAfter = statusAfter;
@@ -378,6 +377,7 @@ static void recordRadioTraceDetail(uint8_t function, bool delayed,
                     : ((sysStateAfter == DW_SYS_STATE_TXERR)
                         ? TRACE_HINT_TXERR_STATE_OBSERVED_AFTER
                         : TRACE_HINT_UNKNOWN);
+  r.sequence = UwbBle::nextTraceSequence();
   radioTraceDetailHead = (radioTraceDetailHead + 1) % RADIO_TRACE_DETAIL_CAPACITY;
   if (radioTraceDetailCount < RADIO_TRACE_DETAIL_CAPACITY) ++radioTraceDetailCount;
 }
@@ -386,7 +386,6 @@ static void recordRadioTrace(uint8_t event, uint8_t function, bool delayed,
                              uint32_t delayedTimeReg, int rc,
                              uint32_t statusBefore, uint32_t statusAfter) {
   RadioTraceRecord &r = radioTrace[radioTraceHead];
-  r.sequence = UwbBle::nextTraceSequence();
   r.uptimeMs = millis();
   r.statusBefore = statusBefore;
   r.statusAfter = statusAfter;
@@ -401,6 +400,7 @@ static void recordRadioTrace(uint8_t event, uint8_t function, bool delayed,
   r.retriesUsed = txnRetriesUsed;
   r.rc = static_cast<uint8_t>(rc);
   r.reserved = 0;
+  r.sequence = UwbBle::nextTraceSequence();
   radioTraceHead = (radioTraceHead + 1) % RADIO_TRACE_CAPACITY;
   if (radioTraceCount < RADIO_TRACE_CAPACITY) ++radioTraceCount;
 }
