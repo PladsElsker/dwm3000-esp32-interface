@@ -1324,7 +1324,14 @@ void Manager::maintainHubConnections() {
                      FAILURE_STAGE_GAP_START,
                      static_cast<int16_t>(config_.connectionTimeoutMs));
     client->setConnectTimeout(config_.connectionTimeoutMs);
-    const NimBLEAddress address(candidate->address, candidate->addressType);
+    // Scan callbacks store NimBLE's native address byte order (least-
+    // significant byte first). NimBLEAddress(uint8_t[6], type) reverses its
+    // input, so feeding the stored bytes to that overload targets the reversed
+    // MAC address. Build the native ble_addr_t instead to preserve them.
+    ble_addr_t targetAddress{};
+    targetAddress.type = candidate->addressType;
+    memcpy(targetAddress.val, candidate->address, sizeof(targetAddress.val));
+    const NimBLEAddress address(targetAddress);
     recordBleAddress(candidate->peerId, 2, address.getVal(), address.getType());
     candidate->connecting = true;
     candidate->connectStartedMs = now;
