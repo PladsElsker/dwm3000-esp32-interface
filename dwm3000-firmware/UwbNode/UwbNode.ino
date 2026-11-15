@@ -29,6 +29,11 @@
 
 using namespace UwbProto;
 
+// The Arduino-ESP32 HWCDC and HardwareSerial defaults both use 256-byte RX
+// queues. A maximum-size COBS command frame can be MAX_ENCODED bytes, so leave
+// room for the full frame plus another frame's worth of USB/UART burst data.
+static constexpr size_t HOST_RX_BUFFER_SIZE = MAX_ENCODED * 2;
+
 // This firmware uses the ESP32-C3 native USB Serial/JTAG peripheral through
 // Arduino-ESP32 Hardware CDC. Select: USB Mode = Hardware CDC and JTAG,
 // USB CDC On Boot = Enabled. ESP32-C3 does not use the S2/S3 USB-OTG CDC API.
@@ -1891,8 +1896,15 @@ void setup() {
   pinMode(PIN_DWM_WAKE, OUTPUT); digitalWrite(PIN_DWM_WAKE, LOW);
   pinMode(PIN_DWM_RST, OUTPUT_OPEN_DRAIN); digitalWrite(PIN_DWM_RST, HIGH); // release reset
   pinMode(PIN_DWM_IRQ, INPUT);
+
+  // Configure RX queues before begin(): both Arduino transports otherwise
+  // default to 256 bytes, smaller than a maximum-length encoded protocol frame.
+  const size_t usbRxSize = Serial.setRxBufferSize(HOST_RX_BUFFER_SIZE);
+  const size_t uartRxSize = PiSerial.setRxBufferSize(HOST_RX_BUFFER_SIZE);
   Serial.begin(USB_CDC_BAUD);
   PiSerial.begin(UART_BAUD, SERIAL_8N1, PIN_PI_RX, PIN_PI_TX);
+  if (usbRxSize != HOST_RX_BUFFER_SIZE || uartRxSize != HOST_RX_BUFFER_SIZE)
+    rememberError(ERR_INTERNAL);
   usbSessionObservedConnected = usbCdcConnected();
   UsbTransport.io = &Serial;
   UsbTransport.name = "USB CDC";
