@@ -476,7 +476,8 @@ function bleDiagnosticCodeName(code: number) {
         20: 'Peripheral rejected peer identity', 21: 'Peripheral handshake timeout',
         22: 'Peer disconnected', 23: 'Advertising restart failed',
         24: 'Central scan restart failed', 25: 'GAP connection callback',
-        26: 'BLE event queue full', 27: 'BLE receive queue full'
+        26: 'BLE event queue full', 27: 'BLE receive queue full',
+        28: 'NimBLE connection capacity'
     } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
 }
 function bleDiagnosticStageText(record: BleDiagnosticRecord) {
@@ -524,14 +525,18 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.code === 17 ? (peripheralRejectReason ?? '') :
         record.code === 4 ? (startFailureSubsystem ?? '') :
         record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
+        record.code === 28 ? `application link limit ${record.reason}` :
         record.reason ? `reason ${record.reason}` : '';
+    const capacityDetail = record.code === 28
+        ? record.detail < 0 ? 'host connection slots unavailable at compile time' : `NimBLE host slots ${record.detail}`
+        : '';
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
         bleDiagnosticCodeName(record.code),
         record.peerId ? `peer ${record.peerId}` : 'peer unknown',
         bleDiagnosticStageText(record),
         reason,
-        record.detail || record.code === 25 ? detail : '',
+        capacityDetail || (record.detail || record.code === 25 ? detail : ''),
         `${record.activeLinks}/8 links`,
         state
     ].filter(Boolean).join(' · ');
