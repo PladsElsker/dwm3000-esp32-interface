@@ -1155,11 +1155,8 @@ async function saveSettings() {
             throw new Error('Auto-start requires an Initiator with at least one target, or a Responder role.');
         }
         if (device.status?.ranging) throw new Error('Stop the RAM ranging test before saving configuration.');
-        if (ble.supported) {
-            bleDraft.peers = parseBlePeerIds(blePeersInput.value);
-            validateBleConfig(bleDraft);
-
-        }
+        bleDraft.peers = parseBlePeerIds(blePeersInput.value);
+        validateBleConfig(bleDraft);
         savingConfig.value = true;
 
         // One explicit snapshot, including the BLE extension, is applied to runtime RAM and NVS.
@@ -1168,7 +1165,7 @@ async function saveSettings() {
             ...u16(draft.deviceId), ...u16(pan), draft.channel, ...u16(draft.tx), ...u16(draft.rx),
             ...u32(draft.period), ...u16(draft.timeout), draft.retries, draft.role,
             targets.length, ...targets.flatMap(u16), draft.autoStart ? 1 : 0,
-            ...(ble.supported ? encodeBleConfigExtension(bleDraft) : [])
+            ...encodeBleConfigExtension(bleDraft)
         ];
         savingStep.value = 'Applying configuration and committing this exact snapshot to NVS…';
         try {
@@ -1186,9 +1183,9 @@ async function saveSettings() {
                 readback.period === draft.period && readback.timeout === draft.timeout &&
                 readback.retries === draft.retries && readback.role === draft.role &&
                 readback.autoStart === draft.autoStart && JSON.stringify(readback.targets) === JSON.stringify(targets) &&
-                (!ble.supported || (readback.bleConfigAvailable && JSON.stringify(readback.bleConfig) === JSON.stringify(bleDraft)));
-            const runtimeBleMatches = !ble.supported || (runtime.length >= 32 &&
-                JSON.stringify(decodeBleConfigExtension(runtime, 16)) === JSON.stringify(bleDraft));
+                (readback.bleConfigAvailable && JSON.stringify(readback.bleConfig) === JSON.stringify(bleDraft));
+            const runtimeBleMatches = runtime.length >= 32 &&
+                JSON.stringify(decodeBleConfigExtension(runtime, 16)) === JSON.stringify(bleDraft);
             const runtimeMatches = get16(runtime, 0) === draft.deviceId && get16(runtime, 2) === pan &&
                 runtime[4] === draft.channel && get16(runtime, 5) === draft.tx && get16(runtime, 7) === draft.rx &&
                 get32(runtime, 9) === draft.period && get16(runtime, 13) === draft.timeout &&
@@ -1545,7 +1542,7 @@ async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let 
 async function quick(op: number, label: string) { try { const p = await cmd(op); notice.value = label; log(label); return p } catch (e: any) { error.value = String(e); return null } }
 async function pingNode() { const p = await quick(1, 'PING completed'); if (p) advancedOutput.value = `PING response: ${readString(p)}` }
 async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(0x14, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
-async function readLast() { try { const p = await cmd(0x30, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
+async function readLastRange() { try { const p = await cmd(0x30, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
 async function cancelJob() { try { await cmd(0x28, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
 async function subscribeAll() { try { const p = await cmd(0x32, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
 async function unsubscribeAll() { try { const p = await cmd(0x33, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
@@ -2506,9 +2503,13 @@ onUnmounted(() => {
                                 <div><span>Transaction timeouts</span><b>{{ device.stats?.timeouts ?? '—' }}</b></div>
                                 <div><span>History overwrites</span><b>{{ device.stats?.overwrites ?? '—' }}</b></div>
                                 <div><span>Malformed radio frames</span><b>{{ device.stats?.malformed ?? '—' }}</b></div>
-                                <div><span>BLE events logged</span><b>{{ events.filter(item => /BLE/.test(item)).length }}</b></div>
-                                <div><span>BLE messages received</span><b>{{ ble.inbox.length }}</b></div>
-                                <div><span>BLE messages sent</span><b>{{ ble.outgoing.length }}</b></div>
+                                <div><span>BLE messages sent</span><b>{{ device.stats?.bleMessagesSent ?? '—' }}</b></div>
+                                <div><span>BLE messages received</span><b>{{ device.stats?.bleMessagesReceived ?? '—' }}</b></div>
+                                <div><span>BLE TX errors</span><b>{{ device.stats?.bleTxErrors ?? '—' }}</b></div>
+                                <div><span>BLE RX errors</span><b>{{ device.stats?.bleRxErrors ?? '—' }}</b></div>
+                                <div><span>BLE connection failures</span><b>{{ device.stats?.bleConnectionFailures ?? '—' }}</b></div>
+                                <div><span>BLE RX queue overflows</span><b>{{ device.stats?.bleRxQueueOverflows ?? '—' }}</b></div>
+                                <div><span>BLE event queue overflows</span><b>{{ device.stats?.bleEventQueueOverflows ?? '—' }}</b></div>
                             </div>
                         </div>
                         <div class="panel">
@@ -2529,13 +2530,15 @@ onUnmounted(() => {
                                 <div><span>Radio state machine</span><b>{{ device.diagnostics?.state ?? '—' }}</b></div>
                                 <div><span>Standby</span><b>{{ device.diagnostics?.standby ? 'IDLE_RC' : 'No' }}</b>
                                 </div>
+                                <div><span>Last error subsystem</span><b>{{ ['System', 'UWB', 'BLE'][device.lastError?.subsystem ?? 0] ?? 'Unknown' }}</b></div>
                                 <div><span>Last error code</span><b>{{ device.lastError?.code ?? '—' }} ·
-                                        {{ ['OK', 'BAD_ARGUMENT', 'UNKNOWN_COMMAND', 'BAD_STATE', 'BUSY',
-                                            'NOT_SUPPORTED', 'TIMEOUT',
-                                            'RADIO_FAILURE', 'RATE_UNACHIEVABLE', 'INTERNAL',
-                                        'NOT_FOUND'][device.lastError?.code ?? 0]
-                                        }}</b>
+                                        {{ device.lastError?.subsystem === 2 ? hex(device.lastError.code, 2) :
+                                            (['OK', 'BAD_ARGUMENT', 'UNKNOWN_COMMAND', 'BAD_STATE', 'BUSY',
+                                            'NOT_SUPPORTED', 'TIMEOUT', 'RADIO_FAILURE', 'RATE_UNACHIEVABLE', 'INTERNAL',
+                                            'NOT_FOUND'][device.lastError?.code ?? 0] ?? 'Unknown') }}</b>
                                 </div>
+                                <div><span>Last error peer</span><b>{{ device.lastError?.peerId || '—' }}</b></div>
+                                <div><span>Last error context</span><b>{{ device.lastError?.context ? hex(device.lastError.context, 8) : '—' }}</b></div>
                                 <div><span>Last error monotonic time</span><b>{{ device.lastError?.time ?? '—' }} µs</b>
                                 </div>
                             </div>
@@ -2553,7 +2556,7 @@ onUnmounted(() => {
                                 @click="pingNode">PING</button><button class="button secondary" :disabled="!connected"
                                 @click="syncClock">Synchronize clock</button><button class="button secondary"
                                 :disabled="!connected" @click="readAntenna">Read antenna delays</button><button
-                                class="button secondary" :disabled="!connected" @click="readLast">Get latest per
+                                class="button secondary" :disabled="!connected" @click="readLastRange">Get latest per
                                 target</button><button class="button secondary" :disabled="!connected"
                                 @click="subscribeAll">Subscribe
                                 all events</button><button class="button secondary" :disabled="!connected"
