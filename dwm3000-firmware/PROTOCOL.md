@@ -54,7 +54,7 @@ An error response normally has an empty payload. Commands that sleep or reboot s
 
 ### Last-error record
 
-`GET_LAST_ERROR` returns the latest recorded error from any subsystem. `subsystem` is `0` System/protocol, `1` UWB/radio, or `2` BLE. The `code` is interpreted within that subsystem. `monotonic_us` is device monotonic time since boot. `peer_id` is zero when the error is not attributable to a BLE peer. `context` is subsystem-specific: for BLE message errors, bits 0–15 are `message_id`, bits 16–23 are `fragment_index`, and bits 24–31 are direction (`0` transmit, `1` receive); for BLE connection failures, bits 0–7 are failure stage and bits 8–23 are signed detail encoded as `u16`; for a BLE receive-consumption timeout, bits 0–15 are `message_id`. Context is zero when no additional value is available.
+`GET_LAST_ERROR` returns the latest recorded error from any subsystem. `subsystem` is `0` System/protocol, `1` UWB/radio, or `2` BLE. The `code` is interpreted within that subsystem. `monotonic_us` is device monotonic time since boot. `peer_id` is zero when the error is not attributable to a BLE peer. For command-level errors, `context` contains the request opcode; for BLE message errors, bits 0–15 are `message_id`, bits 16–23 are `fragment_index`, and bits 24–31 are direction (`0` transmit, `1` receive); for BLE connection failures, bits 0–7 are failure stage and bits 8–23 are signed detail encoded as `u16`; for a BLE receive-consumption timeout, bits 0–15 are `message_id`. Context is zero when no additional value is available.
 
 ## Commands
 
@@ -224,7 +224,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 The BLE transport uses NimBLE-Arduino 2.5.0 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
 
-`GET_INFO` reports BLE hardware/stack capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state; `GET_DIAGNOSTICS` reports BLE runtime and queue diagnostics; `GET_PEER_STATUS` reports the state of a specific peer.
+`GET_PEER_STATUS` reports the state of a specific peer.
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
