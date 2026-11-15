@@ -110,6 +110,7 @@ class Manager {
   void noteClientConnected(void* client);
   void noteClientConnectFailed(void* client, int reason);
   void noteClientDisconnected(void* client, int reason);
+  void notePeripheralConnectFailed(int reason);
   void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId);
   void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
   void enqueueClientPacket(const uint8_t* data, size_t length, void* characteristic);

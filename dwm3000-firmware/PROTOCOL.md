@@ -231,7 +231,7 @@ Peer state values returned by `GET_PEER_STATUS` are:
 
 The 14-byte `GET_PEER_STATUS` response appends the most recent connection failure: `last_failure_reason:u8`, `last_failure_stage:u8`, and signed `last_failure_detail:i16`. The failure fields are zero until a failure is recorded and clear when the link connects successfully. For GAP failures, `last_failure_detail` contains the NimBLE host status code when available; `-1` means no status code was available. Stage 8 reports the peer ID read from the remote Device ID characteristic, and stage 11 reports the Peripheral identity-validation code.
 
-`BLE_CONNECTION_FAILED` preserves the peer ID and reason prefix and appends the stage and signed detail fields. Reasons are: `1` local setup failure, `3` peer identity rejection, `5` GATT or identity-handshake failure, including Peripheral identity-handshake timeout, and `6` GAP connection procedure failure. A peer ID of zero identifies a Peripheral-side handshake failure that occurred before a remote ID was accepted.
+`BLE_CONNECTION_FAILED` preserves the peer ID and reason prefix and appends the stage and signed detail fields. Reasons are: `1` local setup failure, `3` peer identity rejection, `5` GATT or identity-handshake failure, including Peripheral identity-handshake timeout, and `6` GAP connection procedure failure. A peer ID of zero identifies a Peripheral-side GAP rejection or handshake failure that occurred before a remote ID was accepted. The firmware observes failed incoming `BLE_GAP_EVENT_CONNECT` results through NimBLE's global GAP event listener; a Peripheral can therefore report controller rejections that do not trigger the server's success-only `onConnect` callback.
 
 Connection failure stages are:
 

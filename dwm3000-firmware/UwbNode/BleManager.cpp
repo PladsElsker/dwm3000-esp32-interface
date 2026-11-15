@@ -29,6 +29,18 @@ static constexpr uint8_t MAX_ADVERTISE_NAME = 16;
 
 static Manager* s_manager = nullptr;
 
+// NimBLEServer invokes onConnect only when an incoming link succeeds. Observe
+// failed Peripheral-side GAP connection results through NimBLE's global event
+// listener so controller rejections are visible to the host application.
+static int onBleGlobalGapEvent(ble_gap_event* event, void* arg) {
+  auto* manager = static_cast<Manager*>(arg);
+  if (manager && event && event->type == BLE_GAP_EVENT_CONNECT &&
+      event->connect.status != 0) {
+    manager->notePeripheralConnectFailed(event->connect.status);
+  }
+  return 0;
+}
+
 static bool elapsed(uint32_t now, uint32_t since, uint32_t interval) {
   return static_cast<uint32_t>(now - since) >= interval;
 }
@@ -131,6 +143,7 @@ bool Manager::begin(uint16_t localDeviceId) {
   if (!NimBLEDevice::init(name) || !NimBLEDevice::setMTU(MAX_ATT_MTU)) return false;
   NimBLEDevice::setPower(3);
   s_manager = this;
+  if (!NimBLEDevice::setCustomGapHandler(onBleGlobalGapEvent, this)) return false;
 
   NimBLEServer* server = NimBLEDevice::createServer();
   if (!server) return false;
@@ -561,6 +574,15 @@ void Manager::noteClientDisconnected(void* client, int reason) {
     link->disconnectReason = reason;
     link->disconnectPending = true;
   }
+}
+
+void Manager::notePeripheralConnectFailed(int reason) {
+  // The global GAP listener sees failed incoming connection results before
+  // NimBLEServer::onConnect (which is success-only). Keep this Peripheral-only
+  // so Central failures continue through the per-client callback.
+  if (!enabled_ || config_.mode != MODE_PERIPHERAL || reason == 0) return;
+  emitConnectionFailure(0, 6, FAILURE_STAGE_GAP_RESULT,
+                        static_cast<int16_t>(reason));
 }
 
 void Manager::noteRemoteIdentity(uint16_t handle, uint16_t peerId) {
