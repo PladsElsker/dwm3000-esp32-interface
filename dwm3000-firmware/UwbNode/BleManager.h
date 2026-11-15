@@ -266,7 +266,16 @@ class Manager {
 
   bool enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length);
   bool enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t peerId);
-  void incrementStatistic(uint8_t index);
+  enum StatisticCounter : uint8_t {
+    STAT_MESSAGES_SENT = 0,
+    STAT_MESSAGES_RECEIVED,
+    STAT_TX_ERRORS,
+    STAT_RX_ERRORS,
+    STAT_CONNECTION_FAILURES,
+    STAT_RX_QUEUE_OVERFLOWS,
+    STAT_EVENT_QUEUE_OVERFLOWS
+  };
+  void incrementStatistic(StatisticCounter counter);
   bool transmitPacket(const uint8_t* packet, uint16_t length);
   bool buildAndSendSimple(uint8_t type, uint16_t messageId, uint8_t fragmentIndex,
                           uint8_t errorCode = 0);
