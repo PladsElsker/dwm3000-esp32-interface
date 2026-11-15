@@ -505,9 +505,10 @@ function bleDiagnosticStageText(record: BleDiagnosticRecord) {
     }
     if (record.code === 28 && record.stage) {
         return ({
-            1: 'NimBLE client pool',
-            2: 'NimBLE host',
-            3: 'ESP-IDF legacy sdkconfig'
+            1: 'NimBLE C++ client pool',
+            2: 'NimBLE host alias',
+            3: 'ESP-IDF legacy setting',
+            4: 'Effective Mynewt host setting'
         } as Record<number, string>)[record.stage] ?? `capacity source ${record.stage}`;
     }
     if (record.code === 29) {
@@ -554,10 +555,7 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.code === 4 ? (startFailureSubsystem ?? '') :
         record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
         record.code === 28 ? `application link limit ${record.reason}` :
-        record.code === 29 ? (record.reason === 0 ? 'CONNECT' :
-            ({ 1: 'DISCONNECT', 3: 'CONN_UPDATE', 6: 'TERM_FAILURE', 8: 'DISC_COMPLETE',
-               9: 'ADV_COMPLETE', 10: 'ENC_CHANGE', 14: 'SUBSCRIBE', 15: 'MTU',
-               38: 'LINK_ESTAB' } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`) :
+        record.code === 29 ? '' :
         record.code === 30 ? `connection handle ${record.detail}` :
         record.code === 31 ? ({
             0: record.stage === 1 ? 'application accepted incoming connection' : 'link slot allocated',
@@ -577,9 +575,10 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         record.reason ? `reason ${record.reason}` : '';
     const capacityDetail = record.code === 28
         ? record.detail < 0 ? 'capacity macro unavailable' :
-            record.stage === 1 ? `NimBLE client pool ${record.detail}` :
-            record.stage === 2 ? `NimBLE host slots ${record.detail}` :
-            record.stage === 3 ? `ESP-IDF legacy macro ${record.detail}` : `capacity ${record.detail}`
+            record.stage === 1 ? `NimBLE C++ client pool ${record.detail}` :
+            record.stage === 2 ? `NimBLE host alias ${record.detail}` :
+            record.stage === 3 ? `ESP-IDF legacy setting ${record.detail}` :
+            record.stage === 4 ? `effective host slots ${record.detail}` : `capacity ${record.detail}`
         : '';
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
