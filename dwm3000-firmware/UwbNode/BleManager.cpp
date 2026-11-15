@@ -192,6 +192,7 @@ bool Manager::configure(const Config& config) { return configure(config, localDe
 bool Manager::configure(const Config& config, uint16_t localDeviceId) {
   if (!localDeviceId || localDeviceId == 0xFFFF || config.mode > MODE_PERIPHERAL ||
       config.peerCount > MAX_PEERS || config.maxRetries > 5 || config.autoStart > 1 ||
+      (config.autoStart && config.mode == MODE_IDLE) ||
       config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
       config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
       config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
