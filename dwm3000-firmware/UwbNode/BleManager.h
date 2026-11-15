@@ -13,6 +13,8 @@ static constexpr uint16_t MAX_ATT_MTU = 256;
 static constexpr uint16_t MAX_PACKET_LENGTH = MAX_ATT_MTU - 3;
 static constexpr uint8_t RX_PACKET_QUEUE_SIZE = 16;
 static constexpr uint8_t EVENT_QUEUE_SIZE = 24;
+static constexpr uint8_t BLE_DIAGNOSTIC_TRACE_CAPACITY = 32;
+static constexpr uint8_t BLE_DIAGNOSTIC_RECORD_SIZE = 13;
 
 enum Mode : uint8_t { MODE_IDLE = 0, MODE_HUB = 1, MODE_PERIPHERAL = 2 };
 enum PeerState : uint8_t {
@@ -32,6 +34,18 @@ enum ConnectionFailureStage : uint8_t {
   FAILURE_STAGE_NOTIFY_SUBSCRIBE = 10,
   FAILURE_STAGE_PERIPHERAL_IDENTITY = 11,
   FAILURE_STAGE_PERIPHERAL_HANDSHAKE_TIMEOUT = 12
+};
+enum DiagnosticCode : uint8_t {
+  DIAG_INIT_COMPLETE = 1, DIAG_INIT_FAILED, DIAG_START_COMPLETE, DIAG_START_FAILED,
+  DIAG_STOPPED, DIAG_SCAN_STARTED, DIAG_SCAN_START_FAILED, DIAG_SCAN_STOP_FAILED,
+  DIAG_PEER_DISCOVERED, DIAG_CLIENT_ALLOC_FAILED, DIAG_CENTRAL_CONNECT_ATTEMPT,
+  DIAG_CONNECTION_FAILED, DIAG_CENTRAL_CONNECTED, DIAG_CENTRAL_HANDSHAKE_STEP,
+  DIAG_CENTRAL_HANDSHAKE_COMPLETE, DIAG_SERVER_CONNECTED, DIAG_SERVER_CAPACITY_REJECTED,
+  DIAG_SERVER_SLOT_ALLOC_FAILED,
+  DIAG_SERVER_IDENTITY_ACCEPTED, DIAG_SERVER_IDENTITY_REJECTED, DIAG_HANDSHAKE_TIMEOUT,
+  DIAG_PEER_DISCONNECTED, DIAG_ADVERTISING_RESTART_FAILED, DIAG_SCAN_RESTART_FAILED,
+  DIAG_GAP_EVENT_CALLBACK, DIAG_EVENT_QUEUE_FULL, DIAG_RX_QUEUE_FULL,
+  DIAG_STACK_CAPACITY
 };
 enum EventCode : uint8_t {
   EVENT_STATE_CHANGED = 0, EVENT_PEER_FOUND, EVENT_PEER_CONNECTED,
@@ -96,13 +110,15 @@ class Manager {
 
   bool popEvent(Event& event);
   bool getPeerStatus(uint16_t peerId, PeerStatus& status) const;
+  uint16_t getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const;
   const Config& config() const { return config_; }
   bool enabled() const { return enabled_; }
   bool connected() const { return connected_; }
   uint16_t connectedPeerId() const { return connectedPeerId_; }
   uint16_t negotiatedMtu() const;
 
-  // NimBLE callback entry points; all application work is deferred to poll().
+  // NimBLE callback entry points; trace writes are bounded and connection
+  // state-machine work is deferred to poll().
   void notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_t addressType);
   void noteServerConnected(uint16_t connectionHandle);
   void noteServerDisconnected(uint16_t connectionHandle, int reason);
@@ -111,6 +127,7 @@ class Manager {
   void noteClientConnectFailed(void* client, int reason);
   void noteClientDisconnected(void* client, int reason);
   void notePeripheralConnectFailed(int reason);
+  void noteGapConnectResult(int status);
   void noteRemoteIdentity(uint16_t connectionHandle, uint16_t peerId);
   void enqueueServerPacket(const uint8_t* data, size_t length, uint16_t connectionHandle);
   void enqueueClientPacket(const uint8_t* data, size_t length, void* characteristic);
@@ -166,6 +183,16 @@ class Manager {
     uint8_t reason = 0;
     uint8_t stage = 0;
     int16_t detail = 0;
+  };
+  struct DiagnosticRecord {
+    uint32_t uptimeMs = 0;
+    uint8_t code = 0;
+    uint8_t reason = 0;
+    uint8_t stage = 0;
+    uint16_t peerId = 0;
+    int16_t detail = 0;
+    uint8_t activeLinks = 0;
+    uint8_t stateFlags = 0;
   };
   struct Link {
     bool used = false;
@@ -236,6 +263,8 @@ class Manager {
   void refreshConnectedSummary();
   void emitConnectionFailure(uint16_t peerId, uint8_t reason,
                              uint8_t stage, int16_t detail);
+  void recordDiagnostic(uint8_t code, uint16_t peerId = 0, uint8_t reason = 0,
+                        uint8_t stage = 0, int16_t detail = 0);
   const PeerFailure* findPeerFailure(uint16_t peerId) const;
   void clearPeerFailure(uint16_t peerId);
   void maintainHubConnections();
@@ -261,6 +290,11 @@ class Manager {
   Link links_[MAX_ACTIVE_CONNECTIONS]{};
   PeerFailure peerFailures_[MAX_PEERS]{};
   uint8_t peerFailureReplaceIndex_ = 0;
+  DiagnosticRecord diagnosticTrace_[BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
+  uint8_t diagnosticTraceHead_ = 0;
+  uint8_t diagnosticTraceCount_ = 0;
+  uint32_t lastScanStartFailureMs_ = 0;
+  bool scanStartFailureSeen_ = false;
 
   PacketSlot rxPackets_[RX_PACKET_QUEUE_SIZE]{};
   volatile uint8_t rxHead_ = 0;

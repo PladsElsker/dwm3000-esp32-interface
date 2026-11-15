@@ -39,7 +39,7 @@ OPS = {
     "reboot": 0x43,
     "set-peers": 0x50, "get-peers": 0x51, "start-ble": 0x52,
     "stop-ble": 0x53, "peer-status": 0x56,
-    "send-to-peer": 0x57, "get-received-data": 0x58,
+    "send-to-peer": 0x57, "get-received-data": 0x58, "ble-trace": 0x59,
 }
 EVENT_NAMES = {0x80: "RANGE_RESULT", 0x81: "RANGE_FAILED", 0x82: "STATE_CHANGED",
                0x83: "ERROR", 0x84: "HISTORY_OVERRUN", 0x85: "DEVICE_READY",
@@ -396,10 +396,32 @@ def parse_args():
     p = sub.add_parser("peer-status"); p.add_argument("peer_id", type=int)
     p = sub.add_parser("send-to-peer"); p.add_argument("peer_id", type=int); p.add_argument("data"); p.add_argument("--hex", action="store_true", help="interpret data as hexadecimal bytes")
     p = sub.add_parser("get-received-data"); p.add_argument("peer_id", type=int); p.add_argument("message_id", type=int)
+    p = sub.add_parser("ble-trace")
     return ap.parse_args()
 
 
 def record_response(op: int, payload: bytes) -> object:
+    if op == 0x59:
+        if not payload:
+            raise ValueError("BLE diagnostic trace payload is empty")
+        count = payload[0]
+        record_size = 13
+        if count > 32 or len(payload) != 1 + count * record_size:
+            raise ValueError("BLE diagnostic trace payload has an invalid length")
+        records = []
+        for index in range(count):
+            offset = 1 + index * record_size
+            records.append({
+                "uptime_ms": struct.unpack_from("<I", payload, offset)[0],
+                "code": payload[offset + 4],
+                "peer_id": struct.unpack_from("<H", payload, offset + 5)[0],
+                "reason": payload[offset + 7],
+                "stage": payload[offset + 8],
+                "detail": struct.unpack_from("<h", payload, offset + 9)[0],
+                "active_links": payload[offset + 11],
+                "state_flags": payload[offset + 12],
+            })
+        return {"count": count, "records": records}
     if op == 0x01:
         return {"pong": payload == b"PONG"}
     if op == 0x02 and len(payload) >= 12:

@@ -96,6 +96,22 @@ assert 0x55 not in module.OPS.values()
 assert module.OPS["start-ble"] == 0x52
 assert module.OPS["stop-ble"] == 0x53
 assert module.OPS["peer-status"] == 0x56
+assert module.OPS["ble-trace"] == 0x59
+
+# The firmware BLE trace is a count byte plus 13-byte little-endian records.
+trace_payload = bytes([1]) + struct.pack("<IBHBBhBB", 12345, 12, 3, 6, 4, 13, 1, 0b00010001)
+trace = module.record_response(0x59, trace_payload)
+assert trace["count"] == 1
+assert trace["records"][0] == {
+    "uptime_ms": 12345, "code": 12, "peer_id": 3, "reason": 6,
+    "stage": 4, "detail": 13, "active_links": 1, "state_flags": 0b00010001
+}
+try:
+    module.record_response(0x59, trace_payload + bytes([0]))
+except ValueError:
+    pass
+else:
+    raise AssertionError("invalid BLE diagnostic trace length accepted")
 
 # The CLI rejects removed connection-management and generic save commands,
 # and no longer accepts a reconnect-enable switch.
@@ -224,4 +240,6 @@ for bad_mtu in (22, 257, 518):
     else:
         raise AssertionError("invalid ATT MTU was accepted")
 
-print("BLE V2.1 config, status, command surface, fragmentation and CRC tests passed")
+assert 1 + 32 * 13 <= module.MAX_PAYLOAD
+assert module.OPS["ble-trace"] == 0x59
+print("BLE V2.1 config, status, trace command, fragmentation and CRC tests passed")

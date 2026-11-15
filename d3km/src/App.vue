@@ -56,6 +56,10 @@ const retrievingBleMessages = new Set<string>();
 const connected = ref(false), connecting = ref(false), ports = ref<Port[]>([]), selectedPort = ref(''), active = ref('overview'), busy = ref(false), savingConfig = ref(false), savingStep = ref(''), lastRefresh = ref('—'), error = ref(''), notice = ref(''), events = ref<string[]>([]), measurements = ref<any[]>([]), eventCount = ref(0);
 
 type CalJobResult = { target: number; status: number; mm: number | null };
+type BleDiagnosticRecord = {
+    uptimeMs: number; code: number; peerId: number; reason: number; stage: number;
+    detail: number; activeLinks: number; stateFlags: number;
+};
 const CAL_WINDOW_SIZE = 100;
 const DEFAULT_ANTENNA_DELAY = 16385;
 // One DW3000 device-time unit converted to one-way propagation distance.
@@ -100,6 +104,7 @@ const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void;
 const calibrationJobResults = new Map<number, CalJobResult>();
 let poller: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
 let lastBleRefreshAt = 0;
+let lastBleDiagnosticTraceRefreshAt = 0;
 let commandQueue: Promise<void> = Promise.resolve();
 const device = reactive<any>({ info: null, status: null, stats: null,
     // config/savedTargets always describe NVS; runtimeConfig/schedule/targets describe RAM.
@@ -115,6 +120,10 @@ const traceDetailSupported = ref<boolean | null>(null);
 const traceDetailFetchedAt = ref('');
 const traceDetailError = ref('');
 const traceDetailBusy = ref(false);
+const bleDiagnosticTrace = ref<BleDiagnosticRecord[]>([]);
+const bleDiagnosticTraceSupported = ref<boolean | null>(null);
+const bleDiagnosticTraceBusy = ref(false);
+const bleDiagnosticTraceError = ref('');
 const traceFetchedAt = ref('');
 const traceError = ref('');
 const traceBusy = ref(false);
@@ -438,13 +447,143 @@ function bleConnectionStageName(stage: number) {
         12: 'Peripheral handshake timeout'
     } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
 }
+function nimbleStatusName(status: number) {
+    return ({
+        0x0008: 'Connection timeout',
+        0x000d: 'Connection rejected due to limited resources',
+        0x003e: 'Connection failed to be established'
+    } as Record<number, string>)[status] ?? 'Unmapped NimBLE status';
+}
 function bleConnectionDetailText(stage: number, detail: number) {
     if (detail === -1 || (detail === 0 && [5, 6, 9, 10, 12].includes(stage))) return 'detail unavailable';
     const hexDetail = `0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
-    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail}`;
+    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail} · ${nimbleStatusName(detail & 0xffff)}`;
     if (stage === 8) return `reported peer ID ${hexDetail}`;
     if (stage === 11) return `validation code ${detail}`;
     return `detail ${hexDetail}`;
+}
+function bleDiagnosticCodeName(code: number) {
+    return ({
+        1: 'BLE stack initialized', 2: 'BLE stack initialization failed',
+        3: 'BLE role started', 4: 'BLE role start failed', 5: 'BLE stopped',
+        6: 'Central scan started', 7: 'Central scan start failed',
+        8: 'Central scan stop failed', 9: 'Peer discovered',
+        10: 'Central peer/client slot allocation failed', 11: 'Central connect attempt',
+        12: 'Connection failure', 13: 'Central GAP connected',
+        14: 'Central GATT handshake step', 15: 'Central handshake complete',
+        16: 'Peripheral accepted GAP connection', 17: 'Peripheral rejected incoming GAP connection',
+        18: 'Peripheral link slot allocation failed', 19: 'Peripheral accepted peer identity',
+        20: 'Peripheral rejected peer identity', 21: 'Peripheral handshake timeout',
+        22: 'Peer disconnected', 23: 'Advertising restart failed',
+        24: 'Central scan restart failed', 25: 'GAP connection callback',
+        26: 'BLE event queue full', 27: 'BLE receive queue full',
+        28: 'NimBLE connection capacity'
+    } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
+}
+function bleDiagnosticStageText(record: BleDiagnosticRecord) {
+    if (record.code === 2 && record.stage) {
+        return ({
+            1: 'NimBLE init', 2: 'Set ATT MTU', 3: 'Register GAP callback',
+            4: 'Create GATT server', 5: 'Create GATT service',
+            6: 'Create GATT characteristics', 7: 'Start GATT server',
+            8: 'Get Central scanner'
+        } as Record<number, string>)[record.stage] ?? `init step ${record.stage}`;
+    }
+    if (record.code === 4 && record.stage) {
+        const subsystem = record.reason === 2 ? 'advertising' : record.reason === 3 ? 'Central scan' : 'BLE role';
+        const step = record.stage === 1 ? 'object unavailable' : 'start call failed';
+        return `${subsystem}: ${step}`;
+    }
+    if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
+        return bleConnectionStageName(record.stage);
+    }
+    return record.stage ? `stage ${record.stage}` : '';
+}
+function bleDiagnosticLine(record: BleDiagnosticRecord) {
+    const mode = (record.stateFlags >> 3) & 0x03;
+    const state = [
+        bleModeName(mode),
+        record.stateFlags & 1 ? 'enabled' : 'disabled',
+        record.stateFlags & 2 ? 'advertising' : '',
+        record.stateFlags & 4 ? 'scanning' : ''
+    ].filter(Boolean).join(', ');
+    const detail = [3, 4].includes(record.stage)
+        ? bleConnectionDetailText(record.stage, record.detail)
+        : record.detail < 0 ? String(record.detail)
+            : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    const connectionReason = ({
+        1: 'local setup', 3: 'identity rejected',
+        5: 'GATT/handshake failure', 6: 'GAP failure'
+    } as Record<number, string>)[record.reason];
+    const peripheralRejectReason = ({
+        1: 'BLE disabled', 2: 'wrong BLE role', 3: 'eight-link limit reached'
+    } as Record<number, string>)[record.reason];
+    const startFailureSubsystem = ({
+        1: 'invalid or idle mode', 2: 'advertising', 3: 'Central scan'
+    } as Record<number, string>)[record.reason];
+    const reason = record.code === 12 || record.code === 25 ? (connectionReason ?? '') :
+        record.code === 17 ? (peripheralRejectReason ?? '') :
+        record.code === 4 ? (startFailureSubsystem ?? '') :
+        record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
+        record.code === 28 ? `application link limit ${record.reason}` :
+        record.reason ? `reason ${record.reason}` : '';
+    const capacityDetail = record.code === 28
+        ? record.detail < 0 ? 'host connection slots unavailable at compile time' : `NimBLE host slots ${record.detail}`
+        : '';
+    return [
+        `${(record.uptimeMs / 1000).toFixed(1)}s`,
+        bleDiagnosticCodeName(record.code),
+        record.peerId ? `peer ${record.peerId}` : 'peer unknown',
+        bleDiagnosticStageText(record),
+        reason,
+        capacityDetail || (record.detail || record.code === 25 ? detail : ''),
+        `${record.activeLinks}/8 links`,
+        state
+    ].filter(Boolean).join(' · ');
+}
+function decodeBleDiagnosticTrace(payload: number[]): BleDiagnosticRecord[] {
+    if (!payload.length) throw new Error('GET_BLE_DIAGNOSTIC_TRACE returned an empty payload.');
+    const count = payload[0];
+    const recordSize = 13;
+    if (count > 32 || payload.length !== 1 + count * recordSize) {
+        throw new Error(`GET_BLE_DIAGNOSTIC_TRACE returned ${payload.length} bytes for ${count} record(s).`);
+    }
+    return Array.from({ length: count }, (_, index) => {
+        const offset = 1 + index * recordSize;
+        const rawDetail = get16(payload, offset + 9);
+        return {
+            uptimeMs: get32(payload, offset),
+            code: payload[offset + 4],
+            peerId: get16(payload, offset + 5),
+            reason: payload[offset + 7],
+            stage: payload[offset + 8],
+            detail: rawDetail >= 0x8000 ? rawDetail - 0x10000 : rawDetail,
+            activeLinks: payload[offset + 11],
+            stateFlags: payload[offset + 12]
+        };
+    });
+}
+async function refreshBleDiagnosticTrace(silent = false) {
+    if (!connected.value || bleDiagnosticTraceBusy.value) return;
+    bleDiagnosticTraceBusy.value = true;
+    try {
+        const payload = await cmd(0x59);
+        bleDiagnosticTrace.value = decodeBleDiagnosticTrace(payload);
+        bleDiagnosticTraceSupported.value = true;
+        bleDiagnosticTraceError.value = '';
+    } catch (e: any) {
+        bleDiagnosticTraceError.value = String(e);
+        if (/UNKNOWN_COMMAND|UNKNOWN COMMAND|0x02/i.test(String(e))) {
+            bleDiagnosticTraceSupported.value = false;
+        }
+        if (!silent) error.value = `Could not read BLE diagnostic trace: ${String(e)}`;
+    } finally {
+        bleDiagnosticTraceBusy.value = false;
+    }
+}
+async function refreshDiagnostics() {
+    await refreshAll();
+    await refreshBleDiagnosticTrace();
 }
 function bleConnectionFailureText(status?: BlePeerStatus) {
     if (!status?.lastFailureReason) return '';
@@ -728,6 +867,10 @@ async function connectDevice() {
         await cmd(0x01);
         await refreshAll();
         await cmd(0x32, u16(0x7fff));
+        bleDiagnosticTrace.value = [];
+        bleDiagnosticTraceSupported.value = null;
+        bleDiagnosticTraceError.value = '';
+        lastBleDiagnosticTraceRefreshAt = 0;
         notice.value = 'Device connected';
     } catch (e: any) {
         error.value = String(e);
@@ -1276,6 +1419,11 @@ onMounted(async () => {
             polling = true;
             try {
                 await refreshStatus();
+                if (active.value === 'diagnostics' && bleDiagnosticTraceSupported.value !== false &&
+                    Date.now() - lastBleDiagnosticTraceRefreshAt >= 1200) {
+                    lastBleDiagnosticTraceRefreshAt = Date.now();
+                    await refreshBleDiagnosticTrace(true);
+                }
                 if (active.value === 'bluetooth' && ble.supported && Date.now() - lastBleRefreshAt >= 4000) {
                     lastBleRefreshAt = Date.now();
                     await refreshBluetooth();
@@ -2136,7 +2284,7 @@ onUnmounted(() => {
                             <div class="eyebrow">DEVICE HEALTH</div>
                             <h1>Diagnostics</h1>
                             <p>Inspect the UWB radio, USB protocol and Bluetooth messaging state to identify integration issues.</p>
-                        </div><button class="button primary" :disabled="!connected" @click="refreshAll">
+                        </div><button class="button primary" :disabled="!connected" @click="refreshDiagnostics">
                             <RefreshCw :size="15" /> Refresh diagnostics
                         </button>
                     </div>
@@ -2247,12 +2395,34 @@ onUnmounted(() => {
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>Recent device events</h3>
-                                <p>Events decoded from the subscribed USB stream</p>
-                            </div><span class="tag neutral">{{ events.length }} logged</span>
+                                <h3>BLE firmware trace</h3>
+                                <p>Most recent 32 records read directly from the node's BLE manager</p>
+                            </div>
+                            <span class="tag neutral">{{ bleDiagnosticTraceBusy ? 'Reading…' : `${bleDiagnosticTrace.length} retained` }}</span>
+                        </div>
+                        <div v-if="bleDiagnosticTraceSupported === false" class="empty-state">
+                            BLE trace retrieval is not supported by this firmware. Update the node firmware to the branch containing the diagnostics trace command.
+                        </div>
+                        <div v-else-if="bleDiagnosticTraceError" class="empty-state">
+                            Could not read BLE trace: {{ bleDiagnosticTraceError }}
+                        </div>
+                        <div v-else-if="bleDiagnosticTrace.length" class="event-log">
+                            <div v-for="(record, index) in bleDiagnosticTrace.slice().reverse()" :key="`${record.uptimeMs}-${record.code}-${record.peerId}-${index}`">
+                                {{ bleDiagnosticLine(record) }}
+                            </div>
+                        </div>
+                        <div v-else class="empty-state">No BLE trace records on this node yet. The trace refreshes while this tab is open.</div>
+                        <p class="hint">The trace is stored in RAM on the node, survives missed USB events, and resets when the node reboots. Raw NimBLE status values and connection stages are retained.</p>
+                    </div>
+                    <div class="panel advanced-panel">
+                        <div class="panel-heading">
+                            <div>
+                                <h3>Recent app and device events</h3>
+                                <p>Includes D3KM status-refresh messages; use the BLE firmware trace above for node-side BLE records</p>
+                            </div><span class="tag neutral">{{ events.length }} messages</span>
                         </div>
                         <div v-if="events.length" class="event-log">
-                            <div v-for="(item, index) in events.slice(0, 10)" :key="index">{{ item }}</div>
+                            <div v-for="(item, index) in events.slice(0, 30)" :key="index">{{ item }}</div>
                         </div>
                         <div v-else class="empty-state">No device events received.</div>
                     </div>
