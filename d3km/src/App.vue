@@ -471,7 +471,7 @@ function bleDiagnosticCodeName(code: number) {
         10: 'Central client allocation failed', 11: 'Central connect attempt',
         12: 'Connection failure', 13: 'Central GAP connected',
         14: 'Central GATT handshake step', 15: 'Central handshake complete',
-        16: 'Peripheral accepted GAP connection', 17: 'Peripheral capacity rejected connection',
+        16: 'Peripheral accepted GAP connection', 17: 'Peripheral rejected incoming GAP connection',
         18: 'Peripheral link slot allocation failed', 19: 'Peripheral accepted peer identity',
         20: 'Peripheral rejected peer identity', 21: 'Peripheral handshake timeout',
         22: 'Peer disconnected', 23: 'Advertising restart failed',
@@ -491,10 +491,17 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         ? bleConnectionDetailText(record.stage, record.detail)
         : record.detail < 0 ? String(record.detail)
             : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
-    const reason = ({
+    const connectionReason = ({
         1: 'local setup', 3: 'identity rejected',
         5: 'GATT/handshake failure', 6: 'GAP failure'
-    } as Record<number, string>)[record.reason] ?? (record.reason ? `reason ${record.reason}` : '');
+    } as Record<number, string>)[record.reason];
+    const peripheralRejectReason = ({
+        1: 'BLE disabled', 2: 'wrong BLE role', 3: 'eight-link limit reached'
+    } as Record<number, string>)[record.reason];
+    const reason = record.code === 12 || record.code === 25 ? (connectionReason ?? '') :
+        record.code === 17 ? (peripheralRejectReason ?? '') :
+        record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
+        record.reason ? `reason ${record.reason}` : '';
     return [
         `${(record.uptimeMs / 1000).toFixed(1)}s`,
         bleDiagnosticCodeName(record.code),
