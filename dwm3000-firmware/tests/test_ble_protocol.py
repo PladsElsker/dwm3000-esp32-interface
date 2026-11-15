@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host-side tests for the BLE packet/config helpers used by pi_client.py."""
+"""Host-side tests for the V2.1 BLE config and packet helpers."""
 import argparse
 import importlib.util
 import pathlib
@@ -12,42 +12,123 @@ module = importlib.util.module_from_spec(spec)
 sys.modules[spec.name] = module
 spec.loader.exec_module(module)
 
-args = argparse.Namespace(
-    ble_mode="hub", ble_peers=[2, 3], ble_advertising_interval_ms=160,
-    ble_scan_interval_ms=160, ble_scan_window_ms=80, ble_reconnect=True,
-    ble_reconnect_interval_ms=1000, ble_connection_timeout_ms=5000,
-    ble_retries=3, ble_rx_message_timeout_ms=1000,
-)
-ext = module.encode_ble_config(args)
-assert len(ext) == 20
-cfg = module.decode_ble_config(ext)
-assert cfg["ble_mode"] == "hub"
-assert cfg["ble_peers"] == [2, 3]
-assert cfg["ble_max_retries"] == 3
 
+def config_args(peers):
+    return argparse.Namespace(
+        ble_mode="hub",
+        ble_peers=peers,
+        ble_advertising_interval_ms=160,
+        ble_scan_interval_ms=160,
+        ble_scan_window_ms=80,
+        ble_retry_interval_ms=1000,
+        ble_connection_timeout_ms=5000,
+        ble_retries=3,
+        ble_rx_message_timeout_ms=1000,
+    )
+
+
+# The extension stays 16 bytes plus two bytes for each peer. Byte 7 is
+# reserved, always written as zero, and does not represent an enable switch.
+extension = module.encode_ble_config(config_args([2, 3]))
+assert len(extension) == 20
+assert extension[7] == 0
+decoded_config = module.decode_ble_config(extension)
+assert decoded_config["ble_mode"] == "hub"
+assert decoded_config["ble_peers"] == [2, 3]
+assert decoded_config["ble_retry_interval_ms"] == 1000
+assert "ble_reconnect_enabled" not in decoded_config
+
+# The reserved byte is ignored on decode; enabled state is not encoded here.
+reserved_nonzero = bytearray(extension)
+reserved_nonzero[7] = 0xA5
+assert module.decode_ble_config(bytes(reserved_nonzero)) == decoded_config
+
+# Open mode is represented by an empty peer list.
+open_extension = module.encode_ble_config(config_args([]))
+assert len(open_extension) == 16
+assert module.decode_ble_config(open_extension)["ble_peers"] == []
+
+# The configured peer list supports all eight IDs.
+eight_peers = list(range(1, 9))
+eight_extension = module.encode_ble_config(config_args(eight_peers))
+assert len(eight_extension) == 32
+assert module.decode_ble_config(eight_extension)["ble_peers"] == eight_peers
+
+for bad_peers in ([1, 1], [0], [65535], list(range(1, 10))):
+    try:
+        module.encode_ble_config(config_args(bad_peers))
+    except ValueError:
+        pass
+    else:
+        raise AssertionError(f"invalid peer list accepted: {bad_peers}")
+
+# Manual peer connection commands are not part of the V2.1 command surface.
+assert "ble-connect" not in module.OPS
+assert "ble-disconnect" not in module.OPS
+assert 0x54 not in module.OPS.values()
+assert 0x55 not in module.OPS.values()
+assert module.OPS["start-ble"] == 0x52
+assert module.OPS["stop-ble"] == 0x53
+assert module.OPS["peer-status"] == 0x56
+
+# GET_STATUS exposes aggregate link presence plus a representative peer/MTU.
+status_payload = bytearray(27)
+status_payload[18] = 1  # HUB
+status_payload[19] = 1  # enabled
+status_payload[20] = 1  # at least one peer connected
+struct.pack_into("<H", status_payload, 21, 7)
+status_payload[23] = 0  # advertising
+status_payload[24] = 1  # scanning
+struct.pack_into("<H", status_payload, 25, 185)
+status = module.record_response(0x03, bytes(status_payload))
+assert status["ble_mode"] == "hub"
+assert status["ble_enabled"] is True
+assert status["ble_any_peer_connected"] is True
+assert status["ble_representative_peer_id"] == 7
+assert status["ble_representative_peer_mtu"] == 185
+
+# Per-peer manager state values.
+assert module.BLE_PEER_STATE_NAMES[0] == "unknown"
+assert module.BLE_PEER_STATE_NAMES[1] == "configured"
+assert module.BLE_PEER_STATE_NAMES[2] == "found"
+assert module.BLE_PEER_STATE_NAMES[3] == "connected"
+assert module.BLE_PEER_STATE_NAMES[4] == "connecting"
+assert module.BLE_PEER_STATE_NAMES[5] == "handshaking"
+assert module.BLE_PEER_STATE_NAMES[6] == "backoff"
+peer_status_payload = bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23)
+peer_status = module.record_response(0x56, peer_status_payload)
+assert peer_status["state"] == "backoff"
+assert peer_status["peer_id"] == 8
+assert peer_status["enabled"] is True
+
+# Fragmentation and packet CRC at the supported MTUs.
+message = bytes(range(256)) + bytes(range(240))
 for mtu, expected_count in ((23, 46), (100, 6), (185, 3), (256, 3)):
-    packets = module.fragment_ble_message(0xFFFF, bytes(range(256)) * 1 + bytes(range(240)), mtu)
+    packets = module.fragment_ble_message(0xFFFF, message, mtu)
     assert len(packets) == expected_count, (mtu, len(packets))
     for packet in packets:
         assert len(packet) <= mtu - 3
-        decoded = module.decode_ble_packet(packet)
-        assert decoded["type"] == "DATA"
-        assert decoded["message_id"] == 0xFFFF
+        parsed = module.decode_ble_packet(packet)
+        assert parsed["type"] == "DATA"
+        assert parsed["message_id"] == 0xFFFF
 
 empty = module.fragment_ble_message(0, b"", 23)
 assert len(empty) == 1
 assert module.decode_ble_packet(empty[0])["payload"] == b""
 
-# A 496-byte application payload at MTU 256 uses three fragments of 244, 244, 8 bytes.
-packets = module.fragment_ble_message(0x1234, bytes(range(256)) + bytes(range(240)), 256)
-assert [len(module.decode_ble_packet(p)["payload"]) for p in packets] == [244, 244, 8]
+# A 496-byte message at MTU 256 becomes payloads of 244, 244 and 8 bytes.
+packets = module.fragment_ble_message(0x1234, message, 256)
+assert [len(module.decode_ble_packet(packet)["payload"]) for packet in packets] == [244, 244, 8]
 
-# Control packet layouts and CRC verification.
+
 def packet_with_crc(body):
     return body + struct.pack("<H", module.crc16(body))
 
+
 ack = packet_with_crc(struct.pack("<BHB", 0x02, 0x1234, 4))
-assert module.decode_ble_packet(ack) == {"type": "ACK", "message_id": 0x1234, "fragment_index": 4}
+assert module.decode_ble_packet(ack) == {
+    "type": "ACK", "message_id": 0x1234, "fragment_index": 4
+}
 nack = packet_with_crc(struct.pack("<BHBB", 0x03, 0x1234, 5, 2))
 assert module.decode_ble_packet(nack)["error_code"] == 2
 result = packet_with_crc(struct.pack("<BHB", 0x04, 0x1234, 1))
@@ -55,10 +136,10 @@ assert module.decode_ble_packet(result)["status"] == 1
 result_ack = packet_with_crc(struct.pack("<BH", 0x05, 0x1234))
 assert module.decode_ble_packet(result_ack)["message_id"] == 0x1234
 
-bad = bytearray(ack)
-bad[1] ^= 0x01
+corrupt = bytearray(ack)
+corrupt[1] ^= 0x01
 try:
-    module.decode_ble_packet(bytes(bad))
+    module.decode_ble_packet(bytes(corrupt))
 except ValueError:
     pass
 else:
@@ -72,4 +153,4 @@ for bad_mtu in (22, 257, 518):
     else:
         raise AssertionError("invalid ATT MTU was accepted")
 
-print("BLE config, fragmentation, packet layout and CRC tests passed")
+print("BLE V2.1 config, status, command surface, fragmentation and CRC tests passed")
