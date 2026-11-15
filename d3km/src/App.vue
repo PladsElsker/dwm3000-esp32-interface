@@ -1378,6 +1378,10 @@ onMounted(async () => {
             polling = true;
             try {
                 await refreshStatus();
+                if (active.value === 'diagnostics' && Date.now() - lastBleDiagnosticTraceRefreshAt >= 1200) {
+                    lastBleDiagnosticTraceRefreshAt = Date.now();
+                    await refreshBleDiagnosticTrace(true);
+                }
                 if (active.value === 'bluetooth' && ble.supported && Date.now() - lastBleRefreshAt >= 4000) {
                     lastBleRefreshAt = Date.now();
                     await refreshBluetooth();
@@ -2242,7 +2246,7 @@ onUnmounted(() => {
                             <div class="eyebrow">DEVICE HEALTH</div>
                             <h1>Diagnostics</h1>
                             <p>Inspect the UWB radio, USB protocol and Bluetooth messaging state to identify integration issues.</p>
-                        </div><button class="button primary" :disabled="!connected" @click="refreshAll">
+                        </div><button class="button primary" :disabled="!connected" @click="refreshDiagnostics">
                             <RefreshCw :size="15" /> Refresh diagnostics
                         </button>
                     </div>
@@ -2353,12 +2357,34 @@ onUnmounted(() => {
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
+                                <h3>BLE firmware trace</h3>
+                                <p>Most recent 32 records read directly from the node's BLE manager</p>
+                            </div>
+                            <span class="tag neutral">{{ bleDiagnosticTraceBusy ? 'Reading…' : `${bleDiagnosticTrace.length} retained` }}</span>
+                        </div>
+                        <div v-if="bleDiagnosticTraceSupported === false" class="empty-state">
+                            BLE trace retrieval is not supported by this firmware. Update the node firmware to the branch containing the diagnostics trace command.
+                        </div>
+                        <div v-else-if="bleDiagnosticTraceError" class="empty-state">
+                            Could not read BLE trace: {{ bleDiagnosticTraceError }}
+                        </div>
+                        <div v-else-if="bleDiagnosticTrace.length" class="event-log">
+                            <div v-for="(record, index) in bleDiagnosticTrace.slice().reverse()" :key="`${record.uptimeMs}-${record.code}-${record.peerId}-${index}`">
+                                {{ bleDiagnosticLine(record) }}
+                            </div>
+                        </div>
+                        <div v-else class="empty-state">No BLE trace records on this node yet. The trace refreshes while this tab is open.</div>
+                        <p class="hint">The trace is stored in RAM on the node, survives missed USB events, and resets when the node reboots. Raw NimBLE status values and connection stages are retained.</p>
+                    </div>
+                    <div class="panel advanced-panel">
+                        <div class="panel-heading">
+                            <div>
                                 <h3>Recent device events</h3>
                                 <p>Events decoded from the subscribed USB stream</p>
                             </div><span class="tag neutral">{{ events.length }} logged</span>
                         </div>
                         <div v-if="events.length" class="event-log">
-                            <div v-for="(item, index) in events.slice(0, 10)" :key="index">{{ item }}</div>
+                            <div v-for="(item, index) in events.slice(0, 30)" :key="index">{{ item }}</div>
                         </div>
                         <div v-else class="empty-state">No device events received.</div>
                     </div>
