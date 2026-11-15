@@ -8,7 +8,7 @@ type Port = { name: string; description: string };
 type FrameEvent = { seq: number; opcode: number; payload: number[] };
 type BleConfig = {
     mode: number; advertisingIntervalMs: number; scanIntervalMs: number; scanWindowMs: number;
-    reconnectIntervalMs: number; connectionTimeoutMs: number;
+    retryIntervalMs: number; connectionTimeoutMs: number;
     maxRetries: number; rxMessageTimeoutMs: number; peers: number[];
 };
 type BlePeerStatus = {
@@ -21,7 +21,7 @@ type BleMessage = {
 };
 const defaultBleConfig = (): BleConfig => ({
     mode: 0, advertisingIntervalMs: 160, scanIntervalMs: 160, scanWindowMs: 80,
-    reconnectIntervalMs: 1000, connectionTimeoutMs: 5000,
+    retryIntervalMs: 1000, connectionTimeoutMs: 5000,
     maxRetries: 1, rxMessageTimeoutMs: 1000, peers: []
 });
 const bleDraft = reactive<BleConfig>(defaultBleConfig());
@@ -203,7 +203,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
     const config: BleConfig = {
         mode: p[offset], advertisingIntervalMs: get16(p, offset + 1), scanIntervalMs: get16(p, offset + 3),
         scanWindowMs: get16(p, offset + 5),
-        reconnectIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
+        retryIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
         maxRetries: p[offset + 12], rxMessageTimeoutMs: get16(p, offset + 13),
         peers: Array.from({ length: peerCount }, (_, i) => get16(p, offset + 16 + i * 2))
     };
@@ -211,7 +211,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
         config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
         config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
         config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
-        config.reconnectIntervalMs < 100 || config.reconnectIntervalMs > 60000 ||
+        config.retryIntervalMs < 100 || config.retryIntervalMs > 60000 ||
         config.connectionTimeoutMs < 100 || config.connectionTimeoutMs > 30000 ||
         config.rxMessageTimeoutMs < 100 || config.rxMessageTimeoutMs > 2000) {
         throw new Error('Device returned BLE settings outside the supported protocol limits.');
@@ -224,7 +224,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
 function encodeBleConfigExtension(c: BleConfig) {
     return [
         c.mode, ...u16(c.advertisingIntervalMs), ...u16(c.scanIntervalMs), ...u16(c.scanWindowMs),
-        0, ...u16(c.reconnectIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved legacy reconnect flag.
+        0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs), // Reserved; automatic connection retries are controlled by enabled state.
         c.maxRetries, ...u16(c.rxMessageTimeoutMs), c.peers.length, ...c.peers.flatMap(u16)
     ];
 }
@@ -345,7 +345,7 @@ function validateBleConfig(c: BleConfig) {
     if (!Number.isInteger(c.advertisingIntervalMs) || c.advertisingIntervalMs < 20 || c.advertisingIntervalMs > 10240) throw new Error('Bluetooth advertising interval must be 20–10240 ms.');
     if (!Number.isInteger(c.scanIntervalMs) || c.scanIntervalMs < 10 || c.scanIntervalMs > 10240) throw new Error('Bluetooth scan interval must be 10–10240 ms.');
     if (!Number.isInteger(c.scanWindowMs) || c.scanWindowMs < 10 || c.scanWindowMs > c.scanIntervalMs) throw new Error('Bluetooth scan window must be 10 ms or greater and cannot exceed the scan interval.');
-    if (!Number.isInteger(c.reconnectIntervalMs) || c.reconnectIntervalMs < 100 || c.reconnectIntervalMs > 60000) throw new Error('Bluetooth retry interval must be 100–60000 ms.');
+    if (!Number.isInteger(c.retryIntervalMs) || c.retryIntervalMs < 100 || c.retryIntervalMs > 60000) throw new Error('Bluetooth retry interval must be 100–60000 ms.');
     if (!Number.isInteger(c.connectionTimeoutMs) || c.connectionTimeoutMs < 100 || c.connectionTimeoutMs > 30000) throw new Error('Bluetooth connection timeout must be 100–30000 ms.');
     if (!Number.isInteger(c.maxRetries) || c.maxRetries < 0 || c.maxRetries > 5) throw new Error('Bluetooth retries must be 0–5.');
     if (!Number.isInteger(c.rxMessageTimeoutMs) || c.rxMessageTimeoutMs < 100 || c.rxMessageTimeoutMs > 2000) throw new Error('Bluetooth receive timeout must be 100–2000 ms.');
@@ -1775,7 +1775,7 @@ onUnmounted(() => {
                                     </div>
                                     <div class="field-grid">
                                         <label>Reconnect interval <span class="field-help">100–60000 ms</span>
-                                            <input type="number" min="100" max="60000" step="1" v-model.number="bleDraft.reconnectIntervalMs" />
+                                            <input type="number" min="100" max="60000" step="1" v-model.number="bleDraft.retryIntervalMs" />
                                             <small>Delay before the next automatic connection attempt.</small>
                                         </label>
                                         <label>Connection timeout <span class="field-help">100–30000 ms</span>
