@@ -1355,7 +1355,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       uint32_t context = lastErrorContext;
       UwbBle::LastError bleError;
       if (ble.getLastError(bleError)) {
-        const uint64_t bleErrorTimeUs = uint64_t(bleError.uptimeMs) * 1000ULL;
+        const uint64_t bleErrorTimeUs = bleError.monotonicUs;
         if (bleErrorTimeUs > errorTimeUs) {
           subsystem = ERROR_SUBSYSTEM_BLE;
           code = bleError.code;
