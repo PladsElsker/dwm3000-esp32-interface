@@ -98,7 +98,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x51` | `GET_PEERS` | — | `count:u8, peer_ids:u16[]` |
 | `0x52` | `START_BLE` / enable BLE | — | —; starts the configured BLE role for the current runtime session |
 | `0x53` | `STOP_BLE` / disable BLE | — | —; stops BLE for the current runtime session and disconnects active peers |
-| `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16` |
+| `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16` (14 bytes) |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
 
@@ -195,7 +195,7 @@ Events are emitted only to transports subscribed to the corresponding event bit,
 | `0x87` | `BLE_PEER_FOUND` | `peer_id:u16` |
 | `0x88` | `BLE_PEER_CONNECTED` | `peer_id:u16` |
 | `0x89` | `BLE_PEER_DISCONNECTED` | `peer_id:u16, reason:u8` |
-| `0x8A` | `BLE_CONNECTION_FAILED` | `peer_id:u16, reason:u8` |
+| `0x8A` | `BLE_CONNECTION_FAILED` | `peer_id:u16, reason:u8, stage:u8, detail:i16` (6 bytes) |
 | `0x8B` | `BLE_DATA_RECEIVED` | `peer_id:u16, message_id:u16, total_length:u16` |
 | `0x8C` | `BLE_ERROR` | `direction:u8, peer_id:u16, message_id:u16, fragment_index:u8, error_code:u8, reserved:u8` |
 | `0x8D` | `BLE_DATA_SENT` | `peer_id:u16, message_id:u16, total_length:u16` |
@@ -211,7 +211,7 @@ The saved BLE configuration contains the operating mode, peer policy, timing par
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
 
-While enabled in HUB mode, the node continuously scans, connects to eligible discovered peers, and retries unavailable or disconnected peers. `ble_retry_interval_ms` sets the delay between connection attempts; `ble_connection_timeout_ms` sets the connection and identity-handshake timeout. Retry behavior is always active while BLE is enabled. In PERIPHERAL mode, advertising remains active while connection capacity is available; the node validates each incoming peer identity and resumes advertising when a connection closes and capacity becomes available.
+While enabled in HUB mode, the node scans for eligible peers and runs one Central connection attempt at a time. Scanning is stopped before a connection attempt and remains stopped through the GATT identity handshake; discovery resumes after the attempt succeeds or its teardown completes. Failed attempts enter backoff and are retried after `ble_retry_interval_ms`. `ble_connection_timeout_ms` is passed to NimBLE as the GAP connection timeout and also bounds the Peripheral identity handshake. Retry behavior is always active while BLE is enabled. In PERIPHERAL mode, advertising remains active while connection capacity is available; the node validates each incoming peer identity and resumes advertising when a connection closes and capacity becomes available.
 
 The host configures the BLE mode, peer policy, and timing; enables or disables BLE; and monitors peer state and events. It does not manage individual connection lifecycles. Application messages are peer-directed unicast: `SEND_TO_PEER` sends to the requested connected peer ID and never broadcasts application payloads to all links.
 
@@ -228,6 +228,28 @@ Peer state values returned by `GET_PEER_STATUS` are:
 | 4 | `CONNECTING` | A Central connection attempt is in progress |
 | 5 | `HANDSHAKING` | Internal Peripheral identity-validation phase; no peer ID is available for a status query yet |
 | 6 | `BACKOFF` | The next automatic connection attempt is pending |
+
+The 14-byte `GET_PEER_STATUS` response appends the most recent connection failure: `last_failure_reason:u8`, `last_failure_stage:u8`, and signed `last_failure_detail:i16`. The failure fields are zero until a failure is recorded and clear when the link connects successfully. For GAP failures, `last_failure_detail` contains the NimBLE host status code when available; `-1` means no status code was available.
+
+`BLE_CONNECTION_FAILED` preserves the peer ID and reason prefix and appends the stage and signed detail fields. Reasons are: `1` local setup failure, `3` peer identity rejection, `5` Peripheral identity-handshake timeout, and `6` GAP connection procedure failure. A peer ID of zero identifies a Peripheral-side handshake failure that occurred before a remote ID was accepted.
+
+Connection failure stages are:
+
+| Value | Stage |
+|---:|---|
+| 1 | Stop Central scan |
+| 2 | Allocate NimBLE client |
+| 3 | Start GAP connection procedure |
+| 4 | GAP connection result callback |
+| 5 | GAP connection timeout |
+| 6 | Discover GATT service |
+| 7 | Validate GATT characteristics |
+| 8 | Validate BLE protocol version |
+| 9 | Validate peer identity |
+| 10 | Write local device identity |
+| 11 | Subscribe to peer notifications |
+| 12 | Validate Peripheral-side peer identity |
+| 13 | Peripheral identity-handshake timeout |
 
 Each peer link has independent transmit, receive/reassembly, unread-message, acknowledgement, and final-delivery state. There is one outgoing in-flight message and one unread complete incoming message per peer. Link and message state are volatile. Connections are re-established automatically while BLE remains enabled, but interrupted application messages are not replayed automatically.
 
