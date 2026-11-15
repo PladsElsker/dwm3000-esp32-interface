@@ -34,9 +34,8 @@ static Manager* s_manager = nullptr;
 // listener so controller rejections are visible to the host application.
 static int onBleGlobalGapEvent(ble_gap_event* event, void* arg) {
   auto* manager = static_cast<Manager*>(arg);
-  if (manager && event && event->type == BLE_GAP_EVENT_CONNECT &&
-      event->connect.status != 0) {
-    manager->notePeripheralConnectFailed(event->connect.status);
+  if (manager && event && event->type == BLE_GAP_EVENT_CONNECT) {
+    manager->noteGapConnectResult(event->connect.status);
   }
   return 0;
 }
@@ -136,17 +135,33 @@ uint16_t Manager::packetCrc(const uint8_t* data, size_t length) {
 
 bool Manager::begin(uint16_t localDeviceId) {
   if (initialized_) return true;
-  if (!localDeviceId || localDeviceId == 0xFFFF) return false;
+  if (!localDeviceId || localDeviceId == 0xFFFF) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 0, static_cast<int16_t>(localDeviceId));
+    return false;
+  }
   localDeviceId_ = localDeviceId;
   char name[MAX_ADVERTISE_NAME];
   snprintf(name, sizeof(name), "UWB-%04X", localDeviceId_);
-  if (!NimBLEDevice::init(name) || !NimBLEDevice::setMTU(MAX_ATT_MTU)) return false;
-  NimBLEDevice::setPower(3);
+  if (!NimBLEDevice::init(name)) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 1, -1);
+    return false;
+  }
   s_manager = this;
-  if (!NimBLEDevice::setCustomGapHandler(onBleGlobalGapEvent, this)) return false;
+  if (!NimBLEDevice::setMTU(MAX_ATT_MTU)) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 2, -1);
+    return false;
+  }
+  NimBLEDevice::setPower(3);
+  if (!NimBLEDevice::setCustomGapHandler(onBleGlobalGapEvent, this)) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 3, -1);
+    return false;
+  }
 
   NimBLEServer* server = NimBLEDevice::createServer();
-  if (!server) return false;
+  if (!server) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 4, -1);
+    return false;
+  }
   server_ = server;
   auto* serverCallbacks = new BleNimBLEServerCallbacks();
   auto* rxCallbacks = new BleNimBLERxCallbacks();
@@ -160,21 +175,30 @@ bool Manager::begin(uint16_t localDeviceId) {
   server->advertiseOnDisconnect(false);
 
   NimBLEService* service = server->createService(SERVICE_UUID);
-  if (!service) return false;
+  if (!service) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 5, -1);
+    return false;
+  }
   NimBLECharacteristic* rx = service->createCharacteristic(
       RX_UUID, NIMBLE_PROPERTY::WRITE | NIMBLE_PROPERTY::WRITE_NR);
   NimBLECharacteristic* tx = service->createCharacteristic(TX_UUID, NIMBLE_PROPERTY::NOTIFY);
   NimBLECharacteristic* idRead = service->createCharacteristic(ID_READ_UUID, NIMBLE_PROPERTY::READ);
   NimBLECharacteristic* idWrite = service->createCharacteristic(ID_WRITE_UUID, NIMBLE_PROPERTY::WRITE);
   NimBLECharacteristic* protocolVersion = service->createCharacteristic(PROTOCOL_VERSION_UUID, NIMBLE_PROPERTY::READ);
-  if (!rx || !tx || !idRead || !idWrite || !protocolVersion) return false;
+  if (!rx || !tx || !idRead || !idWrite || !protocolVersion) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 6, -1);
+    return false;
+  }
   rx->setCallbacks(rxCallbacks);
   idWrite->setCallbacks(identityCallbacks);
   uint8_t idBytes[2];
   writeU16(idBytes, localDeviceId_);
   idRead->setValue(idBytes, sizeof(idBytes));
   protocolVersion->setValue(&BLE_PROTOCOL_VERSION, sizeof(BLE_PROTOCOL_VERSION));
-  if (!server->start()) return false;
+  if (!server->start()) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 7, -1);
+    return false;
+  }
   rxCharacteristic_ = rx;
   txCharacteristic_ = tx;
   identityReadCharacteristic_ = idRead;
@@ -182,7 +206,10 @@ bool Manager::begin(uint16_t localDeviceId) {
   protocolVersionCharacteristic_ = protocolVersion;
 
   NimBLEScan* scan = NimBLEDevice::getScan();
-  if (!scan) return false;
+  if (!scan) {
+    recordDiagnostic(DIAG_INIT_FAILED, 0, 1, 8, -1);
+    return false;
+  }
   scan_ = scan;
   auto* scanCallbacks = new BleNimBLEScanCallbacks();
   scanCallbacks_ = scanCallbacks;
@@ -191,6 +218,7 @@ bool Manager::begin(uint16_t localDeviceId) {
   scan->setMaxResults(0);
 
   initialized_ = true;
+  recordDiagnostic(DIAG_INIT_COMPLETE);
   return true;
 }
 
@@ -446,7 +474,10 @@ bool Manager::transmitPacket(const uint8_t* packet, uint16_t length) {
 }
 
 bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length) {
-  if (length > sizeof(Event::payload)) return false;
+  if (length > sizeof(Event::payload)) {
+    recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
+    return false;
+  }
   bool ok = false;
   portENTER_CRITICAL(&mux_);
   if (eventCount_ < EVENT_QUEUE_SIZE) {
@@ -457,6 +488,7 @@ bool Manager::enqueueEvent(uint8_t code, const uint8_t* payload, uint8_t length)
     ++eventCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
+  if (!ok) recordDiagnostic(DIAG_EVENT_QUEUE_FULL, 0, code, 0, length);
   return ok;
 }
 
@@ -485,7 +517,11 @@ bool Manager::enqueueReceivedPacket(const uint8_t* data, size_t length, uint16_t
     ++rxCount_; ok = true;
   }
   portEXIT_CRITICAL(&mux_);
-  if (!ok) emitError(1, peerId, 0, 0xFF, NACK_RX_BUSY);
+  if (!ok) {
+    recordDiagnostic(DIAG_RX_QUEUE_FULL, peerId, NACK_RX_BUSY, 0,
+                     static_cast<int16_t>(length));
+    emitError(1, peerId, 0, 0xFF, NACK_RX_BUSY);
+  }
   return ok;
 }
 
@@ -516,28 +552,39 @@ void Manager::notePeerDiscovered(uint16_t peerId, const uint8_t* address, uint8_
       }
     }
   }
-  if (!link) return;
+  if (!link) {
+    recordDiagnostic(DIAG_CLIENT_ALLOC_FAILED, peerId, 2, 0,
+                     static_cast<int16_t>(activeConnectionCount()));
+    return;
+  }
+  const bool firstDiscovery = !link->foundNotified;
   memcpy(link->address, address, sizeof(link->address));
   link->addressType = addressType;
   link->addressReady = true;
   link->lastSeenMs = millis();
-  if (!link->foundNotified) {
+  if (firstDiscovery) {
     link->foundNotified = true;
+    recordDiagnostic(DIAG_PEER_DISCOVERED, peerId);
     uint8_t payload[2]; writeU16(payload, peerId);
     enqueueEvent(EVENT_PEER_FOUND, payload, sizeof(payload));
   }
 }
 
 void Manager::noteServerConnected(uint16_t handle) {
-  if (!enabled_ || config_.mode != MODE_PERIPHERAL || activeConnectionCount() >= MAX_ACTIVE_CONNECTIONS) {
+  const uint8_t active = activeConnectionCount();
+  if (!enabled_ || config_.mode != MODE_PERIPHERAL || active >= MAX_ACTIVE_CONNECTIONS) {
+    recordDiagnostic(DIAG_SERVER_CAPACITY_REJECTED, 0, 1, 0, active);
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
   Link* link = allocateLink(0, true);
   if (!link) {
+    recordDiagnostic(DIAG_SERVER_SLOT_ALLOC_FAILED, 0, 2, 0, active);
     if (server_) static_cast<NimBLEServer*>(server_)->disconnect(handle);
     return;
   }
+  recordDiagnostic(DIAG_SERVER_CONNECTED, 0, 0, 0,
+                   static_cast<int16_t>(handle));
   link->connectionHandle = handle;
   link->connectStartedMs = millis();
   link->mtu = 23;
@@ -547,6 +594,8 @@ void Manager::noteServerConnected(uint16_t handle) {
 
 void Manager::noteServerDisconnected(uint16_t handle, int reason) {
   Link* link = findLinkByHandle(handle);
+  recordDiagnostic(DIAG_PEER_DISCONNECTED, link ? link->peerId : 0, 2, 0,
+                   static_cast<int16_t>(reason));
   if (!link) return;
   link->disconnectReason = reason;
   link->disconnectPending = true;
@@ -557,23 +606,45 @@ void Manager::noteServerMtuChanged(uint16_t handle, uint16_t mtu) {
 }
 
 void Manager::noteClientConnected(void* client) {
-  if (Link* link = findLinkByClient(client)) link->connectComplete = true;
+  if (Link* link = findLinkByClient(client)) {
+    recordDiagnostic(DIAG_CENTRAL_CONNECTED, link->peerId);
+    link->connectComplete = true;
+  } else {
+    recordDiagnostic(DIAG_CENTRAL_CONNECTED, 0, 1, 0, -1);
+  }
 }
 
 void Manager::noteClientConnectFailed(void* client, int reason) {
   if (Link* link = findLinkByClient(client)) {
+    recordDiagnostic(DIAG_GAP_EVENT_CALLBACK, link->peerId, 6,
+                     FAILURE_STAGE_GAP_RESULT, static_cast<int16_t>(reason));
     if (link->connecting && !link->connected) {
       link->connectFailedReason = reason;
       link->connectFailedPending = true;
     }
+  } else {
+    recordDiagnostic(DIAG_GAP_EVENT_CALLBACK, 0, 6,
+                     FAILURE_STAGE_GAP_RESULT, static_cast<int16_t>(reason));
   }
 }
 
 void Manager::noteClientDisconnected(void* client, int reason) {
   if (Link* link = findLinkByClient(client)) {
+    recordDiagnostic(DIAG_PEER_DISCONNECTED, link->peerId, 1, 0,
+                     static_cast<int16_t>(reason));
     link->disconnectReason = reason;
     link->disconnectPending = true;
+  } else {
+    recordDiagnostic(DIAG_PEER_DISCONNECTED, 0, 1, 0,
+                     static_cast<int16_t>(reason));
   }
+}
+
+void Manager::noteGapConnectResult(int status) {
+  recordDiagnostic(DIAG_GAP_EVENT_CALLBACK, 0, status ? 6 : 0,
+                   status ? FAILURE_STAGE_GAP_RESULT : 0,
+                   static_cast<int16_t>(status));
+  if (status != 0) notePeripheralConnectFailed(status);
 }
 
 void Manager::notePeripheralConnectFailed(int reason) {
@@ -895,8 +966,63 @@ void Manager::clearPeerFailure(uint16_t peerId) {
   }
 }
 
+void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
+                               uint8_t stage, int16_t detail) {
+  DiagnosticRecord record;
+  record.uptimeMs = millis();
+  record.code = code;
+  record.reason = reason;
+  record.stage = stage;
+  record.peerId = peerId;
+  record.detail = detail;
+  record.activeLinks = activeConnectionCount();
+  record.stateFlags = static_cast<uint8_t>((enabled_ ? 1 : 0) |
+      (advertising_ ? 2 : 0) | (scanning_ ? 4 : 0) |
+      (static_cast<uint8_t>(config_.mode) << 3));
+  portENTER_CRITICAL(&mux_);
+  diagnosticTrace_[diagnosticTraceHead_] = record;
+  diagnosticTraceHead_ = static_cast<uint8_t>((diagnosticTraceHead_ + 1) %
+                                               BLE_DIAGNOSTIC_TRACE_CAPACITY);
+  if (diagnosticTraceCount_ < BLE_DIAGNOSTIC_TRACE_CAPACITY) ++diagnosticTraceCount_;
+  portEXIT_CRITICAL(&mux_);
+}
+
+uint16_t Manager::getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const {
+  if (!destination || capacity < 1 + BLE_DIAGNOSTIC_RECORD_SIZE) return 0;
+  DiagnosticRecord snapshot[BLE_DIAGNOSTIC_TRACE_CAPACITY];
+  uint8_t count = 0;
+  portENTER_CRITICAL(&mux_);
+  const uint8_t maxRecords = static_cast<uint8_t>((capacity - 1) / BLE_DIAGNOSTIC_RECORD_SIZE);
+  count = diagnosticTraceCount_ < maxRecords ? diagnosticTraceCount_ : maxRecords;
+  const uint8_t oldest = static_cast<uint8_t>((diagnosticTraceHead_ +
+      BLE_DIAGNOSTIC_TRACE_CAPACITY - count) % BLE_DIAGNOSTIC_TRACE_CAPACITY);
+  for (uint8_t i = 0; i < count; ++i) {
+    snapshot[i] = diagnosticTrace_[(oldest + i) % BLE_DIAGNOSTIC_TRACE_CAPACITY];
+  }
+  portEXIT_CRITICAL(&mux_);
+
+  destination[0] = count;
+  uint16_t offset = 1;
+  for (uint8_t i = 0; i < count; ++i) {
+    const DiagnosticRecord& record = snapshot[i];
+    destination[offset++] = static_cast<uint8_t>(record.uptimeMs);
+    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 8);
+    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 16);
+    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 24);
+    destination[offset++] = record.code;
+    writeU16(destination + offset, record.peerId); offset += 2;
+    destination[offset++] = record.reason;
+    destination[offset++] = record.stage;
+    writeU16(destination + offset, static_cast<uint16_t>(record.detail)); offset += 2;
+    destination[offset++] = record.activeLinks;
+    destination[offset++] = record.stateFlags;
+  }
+  return offset;
+}
+
 void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,
                                     uint8_t stage, int16_t detail) {
+  recordDiagnostic(DIAG_CONNECTION_FAILED, peerId, reason, stage, detail);
   // Keep bounded diagnostic history outside the live connection slots so
   // repeated rejected Peripheral handshakes cannot consume link capacity.
   if (peerId) {
