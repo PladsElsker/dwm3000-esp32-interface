@@ -107,7 +107,7 @@ assert trace["records"][0] == {
     "stage": 4, "detail": 13, "active_links": 1, "state_flags": 0b00010001
 }
 try:
-    module.record_response(0x59, trace_payload + b"\\x00")
+    module.record_response(0x59, trace_payload + bytes([0]))
 except ValueError:
     pass
 else:
