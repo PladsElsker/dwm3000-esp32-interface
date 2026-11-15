@@ -375,8 +375,8 @@ async function stopBle() {
     try {
         await cmd(0x53);
         await refreshStatus();
-        notice.value = 'Bluetooth disabled. The disabled state is saved and will be restored at boot.';
-        log('Bluetooth disabled · state saved to NVS');
+        notice.value = 'Bluetooth disabled for the current boot. The saved auto-start preference is unchanged.';
+        log('Bluetooth disabled · boot auto-start preference unchanged');
     } catch (e: any) { error.value = String(e); }
     finally { ble.action = ''; }
 }
@@ -1906,7 +1906,7 @@ onUnmounted(() => {
                                 <div v-else class="empty-state">No outgoing BLE messages in this session.</div>
                             </div>
                         </div>
-                        <div class="bottom-actions"><span class="hint">The enabled state is persisted in NVS and restored at boot. Connections recover automatically while enabled. Application messages are unicast to the selected peer ID; no broadcast is performed.</span><button class="button secondary" @click="clearBleMessages"><Trash2 :size="14" /> Clear message history</button></div>
+                        <div class="bottom-actions"><span class="hint">The boot auto-start preference is configured separately in Configuration. Runtime Enable/Disable does not change that saved preference. Connections recover automatically while enabled. Application messages are unicast to the selected peer ID; no broadcast is performed.</span><button class="button secondary" @click="clearBleMessages"><Trash2 :size="14" /> Clear message history</button></div>
                     </template>
                 </section>
 
