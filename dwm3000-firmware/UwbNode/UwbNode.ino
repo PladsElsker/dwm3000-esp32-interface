@@ -103,15 +103,12 @@ enum Opcode : uint8_t {
   OP_GET_LAST_RANGE = 0x30, OP_GET_HISTORY = 0x31,
   OP_SUBSCRIBE = 0x32, OP_UNSUBSCRIBE = 0x33,
   OP_CLEAR_HISTORY = 0x34, OP_GET_DIAGNOSTICS = 0x35,
-  OP_GET_RADIO_TRACE = 0x36, // Legacy alias; use GET_TRACE.
-  OP_GET_RADIO_TRACE_DETAIL = 0x37, // Legacy alias; use GET_TRACE.
-  OP_GET_TRACE = 0x38, // source:u8 (0 radio, 1 detailed radio TX, 2 BLE lifecycle)
+  OP_GET_TRACE = 0x38,
   OP_UWB_SLEEP = 0x40, OP_UWB_WAKE = 0x41,
   OP_SYSTEM_SLEEP = 0x42, OP_REBOOT = 0x43,
   OP_SET_PEERS = 0x50, OP_GET_PEERS = 0x51, OP_START_BLE = 0x52,
   OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x56,
   OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
-  OP_GET_BLE_DIAGNOSTIC_TRACE = 0x59, // Legacy alias; use GET_TRACE.
   EV_RANGE_RESULT = 0x80, EV_RANGE_FAILED = 0x81,
   EV_STATE_CHANGED = 0x82, EV_ERROR = 0x83,
   EV_HISTORY_OVERRUN = 0x84, EV_DEVICE_READY = 0x85,
@@ -205,10 +202,10 @@ bool clockSynchronized = false;
 static constexpr uint8_t ERROR_SUBSYSTEM_SYSTEM = 0;
 static constexpr uint8_t ERROR_SUBSYSTEM_UWB = 1;
 static constexpr uint8_t ERROR_SUBSYSTEM_BLE = 2;
-enum TraceSource : uint8_t {
-  TRACE_SOURCE_UWB_RADIO = 0,
-  TRACE_SOURCE_UWB_TX_START = 1,
-  TRACE_SOURCE_BLE_LIFECYCLE = 2
+enum TraceRecordType : uint8_t {
+  TRACE_TYPE_UWB_RADIO = 0,
+  TRACE_TYPE_UWB_TX_START = 1,
+  TRACE_TYPE_BLE_LIFECYCLE = 2
 };
 uint8_t lastErrorSubsystem = ERROR_SUBSYSTEM_SYSTEM;
 uint8_t lastErrorCode = ERR_OK;
@@ -286,7 +283,7 @@ int32_t computedRangeMm = -1;
 uint8_t computedRangeStatus = RANGE_INVALID;
 
 // Volatile-in-RAM diagnostic trace. No text is printed on USB CDC/UART because
-// both transports carry binary protocol frames. Read records with opcode 0x36.
+// both transports carry binary protocol frames. Read records with GET_TRACE (0x38).
 static constexpr uint8_t RADIO_TRACE_CAPACITY = 8;
 static constexpr uint8_t RADIO_TRACE_RECORD_BYTES = 28;
 static constexpr uint8_t RADIO_TRACE_DETAIL_CAPACITY = 8;
@@ -298,6 +295,7 @@ enum RadioTraceEvent : uint8_t {
   TRACE_RX_ERROR = 4
 };
 struct RadioTraceRecord {
+  uint32_t sequence;
   uint32_t uptimeMs;
   uint32_t statusBefore;
   uint32_t statusAfter;
@@ -326,6 +324,7 @@ enum RadioTraceFailureHint : uint8_t {
   TRACE_HINT_TXERR_STATE_OBSERVED_AFTER = 2
 };
 struct RadioTraceDetailRecord {
+  uint32_t sequence;
   uint32_t uptimeMs;
   uint32_t statusBefore;
   uint32_t statusAfter;
@@ -355,6 +354,7 @@ static void recordRadioTraceDetail(uint8_t function, bool delayed,
                                    uint32_t sysStateBefore, uint32_t sysStateAfter,
                                    uint32_t sysTimeBefore) {
   RadioTraceDetailRecord &r = radioTraceDetail[radioTraceDetailHead];
+  r.sequence = UwbBle::nextTraceSequence();
   r.uptimeMs = millis();
   r.statusBefore = statusBefore;
   r.statusAfter = statusAfter;
@@ -386,6 +386,7 @@ static void recordRadioTrace(uint8_t event, uint8_t function, bool delayed,
                              uint32_t delayedTimeReg, int rc,
                              uint32_t statusBefore, uint32_t statusAfter) {
   RadioTraceRecord &r = radioTrace[radioTraceHead];
+  r.sequence = UwbBle::nextTraceSequence();
   r.uptimeMs = millis();
   r.statusBefore = statusBefore;
   r.statusAfter = statusAfter;
@@ -544,7 +545,7 @@ static void sendResponse(HostTransport &source, const Frame &request, uint8_t er
         request.opcode == OP_SET_PEERS || request.opcode == OP_GET_PEERS ||
         request.opcode == OP_START_BLE || request.opcode == OP_STOP_BLE ||
         request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
-        request.opcode == OP_GET_RECEIVED_DATA || request.opcode == OP_GET_BLE_DIAGNOSTIC_TRACE;
+        request.opcode == OP_GET_RECEIVED_DATA;
     if (isBleCommand) {
       subsystem = ERROR_SUBSYSTEM_BLE;
       if ((request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
@@ -1774,13 +1775,6 @@ static void processRequest(HostTransport &source, const Frame &q) {
       break;
     }
 
-    case OP_GET_BLE_DIAGNOSTIC_TRACE: {
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      outLen = ble.getDiagnosticTrace(out, sizeof(out));
-      if (!outLen) error = ERR_INTERNAL;
-      break;
-    }
-
     case OP_SEND_TO_PEER: {
       if (n < 4) { error = ERR_BAD_ARGUMENT; break; }
       const uint16_t peerId = getU16(p);
@@ -1820,34 +1814,79 @@ static void processRequest(HostTransport &source, const Frame &q) {
       out[28] = bleDiag.eventQueueDepth; outLen = 29; break;
     }
 
-    // Canonical trace access. Source 0 = radio state-machine trace,
-    // 1 = detailed TX-start trace, 2 = BLE lifecycle trace. Response:
-    // trace_source:u8, record_size:u8, count:u8, then count records.
+    // Return every retained trace type in global insertion order.
+    // Each record: type:u8, sequence:u32, record_size:u8, record_data[].
     case OP_GET_TRACE: {
-      if (n != 1 || p[0] > TRACE_SOURCE_BLE_LIFECYCLE) { error = ERR_BAD_ARGUMENT; break; }
-      const uint8_t sourceType = p[0];
-      if (sourceType == TRACE_SOURCE_UWB_RADIO) {
-        out[0] = sourceType; out[1] = RADIO_TRACE_RECORD_BYTES; out[2] = radioTraceCount;
-        const uint8_t oldest = (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY;
-        for (uint8_t i = 0; i < radioTraceCount; ++i) {
-          const RadioTraceRecord &r = radioTrace[(oldest + i) % RADIO_TRACE_CAPACITY];
-          uint8_t *d = out + 3 + i * RADIO_TRACE_RECORD_BYTES;
+      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
+      struct TraceReference { uint32_t sequence; uint8_t type; uint8_t index; };
+      static constexpr uint8_t MAX_TRACE_RECORDS =
+          RADIO_TRACE_CAPACITY + RADIO_TRACE_DETAIL_CAPACITY + UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY;
+      static TraceReference references[MAX_TRACE_RECORDS]{};
+      static UwbBle::DiagnosticTraceRecord bleRecords[UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
+      uint8_t referenceCount = 0;
+      const uint8_t radioOldest = static_cast<uint8_t>(
+          (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY);
+      for (uint8_t i = 0; i < radioTraceCount; ++i) {
+        const uint8_t index = static_cast<uint8_t>((radioOldest + i) % RADIO_TRACE_CAPACITY);
+        references[referenceCount++] = {radioTrace[index].sequence, TRACE_TYPE_UWB_RADIO, index};
+      }
+      const uint8_t detailOldest = static_cast<uint8_t>(
+          (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY - radioTraceDetailCount) %
+          RADIO_TRACE_DETAIL_CAPACITY);
+      for (uint8_t i = 0; i < radioTraceDetailCount; ++i) {
+        const uint8_t index = static_cast<uint8_t>((detailOldest + i) % RADIO_TRACE_DETAIL_CAPACITY);
+        references[referenceCount++] = {radioTraceDetail[index].sequence, TRACE_TYPE_UWB_TX_START, index};
+      }
+      const uint8_t bleCount = ble.copyDiagnosticTrace(bleRecords, UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY);
+      for (uint8_t i = 0; i < bleCount; ++i) {
+        references[referenceCount++] = {bleRecords[i].sequence, TRACE_TYPE_BLE_LIFECYCLE, i};
+      }
+
+      // At most 48 records are retained; insertion sort preserves write order.
+      // Signed subtraction also orders correctly across uint32 sequence wrap.
+      for (uint8_t i = 1; i < referenceCount; ++i) {
+        const TraceReference key = references[i];
+        uint8_t j = i;
+        while (j > 0 && static_cast<int32_t>(references[j - 1].sequence - key.sequence) > 0) {
+          references[j] = references[j - 1];
+          --j;
+        }
+        references[j] = key;
+      }
+
+      // Return the newest contiguous suffix that fits; never split a record.
+      uint8_t first = referenceCount;
+      uint16_t responseBytes = 1; // count:u8
+      while (first > 0) {
+        const uint8_t type = references[first - 1].type;
+        const uint8_t dataSize = type == TRACE_TYPE_UWB_RADIO ? RADIO_TRACE_RECORD_BYTES :
+                                 type == TRACE_TYPE_UWB_TX_START ? RADIO_TRACE_DETAIL_RECORD_BYTES : 13;
+        if (responseBytes + 6 + dataSize > sizeof(out)) break;
+        responseBytes += 6 + dataSize;
+        --first;
+      }
+
+      const uint8_t count = static_cast<uint8_t>(referenceCount - first);
+      out[0] = count;
+      uint16_t offset = 1;
+      for (uint8_t i = first; i < referenceCount; ++i) {
+        const TraceReference &reference = references[i];
+        const uint8_t dataSize = reference.type == TRACE_TYPE_UWB_RADIO ? RADIO_TRACE_RECORD_BYTES :
+                                 reference.type == TRACE_TYPE_UWB_TX_START ? RADIO_TRACE_DETAIL_RECORD_BYTES : 13;
+        out[offset++] = reference.type;
+        putU32(out + offset, reference.sequence); offset += 4;
+        out[offset++] = dataSize;
+        uint8_t *d = out + offset;
+        if (reference.type == TRACE_TYPE_UWB_RADIO) {
+          const RadioTraceRecord &r = radioTrace[reference.index];
           putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
           putU32(d + 8, r.statusAfter); putU32(d + 12, r.delayedTimeReg);
           putU16(d + 16, r.peer); putU16(d + 18, r.jobId);
           d[20] = r.event; d[21] = r.state; d[22] = r.function;
           d[23] = r.radioSeq; d[24] = r.delayed; d[25] = r.retriesUsed;
           d[26] = r.rc; d[27] = r.reserved;
-        }
-        outLen = 3 + radioTraceCount * RADIO_TRACE_RECORD_BYTES;
-      } else if (sourceType == TRACE_SOURCE_UWB_TX_START) {
-        out[0] = sourceType; out[1] = RADIO_TRACE_DETAIL_RECORD_BYTES; out[2] = radioTraceDetailCount;
-        const uint8_t oldest = (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY -
-                                radioTraceDetailCount) % RADIO_TRACE_DETAIL_CAPACITY;
-        for (uint8_t i = 0; i < radioTraceDetailCount; ++i) {
-          const RadioTraceDetailRecord &r =
-            radioTraceDetail[(oldest + i) % RADIO_TRACE_DETAIL_CAPACITY];
-          uint8_t *d = out + 3 + i * RADIO_TRACE_DETAIL_RECORD_BYTES;
+        } else if (reference.type == TRACE_TYPE_UWB_TX_START) {
+          const RadioTraceDetailRecord &r = radioTraceDetail[reference.index];
           putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
           putU32(d + 8, r.statusAfter); putU32(d + 12, r.sysStateBefore);
           putU32(d + 16, r.sysStateAfter); putU32(d + 20, r.sysTimeBefore);
@@ -1855,67 +1894,16 @@ static void processRequest(HostTransport &source, const Frame &q) {
           putU16(d + 32, r.peer); putU16(d + 34, r.jobId);
           d[36] = r.event; d[37] = r.state; d[38] = r.function; d[39] = r.radioSeq;
           d[40] = r.delayed; d[41] = r.retriesUsed; d[42] = r.rc; d[43] = r.failureHint;
+        } else {
+          const UwbBle::DiagnosticTraceRecord &r = bleRecords[reference.index];
+          putU32(d, r.uptimeMs); d[4] = r.code;
+          putU16(d + 5, r.peerId); d[7] = r.reason; d[8] = r.stage;
+          putU16(d + 9, static_cast<uint16_t>(r.detail));
+          d[11] = r.activeLinks; d[12] = r.stateFlags;
         }
-        outLen = 3 + radioTraceDetailCount * RADIO_TRACE_DETAIL_RECORD_BYTES;
-      } else {
-        uint8_t legacy[1 + UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY * UwbBle::BLE_DIAGNOSTIC_RECORD_SIZE]{};
-        const uint16_t legacyLength = ble.getDiagnosticTrace(legacy, sizeof(legacy));
-        out[0] = sourceType; out[1] = UwbBle::BLE_DIAGNOSTIC_RECORD_SIZE; out[2] = legacy[0];
-        if (legacyLength > 1) memcpy(out + 3, legacy + 1, legacyLength - 1);
-        outLen = 3 + (legacyLength > 1 ? legacyLength - 1 : 0);
+        offset += dataSize;
       }
-      break;
-    }
-
-    // Additive diagnostic extension; all existing v1 commands/payloads stay unchanged.
-    // Response: count:u8, then count 28-byte records, oldest first.
-    // Record: uptimeMs:u32, statusBefore:u32, statusAfter:u32, delayedTimeReg:u32,
-    //         peer:u16, jobId:u16, event:u8, state:u8, function:u8, radioSeq:u8,
-    //         delayed:u8, retriesUsed:u8, rc:u8, reserved:u8.
-    case OP_GET_RADIO_TRACE: {
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = radioTraceCount;
-      const uint8_t oldest = (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY;
-      for (uint8_t i = 0; i < radioTraceCount; ++i) {
-        const RadioTraceRecord &r = radioTrace[(oldest + i) % RADIO_TRACE_CAPACITY];
-        uint8_t *d = out + 1 + i * RADIO_TRACE_RECORD_BYTES;
-        putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
-        putU32(d + 8, r.statusAfter); putU32(d + 12, r.delayedTimeReg);
-        putU16(d + 16, r.peer); putU16(d + 18, r.jobId);
-        d[20] = r.event; d[21] = r.state; d[22] = r.function;
-        d[23] = r.radioSeq; d[24] = r.delayed; d[25] = r.retriesUsed;
-        d[26] = r.rc; d[27] = r.reserved;
-      }
-      outLen = 1 + radioTraceCount * RADIO_TRACE_RECORD_BYTES;
-      break;
-    }
-
-    // Legacy detail response: count:u8 followed by 44-byte records, oldest first.
-    // This is an application-only snapshot; post-call registers may already
-    // reflect the driver's TXRXOFF cleanup after a failed start.
-    case OP_GET_RADIO_TRACE_DETAIL: {
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = radioTraceDetailCount;
-      const uint8_t oldest = (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY -
-                              radioTraceDetailCount) % RADIO_TRACE_DETAIL_CAPACITY;
-      for (uint8_t i = 0; i < radioTraceDetailCount; ++i) {
-        const RadioTraceDetailRecord &r =
-          radioTraceDetail[(oldest + i) % RADIO_TRACE_DETAIL_CAPACITY];
-        uint8_t *d = out + 1 + i * RADIO_TRACE_DETAIL_RECORD_BYTES;
-        putU32(d, r.uptimeMs);
-        putU32(d + 4, r.statusBefore);
-        putU32(d + 8, r.statusAfter);
-        putU32(d + 12, r.sysStateBefore);
-        putU32(d + 16, r.sysStateAfter);
-        putU32(d + 20, r.sysTimeBefore);
-        putU32(d + 24, r.delayedTimeReg);
-        putU32(d + 28, r.scheduledTxTimestampLow);
-        putU16(d + 32, r.peer);
-        putU16(d + 34, r.jobId);
-        d[36] = r.event; d[37] = r.state; d[38] = r.function; d[39] = r.radioSeq;
-        d[40] = r.delayed; d[41] = r.retriesUsed; d[42] = r.rc; d[43] = r.failureHint;
-      }
-      outLen = 1 + radioTraceDetailCount * RADIO_TRACE_DETAIL_RECORD_BYTES;
+      outLen = offset;
       break;
     }
 

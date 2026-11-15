@@ -39,7 +39,7 @@ OPS = {
     "reboot": 0x43,
     "set-peers": 0x50, "get-peers": 0x51, "start-ble": 0x52,
     "stop-ble": 0x53, "peer-status": 0x56,
-    "send-to-peer": 0x57, "get-received-data": 0x58, "ble-trace": 0x59,
+    "send-to-peer": 0x57, "get-received-data": 0x58, "trace": 0x38,
 }
 EVENT_NAMES = {0x80: "RANGE_RESULT", 0x81: "RANGE_FAILED", 0x82: "STATE_CHANGED",
                0x83: "ERROR", 0x84: "HISTORY_OVERRUN", 0x85: "DEVICE_READY",
@@ -348,7 +348,7 @@ def parse_args():
     for name in ("ping", "get-info", "status", "stats", "clear-stats", "last-error", "get-config",
                  "get-saved-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
                  "stop", "clear-history", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
-                 "get-peers", "start-ble", "stop-ble"):
+                 "get-peers", "start-ble", "stop-ble", "trace"):
         sub.add_parser(name)
     p = sub.add_parser("set-role"); p.add_argument("role", choices=ROLE_NAMES.values())
     p = sub.add_parser("set-targets"); p.add_argument("ids", nargs="+", type=int)
@@ -396,31 +396,59 @@ def parse_args():
     p = sub.add_parser("peer-status"); p.add_argument("peer_id", type=int)
     p = sub.add_parser("send-to-peer"); p.add_argument("peer_id", type=int); p.add_argument("data"); p.add_argument("--hex", action="store_true", help="interpret data as hexadecimal bytes")
     p = sub.add_parser("get-received-data"); p.add_argument("peer_id", type=int); p.add_argument("message_id", type=int)
-    p = sub.add_parser("ble-trace")
     return ap.parse_args()
 
 
 def record_response(op: int, payload: bytes) -> object:
-    if op == 0x59:
+    if op == 0x38:
         if not payload:
-            raise ValueError("BLE diagnostic trace payload is empty")
+            raise ValueError("trace payload is empty")
         count = payload[0]
-        record_size = 13
-        if count > 32 or len(payload) != 1 + count * record_size:
-            raise ValueError("BLE diagnostic trace payload has an invalid length")
+        if count > 48:
+            raise ValueError("trace payload contains too many records")
+        source_names = {0: "uwb_radio", 1: "uwb_tx_start", 2: "ble_lifecycle"}
+        expected_sizes = {0: 28, 1: 44, 2: 13}
         records = []
-        for index in range(count):
-            offset = 1 + index * record_size
-            records.append({
-                "uptime_ms": struct.unpack_from("<I", payload, offset)[0],
-                "code": payload[offset + 4],
-                "peer_id": struct.unpack_from("<H", payload, offset + 5)[0],
-                "reason": payload[offset + 7],
-                "stage": payload[offset + 8],
-                "detail": struct.unpack_from("<h", payload, offset + 9)[0],
-                "active_links": payload[offset + 11],
-                "state_flags": payload[offset + 12],
-            })
+        offset = 1
+        for _ in range(count):
+            if offset + 6 > len(payload):
+                raise ValueError("trace record header is truncated")
+            source = payload[offset]
+            sequence = struct.unpack_from("<I", payload, offset + 1)[0]
+            record_size = payload[offset + 5]
+            offset += 6
+            if source not in expected_sizes or record_size != expected_sizes[source]:
+                raise ValueError("trace record type or size is invalid")
+            if offset + record_size > len(payload):
+                raise ValueError("trace record data is truncated")
+            data = payload[offset:offset + record_size]
+            offset += record_size
+            if source == 0:
+                (uptime, before, after, delayed_time, peer, job, event, state,
+                 function, radio_seq, delayed, retries, rc, reserved) = struct.unpack("<IIIIHHBBBBBBBB", data)
+                fields = {"uptime_ms": uptime, "status_before": before, "status_after": after,
+                          "delayed_time_reg": delayed_time, "peer_id": peer, "job_id": job,
+                          "event": event, "radio_state": state, "function": function,
+                          "radio_seq": radio_seq, "delayed": bool(delayed), "retries_used": retries,
+                          "driver_return_code": rc, "reserved": reserved}
+            elif source == 1:
+                values = struct.unpack("<IIIIIIIIHHBBBBBBBB", data)
+                fields = {"uptime_ms": values[0], "status_before": values[1], "status_after": values[2],
+                          "sys_state_before": values[3], "sys_state_after": values[4],
+                          "sys_time_before": values[5], "delayed_time_reg": values[6],
+                          "scheduled_tx_timestamp_low": values[7], "peer_id": values[8],
+                          "job_id": values[9], "event": values[10], "radio_state": values[11],
+                          "function": values[12], "radio_seq": values[13], "delayed": bool(values[14]),
+                          "retries_used": values[15], "driver_return_code": values[16],
+                          "failure_hint": values[17]}
+            else:
+                uptime, code, peer, reason, stage, detail, active_links, state_flags = struct.unpack("<IBHBBhBB", data)
+                fields = {"uptime_ms": uptime, "code": code, "peer_id": peer, "reason": reason,
+                          "stage": stage, "detail": detail, "active_links": active_links,
+                          "state_flags": state_flags}
+            records.append({"source": source_names[source], "sequence": sequence, **fields})
+        if offset != len(payload):
+            raise ValueError("trace payload has trailing bytes")
         return {"count": count, "records": records}
     if op == 0x01:
         return {"pong": payload == b"PONG"}

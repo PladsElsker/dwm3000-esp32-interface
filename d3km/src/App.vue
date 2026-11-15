@@ -104,7 +104,7 @@ const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void;
 const calibrationJobResults = new Map<number, CalJobResult>();
 let poller: number | undefined, eventDrainTimer: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
 let lastBleRefreshAt = 0;
-let lastBleDiagnosticTraceRefreshAt = 0;
+let lastTraceRefreshAt = 0;
 let commandInFlight = false;
 let eventDrainBusy = false;
 const priorityCommandQueue: Array<() => Promise<void>> = [];
@@ -138,92 +138,59 @@ const device = reactive<any>({ info: null, status: null, stats: null,
     config: { deviceId: 1, panId: 0xDECA, channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, autoStart: false },
     savedTargets: [] as number[], runtimeConfig: null, schedule: null, targets: [] as number[], diagnostics: null, lastError: null });
 const draft = reactive({ deviceId: 1, panId: 'DECA', channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, targets: '', autoStart: false });
-type RadioTrace = { uptimeMs:number; statusBefore:number; statusAfter:number; delayedTimeReg:number; peer:number; jobId:number; event:number; radioState:number; func:number; radioSeq:number; delayed:boolean; retriesUsed:number; rc:number; reserved:number };
-type RadioTraceDetail = { uptimeMs:number; statusBefore:number; statusAfter:number; sysStateBefore:number; sysStateAfter:number; sysTimeBefore:number; delayedTimeReg:number; scheduledTxTimestampLow:number; peer:number; jobId:number; event:number; state:number; func:number; radioSeq:number; delayed:boolean; retriesUsed:number; rc:number; failureHint:number };
-const radioTrace = ref<RadioTrace[]>([]);
-const traceSupported = ref<boolean | null>(null);
-const radioTraceDetail = ref<RadioTraceDetail[]>([]);
-const traceDetailSupported = ref<boolean | null>(null);
-const traceDetailFetchedAt = ref('');
-const traceDetailError = ref('');
-const traceDetailBusy = ref(false);
-const bleDiagnosticTrace = ref<BleDiagnosticRecord[]>([]);
-const bleDiagnosticTraceSupported = ref<boolean | null>(null);
-const bleDiagnosticTraceBusy = ref(false);
-const bleDiagnosticTraceError = ref('');
+type UnifiedTraceRecord = { sequence:number; source:number; uptimeMs:number; text:string };
+const traceRecords = ref<UnifiedTraceRecord[]>([]);
 const traceFetchedAt = ref('');
 const traceError = ref('');
 const traceBusy = ref(false);
 const traceEventName = (n:number) => ({1:'dwt_starttx() failed',2:'dwt_rxenable() failed',3:'TXFRS completion timeout',4:'DW3000 RX error bits'} as Record<number,string>)[n] ?? `Unknown event ${n}`;
 const radioFunctionName = (n:number) => ({0xe0:'POLL',0xe1:'RESP',0xe2:'FINAL',0xe3:'REPORT'} as Record<number,string>)[n] ?? hex(n,2);
 const radioStateName = (n:number) => ({0:'READY',1:'RX_LISTEN',2:'WAIT_RESP',3:'WAIT_FINAL'} as Record<number,string>)[n] ?? `State ${n}`;
-function decodeTraceEnvelope(payload:number[], source:number, recordSize:number) {
-   if (payload.length < 3) throw new Error('GET_TRACE returned a truncated response header.');
-   if (payload[0] !== source || payload[1] !== recordSize) {
-     throw new Error(`GET_TRACE header mismatch: source=${payload[0]}, record size=${payload[1]}.`);
-   }
-   const count = payload[2];
-   if (payload.length !== 3 + count * recordSize) {
-     throw new Error(`GET_TRACE payload length mismatch: ${payload.length} bytes for ${count} record(s) of ${recordSize} bytes.`);
-   }
-   return [count, ...payload.slice(3)];
+function decodeTrace(payload:number[]): UnifiedTraceRecord[] {
+  if (!payload.length) throw new Error('GET_TRACE returned an empty payload.');
+  const count=payload[0];
+  if (count>48) throw new Error(`GET_TRACE returned too many records: ${count}.`);
+  const sizes:Record<number,number>={0:28,1:44,2:13};
+  const records:UnifiedTraceRecord[]=[];
+  let offset=1;
+  for(let i=0;i<count;i++) {
+    if(offset+6>payload.length) throw new Error('GET_TRACE record header is truncated.');
+    const source=payload[offset], sequence=get32(payload,offset+1), size=payload[offset+5];
+    offset+=6;
+    if(sizes[source]!==size || offset+size>payload.length) throw new Error(`GET_TRACE record ${i} has invalid type, size, or data length.`);
+    const data=payload.slice(offset,offset+size); offset+=size;
+    const uptimeMs=get32(data,0);
+    let text='';
+    if(source===0) {
+      text=`${(uptimeMs/1000).toFixed(1)}s · UWB radio · ${traceEventName(data[20])} · ${radioFunctionName(data[22])} · ${radioStateName(data[21])} · peer ${get16(data,16)} · job ${get16(data,18)} · SYS_STATUS ${hex(get32(data,4),8)} → ${hex(get32(data,8),8)} · rc ${hex(data[26],2)}`;
+    } else if(source===1) {
+      text=`${(uptimeMs/1000).toFixed(1)}s · UWB TX detail · ${radioFunctionName(data[38])} · peer ${get16(data,32)} · job ${get16(data,34)} · ${failureHintName(data[43])} · SYS_STATUS ${hex(get32(data,4),8)} → ${hex(get32(data,8),8)} · SYS_STATE ${hex(get32(data,12),8)} → ${hex(get32(data,16),8)}`;
+    } else {
+      const rawDetail=get16(data,9);
+      const record:BleDiagnosticRecord={uptimeMs,code:data[4],peerId:get16(data,5),reason:data[7],stage:data[8],detail:rawDetail>=0x8000?rawDetail-0x10000:rawDetail,activeLinks:data[11],stateFlags:data[12]};
+      text=`${(uptimeMs/1000).toFixed(1)}s · BLE · ${bleDiagnosticLine(record)}`;
+    }
+    records.push({source,sequence,uptimeMs,text});
+  }
+  if(offset!==payload.length) throw new Error('GET_TRACE payload contains trailing bytes.');
+  return records;
 }
-function decodeRadioTrace(p:number[]) {
-  if (!p.length) throw new Error('GET_TRACE radio source returned an empty payload.');
-  const count = p[0];
-  if (count > 8 || p.length !== 1 + count * 28) throw new Error(`Invalid radio trace payload: count=${count}, bytes=${p.length}. Expected ${1 + count * 28}.`);
-  return Array.from({length:count},(_,i) => {
-    const o=1+i*28;
-    return { uptimeMs:get32(p,o), statusBefore:get32(p,o+4), statusAfter:get32(p,o+8), delayedTimeReg:get32(p,o+12), peer:get16(p,o+16), jobId:get16(p,o+18), event:p[o+20], radioState:p[o+21], func:p[o+22], radioSeq:p[o+23], delayed:p[o+24]!==0, retriesUsed:p[o+25], rc:p[o+26], reserved:p[o+27] } as RadioTrace;
-  });
-}
-async function loadRadioTrace() {
-  traceBusy.value=true; traceError.value='';
+async function refreshTrace(silent=false) {
+  if(!connected.value || traceBusy.value) return;
+  traceBusy.value=true;
   try {
-    const p=decodeTraceEnvelope(await cmd(0x38, [0]), 0, 28);
-    radioTrace.value=decodeRadioTrace(p); traceSupported.value=true; traceFetchedAt.value=new Date().toLocaleString();
-    log(`GET_TRACE · radio · ${radioTrace.value.length} record(s)`);
-    if (!radioTrace.value.length) notice.value='Radio trace read successfully; no failure records are retained.';
+    traceRecords.value=decode(await cmd(0x38));
+    traceFetchedAt.value=new Date().toLocaleString();
+    traceError.value='';
+    log(`GET_TRACE · ${traceRecords.value.length} record(s)`);
   } catch(e:any) {
-    const message=String(e); traceError.value=message;
-    if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceSupported.value=false;
-    log(`GET_TRACE radio source failed · ${message}`);
+    traceError.value=String(e);
+    if(!silent) error.value=`Could not read device trace: ${String(e)}`;
   } finally { traceBusy.value=false; }
-}
-function decodeRadioTraceDetail(p:number[]) {
-  if (!p.length) throw new Error('GET_TRACE detailed-radio source returned an empty payload.');
-  const count=p[0];
-  if (count>8 || p.length!==1+count*44) throw new Error(`Invalid detailed trace payload: count=${count}, bytes=${p.length}. Expected ${1+count*44}.`);
-  return Array.from({length:count},(_,i)=>{
-    const o=1+i*44;
-    return {
-      uptimeMs:get32(p,o), statusBefore:get32(p,o+4), statusAfter:get32(p,o+8),
-      sysStateBefore:get32(p,o+12), sysStateAfter:get32(p,o+16), sysTimeBefore:get32(p,o+20),
-      delayedTimeReg:get32(p,o+24), scheduledTxTimestampLow:get32(p,o+28),
-      peer:get16(p,o+32), jobId:get16(p,o+34), event:p[o+36], state:p[o+37],
-      func:p[o+38], radioSeq:p[o+39], delayed:p[o+40]!==0, retriesUsed:p[o+41],
-      rc:p[o+42], failureHint:p[o+43]
-    } as RadioTraceDetail;
-  });
-}
-async function loadRadioTraceDetail() {
-  traceDetailBusy.value=true; traceDetailError.value='';
-  try {
-    const p=decodeTraceEnvelope(await cmd(0x38, [1]), 1, 44);
-    radioTraceDetail.value=decodeRadioTraceDetail(p);
-    traceDetailSupported.value=true;
-    traceDetailFetchedAt.value=new Date().toLocaleString();
-    log(`GET_TRACE detailed-radio · ${radioTraceDetail.value.length} record(s)`);
-    if (!radioTraceDetail.value.length) notice.value='Detailed TX trace read successfully; no failed TX-start records are retained.';
-  } catch(e:any) {
-    const message=String(e); traceDetailError.value=message;
-    if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceDetailSupported.value=false;
-    log(`GET_TRACE detailed-radio source failed · ${message}`);
-  } finally { traceDetailBusy.value=false; }
 }
 const failureHintName=(n:number)=>({0:'Unknown / inconclusive',1:'HPDWARN observed after call',2:'TXERR state observed after call'} as Record<number,string>)[n] ?? `Unknown hint ${n}`;
 function buildDebugReport() {
-  return { reportFormat:'D3KM device debug report', reportVersion:3, protocolSpecVersion:'2.2', capturedAt:new Date().toISOString(), port:selectedPort.value, appProtocolVersion:1, device:{ info:device.info, status:device.status, savedConfig:device.config, savedTargets:device.savedTargets, runtimeConfig:device.runtimeConfig, runtimeSchedule:device.schedule, runtimeTargets:device.targets, stats:device.stats, diagnostics:device.diagnostics, lastError:device.lastError }, bluetooth:{ supported:ble.supported, runtime:{ ...ble.runtime }, runtimeConfig:cloneBleConfig(ble.runtimeConfig), savedConfig:cloneBleConfig(ble.savedConfig), peerStatuses:ble.peerStatuses.map(item => ({ ...item })), discoveredPeers:[...ble.discoveredPeers], receivedCount:ble.inbox.length, sentCount:ble.outgoing.length, incomingMessageMetadata:ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata:ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, radioTrace:{ supported:traceSupported.value, fetchedAt:traceFetchedAt.value, records:radioTrace.value }, radioTraceDetail:{ supported:traceDetailSupported.value, fetchedAt:traceDetailFetchedAt.value, records:radioTraceDetail.value }, antennaCalibration:{ phase:calibration.phase, referenceId:calibration.referenceId, requestedDelay:calibration.requestedDelay, appliedTx:calibration.appliedTx, appliedRx:calibration.appliedRx, savedTx:calibration.savedTx, savedRx:calibration.savedRx, averageMm:calibration.averageMm, latestMm:calibration.latestMm, windowSize:CAL_WINDOW_SIZE, validSamples:calibration.validSamples, failedSamples:calibration.failedSamples, isSaved:calibration.isSaved }, recentEvents:events.value.slice(0,40), recentMeasurements:measurements.value.slice(0,20) };
+  return { reportFormat:'D3KM device debug report', reportVersion:3, protocolSpecVersion:'2.3', capturedAt:new Date().toISOString(), port:selectedPort.value, appProtocolVersion:1, device:{ info:device.info, status:device.status, savedConfig:device.config, savedTargets:device.savedTargets, runtimeConfig:device.runtimeConfig, runtimeSchedule:device.schedule, runtimeTargets:device.targets, stats:device.stats, diagnostics:device.diagnostics, lastError:device.lastError }, bluetooth:{ supported:ble.supported, runtime:{ ...ble.runtime }, runtimeConfig:cloneBleConfig(ble.runtimeConfig), savedConfig:cloneBleConfig(ble.savedConfig), peerStatuses:ble.peerStatuses.map(item => ({ ...item })), discoveredPeers:[...ble.discoveredPeers], receivedCount:ble.inbox.length, sentCount:ble.outgoing.length, incomingMessageMetadata:ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata:ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, trace:{fetchedAt:traceFetchedAt.value,records:traceRecords.value}, antennaCalibration:{ phase:calibration.phase, referenceId:calibration.referenceId, requestedDelay:calibration.requestedDelay, appliedTx:calibration.appliedTx, appliedRx:calibration.appliedRx, savedTx:calibration.savedTx, savedRx:calibration.savedRx, averageMm:calibration.averageMm, latestMm:calibration.latestMm, windowSize:CAL_WINDOW_SIZE, validSamples:calibration.validSamples, failedSamples:calibration.failedSamples, isSaved:calibration.isSaved }, recentEvents:events.value.slice(0,40), recentMeasurements:measurements.value.slice(0,20) };
 }
 async function copyDebugReport() {
   try { await navigator.clipboard.writeText(JSON.stringify(buildDebugReport(),null,2)); notice.value='Debug report copied to clipboard'; log('Debug report copied'); }
@@ -675,49 +642,9 @@ function bleDiagnosticLine(record: BleDiagnosticRecord) {
         state
     ].filter(Boolean).join(' · ');
 }
-function decodeBleDiagnosticTrace(payload: number[]): BleDiagnosticRecord[] {
-    if (!payload.length) throw new Error('GET_TRACE returned an empty payload.');
-    const count = payload[0];
-    const recordSize = 13;
-    if (count > 32 || payload.length !== 1 + count * recordSize) {
-        throw new Error(`GET_TRACE returned ${payload.length} bytes for ${count} record(s).`);
-    }
-    return Array.from({ length: count }, (_, index) => {
-        const offset = 1 + index * recordSize;
-        const rawDetail = get16(payload, offset + 9);
-        return {
-            uptimeMs: get32(payload, offset),
-            code: payload[offset + 4],
-            peerId: get16(payload, offset + 5),
-            reason: payload[offset + 7],
-            stage: payload[offset + 8],
-            detail: rawDetail >= 0x8000 ? rawDetail - 0x10000 : rawDetail,
-            activeLinks: payload[offset + 11],
-            stateFlags: payload[offset + 12]
-        };
-    });
-}
-async function refreshBleDiagnosticTrace(silent = false) {
-    if (!connected.value || bleDiagnosticTraceBusy.value) return;
-    bleDiagnosticTraceBusy.value = true;
-    try {
-        const payload = decodeTraceEnvelope(await cmd(0x38, [2]), 2, 13);
-        bleDiagnosticTrace.value = decodeBleDiagnosticTrace(payload);
-        bleDiagnosticTraceSupported.value = true;
-        bleDiagnosticTraceError.value = '';
-    } catch (e: any) {
-        bleDiagnosticTraceError.value = String(e);
-        if (/UNKNOWN_COMMAND|UNKNOWN COMMAND|0x02/i.test(String(e))) {
-            bleDiagnosticTraceSupported.value = false;
-        }
-        if (!silent) error.value = `Could not read BLE diagnostic trace: ${String(e)}`;
-    } finally {
-        bleDiagnosticTraceBusy.value = false;
-    }
-}
 async function refreshDiagnostics() {
     await refreshAll();
-    await refreshBleDiagnosticTrace();
+    await refreshTrace();
 }
 function bleConnectionFailureText(status?: BlePeerStatus) {
     if (!status?.lastFailureReason) return '';
@@ -913,14 +840,9 @@ function clearDeviceSession() {
     events.value = [];
     eventCount.value = 0;
     Object.assign(draft, { deviceId: 1, panId: 'DECA', channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, targets: '', autoStart: false });
-    radioTrace.value = [];
-    traceSupported.value = null;
+    traceRecords.value = [];
     traceFetchedAt.value = '';
     traceError.value = '';
-    radioTraceDetail.value = [];
-    traceDetailSupported.value = null;
-    traceDetailFetchedAt.value = '';
-    traceDetailError.value = '';
 }
 async function handleUsbLoss(message = 'USB connection lost. Reconnect the device to continue.') {
     if (losingConnection || !connected.value) return;
@@ -991,22 +913,15 @@ async function connectDevice() {
         await invoke('connect', { portName: selectedPort.value });
         connected.value = true;
         missingPortChecks = 0;
-        radioTrace.value = [];
-        traceSupported.value = null;
+        traceRecords.value = [];
         traceFetchedAt.value = '';
         traceError.value = '';
-        radioTraceDetail.value = [];
-        traceDetailSupported.value = null;
-        traceDetailFetchedAt.value = '';
-        traceDetailError.value = '';
+        lastTraceRefreshAt = 0;
         log(`USB connected · ${selectedPort.value}`);
         await cmd(0x01);
         await refreshAll();
         await cmd(0x32, u16(0x7fff));
-        bleDiagnosticTrace.value = [];
-        bleDiagnosticTraceSupported.value = null;
-        bleDiagnosticTraceError.value = '';
-        lastBleDiagnosticTraceRefreshAt = 0;
+
         notice.value = 'Device connected';
     } catch (e: any) {
         error.value = String(e);
@@ -1589,10 +1504,9 @@ onMounted(async () => {
             polling = true;
             try {
                 await refreshStatus();
-                if (active.value === 'diagnostics' && bleDiagnosticTraceSupported.value !== false &&
-                    Date.now() - lastBleDiagnosticTraceRefreshAt >= 1200) {
-                    lastBleDiagnosticTraceRefreshAt = Date.now();
-                    await refreshBleDiagnosticTrace(true);
+                if (active.value === 'diagnostics' && Date.now() - lastTraceRefreshAt >= 1200) {
+                    lastTraceRefreshAt = Date.now();
+                    await refreshTrace(true);
                 }
                 if (active.value === 'bluetooth' && ble.supported && Date.now() - lastBleRefreshAt >= 4000) {
                     lastBleRefreshAt = Date.now();
@@ -2581,30 +2495,23 @@ onUnmounted(() => {
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>BLE firmware trace</h3>
-                                <p>Most recent 32 records read directly from the node's BLE manager</p>
+                                <h3>Device trace</h3>
+                                <p>Combined UWB radio, detailed TX-start, and BLE lifecycle records in insertion order</p>
                             </div>
-                            <span class="tag neutral">{{ bleDiagnosticTraceBusy ? 'Reading…' : `${bleDiagnosticTrace.length} retained` }}</span>
+                            <span class="tag neutral">{{ traceBusy ? 'Reading…' : `${traceRecords.length} retained` }}</span>
                         </div>
-                        <div v-if="bleDiagnosticTraceSupported === false" class="empty-state">
-                            BLE trace retrieval is not supported by this firmware. Update the node firmware with GET_TRACE support.
+                        <div v-if="traceError" class="empty-state">Could not read device trace: {{ traceError }}</div>
+                        <div v-else-if="traceRecords.length" class="event-log">
+                            <div v-for="(record, index) in traceRecords" :key="`${record.sequence}-${index}`">{{ record.text }}</div>
                         </div>
-                        <div v-else-if="bleDiagnosticTraceError" class="empty-state">
-                            Could not read BLE trace: {{ bleDiagnosticTraceError }}
-                        </div>
-                        <div v-else-if="bleDiagnosticTrace.length" class="event-log">
-                            <div v-for="(record, index) in bleDiagnosticTrace.slice().reverse()" :key="`${record.uptimeMs}-${record.code}-${record.peerId}-${index}`">
-                                {{ bleDiagnosticLine(record) }}
-                            </div>
-                        </div>
-                        <div v-else class="empty-state">No BLE trace records on this node yet. The trace refreshes while this tab is open.</div>
-                        <p class="hint">The trace is stored in RAM on the node, survives missed USB events, and resets when the node reboots. Raw NimBLE status values and connection stages are retained.</p>
+                        <div v-else class="empty-state">No diagnostic records are currently retained. The trace refreshes while this tab is open.</div>
+                        <p class="hint">Records are shown oldest first. The node retains traces in RAM; reading them does not clear them, and reboot clears them.</p>
                     </div>
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
                                 <h3>Recent app and device events</h3>
-                                <p>Includes D3KM status-refresh messages; use the BLE firmware trace above for node-side BLE records</p>
+                                <p>Includes D3KM status-refresh messages; the device trace above contains node-side diagnostic records</p>
                             </div><span class="tag neutral">{{ events.length }} messages</span>
                         </div>
                         <div v-if="events.length" class="event-log">

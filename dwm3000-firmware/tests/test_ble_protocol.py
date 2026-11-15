@@ -96,22 +96,41 @@ assert 0x55 not in module.OPS.values()
 assert module.OPS["start-ble"] == 0x52
 assert module.OPS["stop-ble"] == 0x53
 assert module.OPS["peer-status"] == 0x56
-assert module.OPS["ble-trace"] == 0x59
+assert module.OPS["trace"] == 0x38
+assert "ble-trace" not in module.OPS
+assert 0x36 not in module.OPS.values()
+assert 0x37 not in module.OPS.values()
+assert 0x59 not in module.OPS.values()
 
-# The firmware BLE trace is a count byte plus 13-byte little-endian records.
-trace_payload = bytes([1]) + struct.pack("<IBHBBhBB", 12345, 12, 3, 6, 4, 13, 1, 0b00010001)
-trace = module.record_response(0x59, trace_payload)
-assert trace["count"] == 1
-assert trace["records"][0] == {
-    "uptime_ms": 12345, "code": 12, "peer_id": 3, "reason": 6,
-    "stage": 4, "detail": 13, "active_links": 1, "state_flags": 0b00010001
-}
+# GET_TRACE merges all three record types in global insertion order.
+ble_record = struct.pack("<IBHBBhBB", 12345, 12, 3, 6, 4, -13, 1, 0b00010001)
+radio_record = struct.pack("<IIIIHHBBBBBBBB", 23456, 1, 2, 3, 4, 5, 1, 2, 0xE0, 3, 0, 1, 0xFF, 0)
+detail_record = struct.pack("<IIIIIIIIHHBBBBBBBB", 34567, 1, 2, 3, 4, 5, 6, 7, 8, 9, 1, 2, 0xE1, 4, 1, 2, 0xFF, 1)
+trace_payload = (bytes([3]) + bytes([2]) + struct.pack("<I", 100) + bytes([13]) + ble_record +
+                 bytes([0]) + struct.pack("<I", 101) + bytes([28]) + radio_record +
+                 bytes([1]) + struct.pack("<I", 102) + bytes([44]) + detail_record)
+trace = module.record_response(0x38, trace_payload)
+assert trace["count"] == 3
+assert [record["sequence"] for record in trace["records"]] == [100, 101, 102]
+assert [record["source"] for record in trace["records"]] == ["ble_lifecycle", "uwb_radio", "uwb_tx_start"]
+assert trace["records"][0]["detail"] == -13
+assert trace["records"][1]["status_before"] == 1
+assert trace["records"][2]["failure_hint"] == 1
+for invalid_trace in (trace_payload + bytes([0]), bytes([1, 9, 0, 0, 0, 13, 0])):
+    try:
+        module.record_response(0x38, invalid_trace)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("invalid unified trace payload accepted")
+
+# The trace CLI command has no source selector.
+original_argv = sys.argv
+sys.argv = ["pi_client.py", "trace"]
 try:
-    module.record_response(0x59, trace_payload + bytes([0]))
-except ValueError:
-    pass
-else:
-    raise AssertionError("invalid BLE diagnostic trace length accepted")
+    assert module.parse_args().command == "trace"
+finally:
+    sys.argv = original_argv
 
 # The CLI rejects removed connection-management and generic save commands,
 # and no longer accepts a reconnect-enable switch.
@@ -240,6 +259,5 @@ for bad_mtu in (22, 257, 518):
     else:
         raise AssertionError("invalid ATT MTU was accepted")
 
-assert 1 + 32 * 13 <= module.MAX_PAYLOAD
-assert module.OPS["ble-trace"] == 0x59
-print("BLE V2.1 config, status, trace command, fragmentation and CRC tests passed")
+assert 1 + 26 * (6 + 19) <= module.MAX_PAYLOAD
+print("BLE V2.1 config, status, unified trace, fragmentation and CRC tests passed")

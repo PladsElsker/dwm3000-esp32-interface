@@ -1,4 +1,4 @@
-# UWB Node Host Protocol V2.2
+# UWB Node Host Protocol V2.3
 
 This document defines the host command, event, and payload formats implemented by the UWB Node firmware. The protocol is available over UART1 and USB CDC. Binary frames use wire version `1`.
 
@@ -92,9 +92,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x33` | `UNSUBSCRIBE` | Event bitmask `u16` | Active subscription mask `u16` |
 | `0x34` | `CLEAR_HISTORY` | — | — |
 | `0x35` | `GET_DIAGNOSTICS` | — | 22-byte UWB snapshot followed by `ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8` (29 bytes total) |
-| `0x36` | `GET_RADIO_TRACE` (legacy) | — | Legacy radio trace response: `count:u8`, then 28-byte records; use `GET_TRACE` |
-| `0x37` | `GET_RADIO_TRACE_DETAIL` (legacy) | — | Legacy detailed radio trace response: `count:u8`, then 44-byte records; use `GET_TRACE` |
-| `0x38` | `GET_TRACE` | `trace_source:u8` (`0` UWB radio, `1` detailed UWB TX-start, `2` BLE lifecycle) | `trace_source:u8, record_size:u8, count:u8`, then `count` records; record sizes are 28, 44, and 13 bytes respectively |
+| `0x38` | `GET_TRACE` | — | `count:u8`, then `count` tagged records in insertion order; each record is `type:u8, sequence:u32, record_size:u8, record_data[record_size]` |
 | `0x40` | `UWB_SLEEP` | — | `sleep_kind:u8`; `1` means radio `IDLE_RC` standby |
 | `0x41` | `UWB_WAKE` | — | `0` means woke/reinitialized; `1` means already awake |
 | `0x42` | `SYSTEM_SLEEP` | Timer duration in milliseconds `u32` | Accepted duration `u32`; ESP32 restarts after timer wake |
@@ -106,7 +104,10 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16` (14 bytes) |
 | `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
 | `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
-| `0x59` | `GET_BLE_DIAGNOSTIC_TRACE` (legacy) | — | Legacy BLE lifecycle trace response: `count:u8`, then 13-byte records; use `GET_TRACE` |
+
+### Unified trace response
+
+`GET_TRACE` takes no request payload and returns records from the UWB radio, detailed UWB TX-start, and BLE lifecycle buffers in one stream. Records are ordered by a shared insertion sequence, oldest first. The response starts with `count:u8`; each record is `type:u8, sequence:u32, record_size:u8, record_data[record_size]`. Types are `0` UWB radio (28-byte data), `1` detailed UWB TX-start (44-byte data), and `2` BLE lifecycle (13-byte data). The sequence is assigned when a record enters its buffer. Because the combined buffers can exceed the 500-byte frame payload limit, `GET_TRACE` returns the newest contiguous suffix of complete records that fits. Trace buffers are volatile and are cleared on reboot; reading them does not clear them.
 
 `GET_INFO` reports BLE capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state, `GET_DIAGNOSTICS` reports BLE runtime and queue diagnostics, and `GET_PEER_STATUS` reports a specific peer's state.
 
@@ -209,9 +210,9 @@ Events are emitted only to transports subscribed to the corresponding event bit,
 | `0x8D` | `BLE_DATA_SENT` | `peer_id:u16, message_id:u16, total_length:u16` |
 | `0x8E` | `BLE_DATA_EXPIRED` | `peer_id:u16, message_id:u16` |
 
-### BLE lifecycle trace (`GET_TRACE`, source `2`; legacy alias `GET_BLE_DIAGNOSTIC_TRACE`, `0x59`)
+### BLE lifecycle record
 
-`GET_TRACE` with source `2` returns up to 32 records from a RAM ring buffer, oldest first. The common trace response header identifies source `2`, record size `13`, and record count. The trace is independent of event subscriptions and is cleared on reboot. The legacy `0x59` command remains available with its original count-prefixed response. Each 13-byte record is `uptime_ms:u32, code:u8, peer_id:u16, reason:u8, stage:u8, detail:i16, active_links:u8, state_flags:u8`. The `detail` value is signed; for GAP events it preserves the raw NimBLE status. A peer ID of zero means that the remote device identity was not yet known.
+BLE lifecycle records are retained in a RAM ring buffer independently of event subscriptions. Each 13-byte record is `uptime_ms:u32, code:u8, peer_id:u16, reason:u8, stage:u8, detail:i16, active_links:u8, state_flags:u8`. The `detail` value is signed; for GAP events it preserves the raw NimBLE status. A peer ID of zero means that the remote device identity was not yet known.
 
 Diagnostic codes: `1` BLE stack initialized; `2` stack initialization failed; `3` BLE role started; `4` role start failed; `5` BLE stopped; `6` Central scan started; `7` Central scan start failed; `8` Central scan stop failed; `9` peer discovered; `10` Central peer/client slot allocation failed; `11` Central connection attempt; `12` connection failure; `13` Central GAP connected; `14` Central GATT handshake step; `15` Central handshake complete; `16` Peripheral accepted GAP connection; `17` Peripheral rejected incoming GAP connection; `18` Peripheral link-slot allocation failed; `19` Peripheral accepted peer identity; `20` Peripheral rejected peer identity; `21` Peripheral identity-handshake timeout; `22` peer disconnected; `23` advertising restart failed; `24` Central scan restart failed; `25` global GAP connection callback; `26` BLE event queue full; `27` BLE receive queue full; `28` compiled NimBLE connection-slot capacity. For code `28`, `reason` is the application link limit (currently eight) and signed `detail` is `CONFIG_BT_NIMBLE_MAX_CONNECTIONS`, or `-1` when that macro is unavailable.
 
@@ -324,9 +325,9 @@ The transport maintains one outgoing message, one incoming reassembly, one unrea
 
 `GET_DIAGNOSTICS` returns a 29-byte snapshot. The first 22 bytes are the UWB diagnostics; `live_sys_status` is zero if the radio is unavailable or in standby. The trailing seven bytes describe BLE mode, enablement, advertising/scanning state, active peer links, and BLE receive/event queue depths. The `radio_state` byte is the firmware's current radio state-machine state.
 
-### Radio trace (`GET_TRACE`, source `0`; legacy alias `GET_RADIO_TRACE`, `0x36`)
+### UWB radio trace record
 
-`GET_TRACE` with source `0` returns a common header `trace_source:u8, record_size:u8, count:u8`, followed by up to eight 28-byte records in oldest-first order. The RAM ring buffer is volatile, is cleared on reboot, and is not cleared by reading it. The legacy `0x36` command remains available with its original count-prefixed response.
+UWB radio trace records are retained in a volatile RAM ring buffer. Reading them does not clear the buffer.
 
 | Offset | Size | Field |
 |---:|---:|---|
@@ -347,9 +348,9 @@ The transport maintains one outgoing message, one incoming reassembly, one unrea
 
 Trace event values: `1` = `dwt_starttx()` returned `DWT_ERROR`; `2` = `dwt_rxenable()` returned `DWT_ERROR`; `3` = TX state did not reach `TXFRS` before timeout; `4` = DW3000 RX error bits were observed before clearing. The `function` field identifies the associated radio message (for example POLL, RESP, FINAL, or REPORT). A value such as `0xFF` in `rc` commonly represents `-1` / `DWT_ERROR`.
 
-### Detailed TX-start trace (`GET_TRACE`, source `1`; legacy alias `GET_RADIO_TRACE_DETAIL`, `0x37`)
+### Detailed UWB TX-start trace record
 
-`GET_TRACE` with source `1` returns a common header `trace_source:u8, record_size:u8, count:u8`, followed by up to eight 44-byte records in oldest-first order. This RAM ring buffer is volatile, is cleared on reboot, and is not cleared by reading it. Records are captured for failed `dwt_starttx()` calls. The legacy `0x37` command remains available with its original count-prefixed response.
+Detailed UWB TX-start records are retained in a volatile RAM ring buffer and are captured for failed `dwt_starttx()` calls. Reading them does not clear the buffer.
 
 | Offset | Size | Field |
 |---:|---:|---|

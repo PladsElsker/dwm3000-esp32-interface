@@ -1216,7 +1216,7 @@ void Manager::clearPeerFailure(uint16_t peerId) {
 
 void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
                                uint8_t stage, int16_t detail) {
-  DiagnosticRecord record;
+  DiagnosticTraceRecord record;
   record.uptimeMs = millis();
   record.code = code;
   record.reason = reason;
@@ -1238,6 +1238,7 @@ void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
       (code == DIAG_CENTRAL_CONNECT_RETURN && reason == 0) ||
       (code == DIAG_PERIPHERAL_ADVERTISING_CONFIG && detail < 0);
   portENTER_CRITICAL(&mux_);
+  record.sequence = nextTraceSequence();
   diagnosticTrace_[diagnosticTraceHead_] = record;
   diagnosticTraceHead_ = static_cast<uint8_t>((diagnosticTraceHead_ + 1) %
                                                BLE_DIAGNOSTIC_TRACE_CAPACITY);
@@ -1254,37 +1255,17 @@ void Manager::recordDiagnostic(uint8_t code, uint16_t peerId, uint8_t reason,
   portEXIT_CRITICAL(&mux_);
 }
 
-uint16_t Manager::getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const {
-  if (!destination || capacity < 1 + BLE_DIAGNOSTIC_RECORD_SIZE) return 0;
-  DiagnosticRecord snapshot[BLE_DIAGNOSTIC_TRACE_CAPACITY];
-  uint8_t count = 0;
+uint8_t Manager::copyDiagnosticTrace(DiagnosticTraceRecord* destination, uint8_t capacity) const {
+  if (!destination || capacity == 0) return 0;
   portENTER_CRITICAL(&mux_);
-  const uint8_t maxRecords = static_cast<uint8_t>((capacity - 1) / BLE_DIAGNOSTIC_RECORD_SIZE);
-  count = diagnosticTraceCount_ < maxRecords ? diagnosticTraceCount_ : maxRecords;
+  const uint8_t count = diagnosticTraceCount_ < capacity ? diagnosticTraceCount_ : capacity;
   const uint8_t oldest = static_cast<uint8_t>((diagnosticTraceHead_ +
       BLE_DIAGNOSTIC_TRACE_CAPACITY - count) % BLE_DIAGNOSTIC_TRACE_CAPACITY);
   for (uint8_t i = 0; i < count; ++i) {
-    snapshot[i] = diagnosticTrace_[(oldest + i) % BLE_DIAGNOSTIC_TRACE_CAPACITY];
+    destination[i] = diagnosticTrace_[(oldest + i) % BLE_DIAGNOSTIC_TRACE_CAPACITY];
   }
   portEXIT_CRITICAL(&mux_);
-
-  destination[0] = count;
-  uint16_t offset = 1;
-  for (uint8_t i = 0; i < count; ++i) {
-    const DiagnosticRecord& record = snapshot[i];
-    destination[offset++] = static_cast<uint8_t>(record.uptimeMs);
-    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 8);
-    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 16);
-    destination[offset++] = static_cast<uint8_t>(record.uptimeMs >> 24);
-    destination[offset++] = record.code;
-    writeU16(destination + offset, record.peerId); offset += 2;
-    destination[offset++] = record.reason;
-    destination[offset++] = record.stage;
-    writeU16(destination + offset, static_cast<uint16_t>(record.detail)); offset += 2;
-    destination[offset++] = record.activeLinks;
-    destination[offset++] = record.stateFlags;
-  }
-  return offset;
+  return count;
 }
 
 void Manager::emitConnectionFailure(uint16_t peerId, uint8_t reason,

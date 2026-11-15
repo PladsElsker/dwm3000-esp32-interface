@@ -2,8 +2,15 @@
 
 #include <Arduino.h>
 #include <stdint.h>
+#include <atomic>
 
 namespace UwbBle {
+
+// Shared by UWB and BLE trace writers so records can be merged in insertion order.
+inline uint32_t nextTraceSequence() {
+  static std::atomic<uint32_t> sequence{0};
+  return sequence.fetch_add(1, std::memory_order_relaxed) + 1;
+}
 
 static constexpr uint16_t MAX_MESSAGE_LENGTH = 496;
 static constexpr uint8_t MAX_FRAGMENTS = 46;
@@ -14,7 +21,6 @@ static constexpr uint16_t MAX_PACKET_LENGTH = MAX_ATT_MTU - 3;
 static constexpr uint8_t RX_PACKET_QUEUE_SIZE = 16;
 static constexpr uint8_t EVENT_QUEUE_SIZE = 24;
 static constexpr uint8_t BLE_DIAGNOSTIC_TRACE_CAPACITY = 32;
-static constexpr uint8_t BLE_DIAGNOSTIC_RECORD_SIZE = 13;
 
 enum Mode : uint8_t { MODE_IDLE = 0, MODE_HUB = 1, MODE_PERIPHERAL = 2 };
 enum PeerState : uint8_t {
@@ -127,6 +133,18 @@ struct LastError {
   int16_t detail = 0;
 };
 
+struct DiagnosticTraceRecord {
+  uint32_t sequence = 0;
+  uint32_t uptimeMs = 0;
+  uint8_t code = 0;
+  uint8_t reason = 0;
+  uint8_t stage = 0;
+  uint16_t peerId = 0;
+  int16_t detail = 0;
+  uint8_t activeLinks = 0;
+  uint8_t stateFlags = 0;
+};
+
 class Manager {
  public:
   Manager();
@@ -149,7 +167,7 @@ class Manager {
   void clearStatistics();
   void getDiagnostics(Diagnostics& diagnostics) const;
   bool getLastError(LastError& error) const;
-  uint16_t getDiagnosticTrace(uint8_t* destination, uint16_t capacity) const;
+  uint8_t copyDiagnosticTrace(DiagnosticTraceRecord* destination, uint8_t capacity) const;
   const Config& config() const { return config_; }
   bool enabled() const { return enabled_; }
   bool connected() const { return connected_; }
@@ -224,16 +242,6 @@ class Manager {
     uint8_t reason = 0;
     uint8_t stage = 0;
     int16_t detail = 0;
-  };
-  struct DiagnosticRecord {
-    uint32_t uptimeMs = 0;
-    uint8_t code = 0;
-    uint8_t reason = 0;
-    uint8_t stage = 0;
-    uint16_t peerId = 0;
-    int16_t detail = 0;
-    uint8_t activeLinks = 0;
-    uint8_t stateFlags = 0;
   };
   struct Link {
     bool used = false;
@@ -341,7 +349,7 @@ class Manager {
   Link links_[MAX_ACTIVE_CONNECTIONS]{};
   PeerFailure peerFailures_[MAX_PEERS]{};
   uint8_t peerFailureReplaceIndex_ = 0;
-  DiagnosticRecord diagnosticTrace_[BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
+  DiagnosticTraceRecord diagnosticTrace_[BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
   uint8_t diagnosticTraceHead_ = 0;
   uint8_t diagnosticTraceCount_ = 0;
   Statistics statistics_{};
