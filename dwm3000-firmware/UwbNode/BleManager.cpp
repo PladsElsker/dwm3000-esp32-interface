@@ -1275,6 +1275,9 @@ void Manager::maintainHubConnections() {
     }
 
     NimBLEClient* client = static_cast<NimBLEClient*>(candidate->client);
+    recordDiagnostic(DIAG_CENTRAL_CONNECT_TIMEOUT, candidate->peerId, 0,
+                     FAILURE_STAGE_GAP_START,
+                     static_cast<int16_t>(config_.connectionTimeoutMs));
     client->setConnectTimeout(config_.connectionTimeoutMs);
     const NimBLEAddress address(candidate->address, candidate->addressType);
     candidate->connecting = true;
