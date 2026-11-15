@@ -1804,7 +1804,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       if (n != 1 || p[0] > TRACE_SOURCE_BLE_LIFECYCLE) { error = ERR_BAD_ARGUMENT; break; }
       const uint8_t sourceType = p[0];
       if (sourceType == TRACE_SOURCE_UWB_RADIO) {
-        out[0] = 0; out[1] = RADIO_TRACE_RECORD_BYTES; out[2] = radioTraceCount;
+        out[0] = sourceType; out[1] = RADIO_TRACE_RECORD_BYTES; out[2] = radioTraceCount;
         const uint8_t oldest = (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY;
         for (uint8_t i = 0; i < radioTraceCount; ++i) {
           const RadioTraceRecord &r = radioTrace[(oldest + i) % RADIO_TRACE_CAPACITY];
@@ -1818,7 +1818,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
         }
         outLen = 3 + radioTraceCount * RADIO_TRACE_RECORD_BYTES;
       } else if (sourceType == TRACE_SOURCE_UWB_TX_START) {
-        out[0] = 1; out[1] = RADIO_TRACE_DETAIL_RECORD_BYTES; out[2] = radioTraceDetailCount;
+        out[0] = sourceType; out[1] = RADIO_TRACE_DETAIL_RECORD_BYTES; out[2] = radioTraceDetailCount;
         const uint8_t oldest = (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY -
                                 radioTraceDetailCount) % RADIO_TRACE_DETAIL_CAPACITY;
         for (uint8_t i = 0; i < radioTraceDetailCount; ++i) {
@@ -1837,7 +1837,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       } else {
         uint8_t legacy[1 + UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY * UwbBle::BLE_DIAGNOSTIC_RECORD_SIZE]{};
         const uint16_t legacyLength = ble.getDiagnosticTrace(legacy, sizeof(legacy));
-        out[0] = 2; out[1] = UwbBle::BLE_DIAGNOSTIC_RECORD_SIZE; out[2] = legacy[0];
+        out[0] = sourceType; out[1] = UwbBle::BLE_DIAGNOSTIC_RECORD_SIZE; out[2] = legacy[0];
         if (legacyLength > 1) memcpy(out + 3, legacy + 1, legacyLength - 1);
         outLen = 3 + (legacyLength > 1 ? legacyLength - 1 : 0);
       }
@@ -1987,8 +1987,6 @@ static void processBleEvents() {
                               (static_cast<uint16_t>(event.payload[2]) << 8);
       const uint16_t messageId = static_cast<uint16_t>(event.payload[3]) |
                                  (static_cast<uint16_t>(event.payload[4]) << 8);
-      const uint32_t context = uint32_t(messageId) |
-          (uint32_t(event.payload[5]) << 16) | (uint32_t(event.payload[6]) << 24);
       rememberError(event.payload[6], ERROR_SUBSYSTEM_BLE, peerId,
                     uint32_t(messageId) | (uint32_t(event.payload[5]) << 16) |
                     (uint32_t(event.payload[0]) << 24));
