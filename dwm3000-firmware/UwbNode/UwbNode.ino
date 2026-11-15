@@ -1693,7 +1693,10 @@ static void processRequest(HostTransport &source, const Frame &q) {
       out[0] = status.state; out[1] = status.mode; out[2] = status.enabled;
       out[3] = status.advertising; out[4] = status.scanning; out[5] = status.connected;
       putU16(out + 6, status.peerId); putU16(out + 8, status.mtu);
-      outLen = 10;
+      out[10] = status.lastFailureReason;
+      out[11] = status.lastFailureStage;
+      putU16(out + 12, static_cast<uint16_t>(status.lastFailureDetail));
+      outLen = 14;
       break;
     }
 
