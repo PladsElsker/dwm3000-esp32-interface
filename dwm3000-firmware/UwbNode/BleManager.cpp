@@ -995,7 +995,19 @@ void Manager::processLinkEvents() {
         link.nextAttemptMs = millis() + config_.reconnectIntervalMs;
       if (config_.mode == MODE_PERIPHERAL && link.serverSide) {
         advertisingRestartPending_ = true;
+        const uint16_t peer = link.peerId;
+        const uint8_t failureReason = link.lastFailureReason;
+        const uint8_t failureStage = link.lastFailureStage;
+        const int16_t failureDetail = link.lastFailureDetail;
         link = Link();
+        // Retain the most recent rejected/failed peer handshake for GET_PEER_STATUS.
+        if (peer && failureReason) {
+          link.used = true;
+          link.peerId = peer;
+          link.lastFailureReason = failureReason;
+          link.lastFailureStage = failureStage;
+          link.lastFailureDetail = failureDetail;
+        }
       }
     }
 
@@ -1015,6 +1027,7 @@ void Manager::processLinkEvents() {
       if (!enabled_ || !link.serverSide || link.handshakeTimedOut || !peerConfigured(peer) || duplicate) {
         const int16_t detail = !enabled_ ? 1 : !link.serverSide ? 2 :
                                link.handshakeTimedOut ? 3 : !peerConfigured(peer) ? 4 : 5;
+        link.peerId = peer;
         emitConnectionFailure(peer, 3, FAILURE_STAGE_PERIPHERAL_IDENTITY, detail);
         if (server_) static_cast<NimBLEServer*>(server_)->disconnect(link.connectionHandle);
       } else {
@@ -1107,6 +1120,7 @@ bool Manager::getPeerStatus(uint16_t peerId, PeerStatus& status) const {
     else if (link->nextAttemptMs &&
              static_cast<int32_t>(millis() - link->nextAttemptMs) < 0) status.state = PEER_BACKOFF;
     else if (link->addressReady) status.state = PEER_FOUND;
+    else if (config_.mode == MODE_PERIPHERAL) status.state = PEER_CONFIGURED;
     else status.state = PEER_BACKOFF;
   } else if (peerConfigured(peerId)) {
     status.state = PEER_CONFIGURED;
