@@ -89,9 +89,9 @@ Each subscription has its own queue; consumers do not take measurements away fro
 
 - `drop_oldest` (default): discard the oldest queued item.
 - `drop_newest`: discard the incoming item.
-- `raise`: raise `queue.Full` when the queue is full.
+- `raise`: report `queue.Full` through the node's `error` event when the event router attempts to publish to a full queue.
 
-The subscription exposes `dropped_count`, `get()`, `get_nowait()`, `close()`, and iteration. Remove a subscription with `node.uwb.measurements.unsubscribe(subscription)`.
+The subscription exposes `dropped_count`, `get()`, `get_nowait()`, `close()`, and iteration. `get(timeout=...)` raises `queue.Empty` when its timeout expires. Remove a subscription with `node.uwb.measurements.unsubscribe(subscription)`.
 
 A `DistanceMeasurement` contains:
 
@@ -149,7 +149,7 @@ node.ble.stop_ble()
 peer_status = node.ble.get_peer_status(peer_id=200)
 ```
 
-The firmware supports up to eight simultaneous BLE peer links and a maximum 496-byte transport payload. A peer ID identifies a firmware peer; it is not an authentication credential. BLE links do not currently use pairing or encryption.
+The firmware supports up to eight simultaneous BLE peer links and a maximum 496-byte transport payload. It provides one active outgoing message and one unread complete incoming message per peer. `GET_RECEIVED_DATA` consumes that unread incoming message. A peer ID identifies a firmware peer; it is not an authentication credential. BLE links do not currently use pairing or encryption.
 
 ## Application messaging
 
@@ -198,7 +198,7 @@ def handle_request(request):
     return {"error": "unsupported operation"}
 ```
 
-Register `node.comms.on_response(callback)` to receive response messages through a callback as well.
+Register `node.comms.on_response(callback)` to receive response messages through a callback as well. A request ticket can also be looked up again with `node.comms.resume_request(message_id)` while the same node process remains alive. `node.comms.pending_requests()` lists requests that do not yet have a response.
 
 Payloads may contain JSON-compatible values and `bytes`. Byte strings are encoded inside the message envelope and restored on receipt. The 496-byte firmware limit applies to the complete encoded envelope, including its metadata.
 
@@ -274,6 +274,7 @@ Common events include:
 
 - Connection: `connected`, `ready`, `disconnected`, `connection_error`
 - UWB: `range_result`, `range_failed`, `history_overrun`
+- Device: `state_changed`, `device_ready`, `error`
 - BLE: `ble_state_changed`, `ble_peer_found`, `ble_peer_connected`, `ble_peer_disconnected`, `ble_connection_failed`, `ble_message`, `ble_error`
 - Messaging: `comms_received`, `comms_ack`, `comms_response`, `comms_processed`, `comms_failed`, `comms_error`, `comms_handler_error`
 - Configuration: `reconciliation_complete`, `reconciliation_failed`, `reconciliation_error`
@@ -298,3 +299,7 @@ python -m pytest
 ```
 
 Tests use a fake serial transport. Validate UART behavior, UWB ranging, and BLE communication on the target hardware as well.
+
+## Exceptions
+
+The package exports `D3KError` as the base exception, with `ProtocolError`, `ConnectionLost`, `RequestTimeout`, `DeviceCommandError`, and `ReconciliationError` for protocol decoding, connection, request deadline, firmware command, and configuration reconciliation failures respectively. Standard Python exceptions such as `ValueError`, `TypeError`, and `TimeoutError` are also used for invalid arguments and wait deadlines.
