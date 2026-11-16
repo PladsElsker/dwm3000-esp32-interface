@@ -1,10 +1,31 @@
-"""Serve application-messaging requests by returning their payload unchanged."""
+"""Serve application-messaging requests with an async echo handler."""
 from __future__ import annotations
 
 import argparse
-import time
+import asyncio
 
 from common import add_connection_arguments, connected_node
+
+
+async def serve(node, duration: float) -> None:
+    node.comms.bind_asyncio_loop(asyncio.get_running_loop())
+
+    @node.comms.on_request
+    async def echo(request):
+        print(
+            f"Request from peer {request.peer_id}: "
+            f"message_id={request.message_id}, payload={request.payload!r}",
+            flush=True,
+        )
+        return {"echo": request.payload}
+
+    print(
+        f"Async echo server ready on {node.uart_device} for {duration:.1f}s. "
+        "Run 07_comms_request.py on the other node.",
+        flush=True,
+    )
+    await asyncio.sleep(duration)
+    print("Echo server time window ended.")
 
 
 def main() -> int:
@@ -18,25 +39,8 @@ def main() -> int:
 
     try:
         with connected_node(args) as node:
-            def echo(request):
-                print(
-                    f"Request from peer {request.peer_id}: "
-                    f"message_id={request.message_id}, payload={request.payload!r}",
-                    flush=True,
-                )
-                return {"echo": request.payload}
-
-            node.comms.on_request(echo)
-            print(
-                f"Echo server ready on {node.uart_device} for {args.duration:.1f}s. "
-                "Run 07_comms_request.py on the other node.",
-                flush=True,
-            )
-            deadline = time.monotonic() + args.duration
-            while time.monotonic() < deadline:
-                time.sleep(min(0.25, deadline - time.monotonic()))
-            print("Echo server time window ended.")
-            return 0
+            asyncio.run(serve(node, args.duration))
+        return 0
     except KeyboardInterrupt:
         print("Echo server stopped.")
         return 0
