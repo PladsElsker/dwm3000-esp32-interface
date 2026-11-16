@@ -36,6 +36,35 @@ import {
     Zap,
 } from 'lucide-vue-next';
 
+const OP = {
+    // Common commands, diagnostics, subscriptions, and time sync.
+    PING: 0x01, GET_INFO: 0x02, GET_STATUS: 0x03, GET_STATISTICS: 0x04,
+    CLEAR_STATISTICS: 0x05, GET_LAST_ERROR: 0x06, GET_DIAGNOSTICS: 0x07,
+    GET_TRACE: 0x08, SUBSCRIBE: 0x09, UNSUBSCRIBE: 0x0A, TIME_SYNC: 0x0B,
+
+    // Configuration and antenna calibration.
+    GET_CONFIG: 0x10, SET_CONFIG: 0x11, RESET_CONFIG: 0x12,
+    GET_SAVED_CONFIG: 0x13, APPLY_SAVE_CONFIG: 0x14,
+    GET_ANTENNA_DELAYS: 0x15, SET_ANTENNA_DELAYS: 0x16, SAVE_ANTENNA_DELAYS: 0x17,
+
+    // UWB control and ranging.
+    SET_ROLE: 0x20, GET_TARGETS: 0x21, SET_TARGETS: 0x22,
+    GET_UWB_SCHEDULE: 0x23, SET_UWB_SCHEDULE: 0x24,
+    START_RANGING: 0x25, STOP_RANGING: 0x26, RANGE_ONCE: 0x27,
+    CANCEL_OPERATION: 0x28, UWB_SLEEP: 0x29, UWB_WAKE: 0x2A,
+
+    // UWB measurements and history.
+    GET_LAST_RANGE: 0x30, GET_HISTORY: 0x31,
+
+    // System power and restart.
+    SYSTEM_SLEEP: 0x40, REBOOT: 0x41,
+
+    // BLE peer management and messaging.
+    GET_PEERS: 0x50, SET_PEERS: 0x51, START_BLE: 0x52,
+    STOP_BLE: 0x53, GET_PEER_STATUS: 0x54, SEND_TO_PEER: 0x55,
+    GET_RECEIVED_DATA: 0x56
+} as const;
+
 type Port = { name: string; description: string };
 type FrameEvent = { seq: number; opcode: number; payload: number[] };
 type BleConfig = {
@@ -226,7 +255,7 @@ async function refreshTrace(silent = false) {
     if (!connected.value || traceBusy.value) return;
     traceBusy.value = true;
     try {
-        traceRecords.value = decodeTrace(await cmd(0x38));
+        traceRecords.value = decodeTrace(await cmd(OP.GET_TRACE));
         traceFetchedAt.value = new Date().toLocaleString();
         traceError.value = '';
         log(`GET_TRACE · ${traceRecords.value.length} record(s)`);
@@ -411,7 +440,7 @@ function getBlePeerStatus(peerId: number): BlePeerStatus | undefined {
 async function refreshBlePeerStatus(peerId: number, silent = false) {
     if (!connected.value || !ble.supported || !Number.isInteger(peerId) || peerId < 1 || peerId > 65534) return null;
     try {
-        const payload = await cmd(0x56, u16(peerId));
+        const payload = await cmd(OP.GET_PEER_STATUS, u16(peerId));
         const status = decodeBlePeerStatus(payload);
         updateBlePeerStatus(status);
         return status;
@@ -424,7 +453,7 @@ async function refreshBluetooth() {
     if (!connected.value || !ble.supported) return;
     ble.loading = true;
     try {
-        const [statusPayload, peersPayload] = await Promise.all([cmd(0x03), cmd(0x51)]);
+        const [statusPayload, peersPayload] = await Promise.all([cmd(OP.GET_STATUS), cmd(OP.GET_PEERS)]);
         applyBleStatusPayload(statusPayload);
         if (!peersPayload.length || peersPayload[0] > 8 || peersPayload.length !== 1 + peersPayload[0] * 2) {
             throw new Error('GET_PEERS returned an invalid peer-list payload.');
@@ -481,7 +510,7 @@ async function startBle() {
     if (ble.runtimeConfig.mode === 0) { error.value = 'Set Bluetooth mode to HUB or PERIPHERAL in Configuration before starting BLE.'; return; }
     ble.action = 'start';
     try {
-        await cmd(0x52);
+        await cmd(OP.START_BLE);
         await refreshStatus();
         notice.value = ble.runtimeConfig.mode === 1
             ? (ble.runtimeConfig.peers.length ? 'Bluetooth enabled; automatically discovering and connecting to allowed peers.' : 'Bluetooth enabled in open mode; automatically discovering peers.')
@@ -494,7 +523,7 @@ async function stopBle() {
     if (!ble.supported) return;
     ble.action = 'stop';
     try {
-        await cmd(0x53);
+        await cmd(OP.STOP_BLE);
         await refreshStatus();
         notice.value = 'Bluetooth disabled for the current boot. The saved auto-start preference is unchanged.';
         log('Bluetooth disabled · boot auto-start preference unchanged');
@@ -516,7 +545,7 @@ async function sendBleMessage() {
     if (bytes.length > 496) { error.value = `Message is ${bytes.length} bytes; the maximum is 496 bytes.`; return; }
     ble.sending = true;
     try {
-        const response = await cmd(0x57, [...u16(peerId), ...u16(bytes.length), ...bytes]);
+        const response = await cmd(OP.SEND_TO_PEER, [...u16(peerId), ...u16(bytes.length), ...bytes]);
         if (response.length !== 2) throw new Error(`SEND_TO_PEER returned ${response.length} bytes; expected a 2-byte message ID.`);
         const messageId = get16(response);
         ble.outgoing.unshift({ peerId, messageId, length: bytes.length, time: Date.now(), state: 'Accepted · awaiting remote retrieval', text: bleMessageText.value, hex: formatHexBytes(bytes) });
@@ -886,7 +915,7 @@ async function retrieveBleMessage(peerId: number, messageId: number, announcedLe
     try {
         // Message fetches have a short firmware consumption deadline. Run
         // them ahead of queued UI refreshes and other not-yet-started commands.
-        const p = await cmd(0x58, [...u16(peerId), ...u16(messageId)], true);
+        const p = await cmd(OP.GET_RECEIVED_DATA, [...u16(peerId), ...u16(messageId)], true);
         if (p.length < 4) throw new Error(`GET_RECEIVED_DATA returned only ${p.length} bytes.`);
         const returnedId = get16(p, 0), length = get16(p, 2);
         if (returnedId !== messageId || length !== p.length - 4 || length !== announcedLength) {
@@ -964,7 +993,7 @@ async function endAntennaCalibrationSession() {
     if (!calibration.active) return;
     await pauseLiveCalibrationLoop();
     if (connected.value && calibration.originalRole !== 1) {
-        await cmd(0x20, [calibration.originalRole]);
+        await cmd(OP.SET_ROLE, [calibration.originalRole]);
         await refreshStatus();
     }
     calibration.active = false;
@@ -1019,9 +1048,9 @@ async function connectDevice() {
         traceError.value = '';
         lastTraceRefreshAt = 0;
         log(`USB connected · ${selectedPort.value}`);
-        await cmd(0x01);
+        await cmd(OP.PING);
         await refreshAll();
-        await cmd(0x32, u16(0x7fff));
+        await cmd(OP.SUBSCRIBE, u16(0x7fff));
 
         notice.value = 'Device connected';
     } catch (e: any) {
@@ -1066,7 +1095,7 @@ function syncDraft() {
     });
 }
 async function refreshStatus() {
-    const p = await cmd(0x03);
+    const p = await cmd(OP.GET_STATUS);
     device.status = {
         role: p[0], ranging: p[1] === 1, radio_ready: p[2] === 1, standby: p[3] === 1,
         target_count: p[4], clock: p[5] === 1, uptime: get32(p, 6), ok: get32(p, 10), failed: get32(p, 14)
@@ -1079,7 +1108,7 @@ async function refreshAll() {
         // GET_STATUS is live runtime state. GET_CONFIG is live RAM settings.
         // GET_SAVED_CONFIG is the independent NVS snapshot shown in Configuration.
         const [i, s, runtime, savedPayload, st, t, sc, d, le] = await Promise.all([
-            cmd(0x02), cmd(0x03), cmd(0x10), cmd(0x17), cmd(0x04), cmd(0x22), cmd(0x24), cmd(0x35), cmd(0x06)
+            cmd(OP.GET_INFO), cmd(OP.GET_STATUS), cmd(OP.GET_CONFIG), cmd(OP.GET_SAVED_CONFIG), cmd(OP.GET_STATISTICS), cmd(OP.GET_TARGETS), cmd(OP.GET_UWB_SCHEDULE), cmd(OP.GET_DIAGNOSTICS), cmd(OP.GET_LAST_ERROR)
         ]);
         if (i.length !== 21) throw new Error(`GET_INFO returned ${i.length} bytes; expected 21.`);
         const saved = decodeSavedConfig(savedPayload);
@@ -1187,12 +1216,12 @@ async function saveSettings() {
         ];
         savingStep.value = 'Applying configuration and committing this exact snapshot to NVS…';
         try {
-            await cmd(0x18, payload);
+            await cmd(OP.APPLY_SAVE_CONFIG, payload);
         } catch (applyError: any) {
             // If the ACK was lost after commit, require both persistent and runtime
             // readback to match. NVS alone is insufficient if the command was BUSY.
             const [savedPayload, runtime, status, runtimeTargetsPayload] = await Promise.all([
-                cmd(0x17), cmd(0x10), cmd(0x03), cmd(0x22)
+                cmd(OP.GET_SAVED_CONFIG), cmd(OP.GET_CONFIG), cmd(OP.GET_STATUS), cmd(OP.GET_TARGETS)
             ]);
             const readback = decodeSavedConfig(savedPayload);
             const runtimeTargets = Array.from({ length: runtimeTargetsPayload[0] }, (_, i) => get16(runtimeTargetsPayload, 1 + i * 2));
@@ -1231,7 +1260,7 @@ async function pumpCalibrationEvents(jobId: number) {
     // serial stream draining while a one-shot ranging transaction is active.
     while (calibrationWaiters.has(jobId) && connected.value) {
         try {
-            await cmd(0x03);
+            await cmd(OP.GET_STATUS);
         } catch (e: any) {
             const waiter = calibrationWaiters.get(jobId);
             if (waiter) {
@@ -1263,8 +1292,8 @@ async function applyCalibrationDelay(tx: number, rx = tx) {
     if (![tx, rx].every(value => Number.isInteger(value) && value >= 0 && value <= 65535)) {
         throw new Error('Antenna delays must be uint16 values (0–65535).');
     }
-    await cmd(0x16, [...u16(tx), ...u16(rx)]);
-    const readback = await cmd(0x15);
+    await cmd(OP.SET_ANTENNA_DELAYS, [...u16(tx), ...u16(rx)]);
+    const readback = await cmd(OP.GET_ANTENNA_DELAYS);
     if (get16(readback, 0) !== tx || get16(readback, 2) !== rx) {
         throw new Error('Runtime antenna-delay readback does not match the requested values.');
     }
@@ -1313,7 +1342,7 @@ async function runLiveCalibrationLoop() {
 
             let response: number[];
             try {
-                response = await cmd(0x27, u16(Number(calibration.referenceId)));
+                response = await cmd(OP.RANGE_ONCE, u16(Number(calibration.referenceId)));
             } catch (e: any) {
                 if (calibration.stopRequested || !connected.value) break;
                 registerFailure(String(e));
@@ -1333,7 +1362,7 @@ async function runLiveCalibrationLoop() {
                 result = await waitForCalibrationJob(jobId);
             } catch (e: any) {
                 calibration.activeJobId = 0;
-                try { await cmd(0x28, u16(jobId)); } catch { /* It may already have completed. */ }
+                try { await cmd(OP.CANCEL_OPERATION, u16(jobId)); } catch { /* It may already have completed. */ }
                 if (calibration.stopRequested || !connected.value) break;
                 registerFailure(String(e));
                 await retryPause();
@@ -1395,16 +1424,16 @@ async function beginAntennaCalibration() {
         calibration.error = 'Stop continuous ranging before starting antenna calibration.'; calibration.phase = 'error'; return;
     }
     try {
-        const status = await cmd(0x03);
+        const status = await cmd(OP.GET_STATUS);
         if (status[1] === 1) throw new Error('Stop continuous ranging before starting antenna calibration.');
         if (status[2] !== 1 || status[3] === 1) throw new Error('The connected radio must be ready and awake.');
-        const schedule = await cmd(0x24);
+        const schedule = await cmd(OP.GET_UWB_SCHEDULE);
         if (schedule[8] !== 0 || schedule[9] !== 0) throw new Error('Wait for active and queued range transactions to finish.');
-        const subscription = await cmd(0x32, u16(0x0003));
+        const subscription = await cmd(OP.SUBSCRIBE, u16(0x0003));
         if (subscription.length < 2 || (get16(subscription, 0) & 0x0003) !== 0x0003) {
             throw new Error('Could not subscribe to range result and failure events on this USB connection.');
         }
-        const [antenna, savedPayload] = await Promise.all([cmd(0x15), cmd(0x17)]);
+        const [antenna, savedPayload] = await Promise.all([cmd(OP.GET_ANTENNA_DELAYS), cmd(OP.GET_SAVED_CONFIG)]);
         calibration.originalRole = status[0];
         const saved = decodeSavedConfig(savedPayload);
         calibration.savedTx = saved.tx;
@@ -1415,7 +1444,7 @@ async function beginAntennaCalibration() {
         calibration.delayPending = false;
         calibration.isSaved = calibration.appliedTx === saved.tx && calibration.appliedRx === saved.rx;
         clearCalibrationAverage();
-        if (status[0] !== 1) { await cmd(0x20, [1]); await refreshStatus(); }
+        if (status[0] !== 1) { await cmd(OP.SET_ROLE, [1]); await refreshStatus(); }
         calibration.active = true;
         calibration.phase = 'live';
         calibration.error = '';
@@ -1468,11 +1497,11 @@ async function saveAntennaCalibration() {
         if (calibration.delayPending || calibration.requestedDelay !== calibration.appliedTx || calibration.requestedDelay !== calibration.appliedRx) {
             await applyCalibrationDelay(calibration.requestedDelay, calibration.requestedDelay);
         }
-        const savedPair = await cmd(0x19);
+        const savedPair = await cmd(OP.SAVE_ANTENNA_DELAYS);
         if (savedPair.length !== 4 || get16(savedPair, 0) !== calibration.requestedDelay || get16(savedPair, 2) !== calibration.requestedDelay) {
             throw new Error('The firmware did not confirm the requested antenna delays were saved to NVS.');
         }
-        const verify = decodeSavedConfig(await cmd(0x17));
+        const verify = decodeSavedConfig(await cmd(OP.GET_SAVED_CONFIG));
         if (verify.tx !== calibration.requestedDelay || verify.rx !== calibration.requestedDelay) {
             throw new Error('NVS readback does not match the selected TX/RX antenna delay.');
         }
@@ -1504,7 +1533,7 @@ async function resetAntennaCalibration() {
     calibration.error = '';
     try {
         await pauseLiveCalibrationLoop();
-        const saved = decodeSavedConfig(await cmd(0x17));
+        const saved = decodeSavedConfig(await cmd(OP.GET_SAVED_CONFIG));
         await applyCalibrationDelay(saved.tx, saved.rx);
         calibration.savedTx = saved.tx;
         calibration.savedRx = saved.rx;
@@ -1533,7 +1562,7 @@ async function resetAntennaCalibration() {
 async function resetConfig() {
     if (!confirm('Reset saved UWB and Bluetooth configuration, peer lists, targets and roles to compiled defaults? Bluetooth will stop and the UWB radio will reinitialize.')) return;
     try {
-        await cmd(0x13);
+        await cmd(OP.RESET_CONFIG);
         await refreshAll();
         notice.value = 'Device restored to compiled defaults';
         log('Configuration reset');
@@ -1544,7 +1573,7 @@ async function resetConfig() {
 async function setRole(role: number) {
     try {
         // This is a runtime-only test control. Never issue SAVE_CONFIG here.
-        await cmd(0x20, [role]);
+        await cmd(OP.SET_ROLE, [role]);
         await refreshStatus();
         notice.value = `Runtime role changed to ${['Idle', 'Initiator', 'Responder'][role]}. NVS configuration was not changed.`;
         log(`Temporary RAM role set · ${roleName.value}`);
@@ -1552,25 +1581,25 @@ async function setRole(role: number) {
         error.value = String(e);
     }
 }
-async function startRange() { try { await cmd(0x25); await refreshStatus(); notice.value = 'Ranging started'; } catch (e: any) { error.value = String(e) } }
-async function stopRange() { try { await cmd(0x26); await refreshStatus(); notice.value = 'Ranging stopped and queued one-shots cleared'; } catch (e: any) { error.value = String(e) } }
-async function rangeOnce() { try { const target = Number(oneShotTarget.value); if (!Number.isInteger(target) || target < 1 || target > 65534) throw new Error('Enter a valid target ID.'); const p = await cmd(0x27, u16(target)); notice.value = `One-shot job ${get16(p)} queued for target ${target}`; log(`RANGE_ONCE queued · target ${target} · job ${get16(p)}`) } catch (e: any) { error.value = String(e) } }
+async function startRange() { try { await cmd(OP.START_RANGING); await refreshStatus(); notice.value = 'Ranging started'; } catch (e: any) { error.value = String(e) } }
+async function stopRange() { try { await cmd(OP.STOP_RANGING); await refreshStatus(); notice.value = 'Ranging stopped and queued one-shots cleared'; } catch (e: any) { error.value = String(e) } }
+async function rangeOnce() { try { const target = Number(oneShotTarget.value); if (!Number.isInteger(target) || target < 1 || target > 65534) throw new Error('Enter a valid target ID.'); const p = await cmd(OP.RANGE_ONCE, u16(target)); notice.value = `One-shot job ${get16(p)} queued for target ${target}`; log(`RANGE_ONCE queued · target ${target} · job ${get16(p)}`) } catch (e: any) { error.value = String(e) } }
 const oneShotTarget = ref('2'), cancelJobId = ref('1'), advancedOutput = ref('No advanced command run yet.');
-async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let page = 0; page < 16; page++) { const p = await cmd(0x31, [...u32(cursor), ...u16(17), ...u16(0xffff)]); const count = p[13]; cursor = get32(p, 8); for (let j = 0; j < count; j++)rows.push(decodeMeasurement(p.slice(14 + j * 28, 14 + (j + 1) * 28))); if (count < 17 || cursor === 0) break; } measurements.value = rows.reverse().slice(-256); notice.value = `Loaded ${measurements.value.length} retained measurements`; } catch (e: any) { error.value = String(e) } }
+async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let page = 0; page < 16; page++) { const p = await cmd(OP.GET_HISTORY, [...u32(cursor), ...u16(17), ...u16(0xffff)]); const count = p[13]; cursor = get32(p, 8); for (let j = 0; j < count; j++)rows.push(decodeMeasurement(p.slice(14 + j * 28, 14 + (j + 1) * 28))); if (count < 17 || cursor === 0) break; } measurements.value = rows.reverse().slice(-256); notice.value = `Loaded ${measurements.value.length} retained measurements`; } catch (e: any) { error.value = String(e) } }
 async function quick(op: number, label: string) { try { const p = await cmd(op); notice.value = label; log(label); return p } catch (e: any) { error.value = String(e); return null } }
 async function pingNode() { const p = await quick(1, 'PING completed'); if (p) advancedOutput.value = `PING response: ${readString(p)}` }
-async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(0x14, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
-async function readLastRange() { try { const p = await cmd(0x30, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
-async function cancelJob() { try { await cmd(0x28, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
-async function subscribeAll() { try { const p = await cmd(0x32, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
-async function unsubscribeAll() { try { const p = await cmd(0x33, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
-async function readAntenna() { try { const p = await cmd(0x15); advancedOutput.value = `TX antenna delay: ${get16(p)} · RX antenna delay: ${get16(p, 2)}`; } catch (e: any) { error.value = String(e) } }
+async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(OP.TIME_SYNC, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
+async function readLastRange() { try { const p = await cmd(OP.GET_LAST_RANGE, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
+async function cancelJob() { try { await cmd(OP.CANCEL_OPERATION, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
+async function subscribeAll() { try { const p = await cmd(OP.SUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
+async function unsubscribeAll() { try { const p = await cmd(OP.UNSUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
+async function readAntenna() { try { const p = await cmd(OP.GET_ANTENNA_DELAYS); advancedOutput.value = `TX antenna delay: ${get16(p)} · RX antenna delay: ${get16(p, 2)}`; } catch (e: any) { error.value = String(e) } }
 async function clearStats() { if (confirm('Clear all device diagnostic counters?')) { await quick(5, 'Statistics counters cleared'); await refreshAll() } }
 async function clearHistory() { if (confirm('Clear retained measurement history?')) { await quick(0x34, 'Measurement history cleared'); measurements.value = [] } }
 async function sleepRadio() { await quick(0x40, 'Radio entered IDLE_RC standby (not deep sleep)'); await refreshStatus() }
 async function wakeRadio() { await quick(0x41, 'Radio wake command completed'); await refreshStatus() }
 async function reboot() { if (confirm('Reboot the ESP32 node? The USB connection will be interrupted.')) { await quick(0x43, 'Reboot command sent'); setTimeout(() => { void handleUsbLoss('Device rebooted. Reconnect when it appears on USB.'); }, 1000); } }
-async function systemSleep() { const sec = Number(prompt('Timer wake duration in seconds (1–604800):', '60')); if (!Number.isInteger(sec) || sec < 1 || sec > 604800) return; try { await cmd(0x42, u32(sec * 1000)); await handleUsbLoss('Device entered deep sleep. Reconnect after timer wake.'); } catch (e: any) { error.value = String(e) } }
+async function systemSleep() { const sec = Number(prompt('Timer wake duration in seconds (1–604800):', '60')); if (!Number.isInteger(sec) || sec < 1 || sec > 604800) return; try { await cmd(OP.SYSTEM_SLEEP, u32(sec * 1000)); await handleUsbLoss('Device entered deep sleep. Reconnect after timer wake.'); } catch (e: any) { error.value = String(e) } }
 function fmtDuration(ms: number) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s` }
 function statusText(s: number) { return ['Valid', 'Timeout', 'Invalid', 'Cancelled', 'Radio error'][s] ?? 'Unknown' }
 function fmtRange(mm: number | null) { return mm === null || mm < 0 ? '—' : `${(mm / 1000).toFixed(3)} m` }
@@ -1587,7 +1616,7 @@ async function drainDeviceEvents() {
         polling || commandInFlight || priorityCommandQueue.length || normalCommandQueue.length) return;
     eventDrainBusy = true;
     try {
-        await cmd(0x03);
+        await cmd(OP.GET_STATUS);
     } catch (e: any) {
         if (isUsbDisconnectError(e)) void handleUsbLoss('USB connection lost. Reconnect the device to continue.');
     } finally {

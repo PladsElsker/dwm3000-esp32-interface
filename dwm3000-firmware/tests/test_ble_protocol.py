@@ -102,6 +102,7 @@ assert module.OPS["get-saved-config"] == 0x13
 assert module.OPS["apply-save-config"] == 0x14
 assert module.OPS["get-ant-delays"] == 0x15
 assert module.OPS["set-ant-delays"] == 0x16
+assert module.OPS["save-ant-delays"] == 0x17
 assert module.OPS["get-targets"] == 0x21
 assert module.OPS["set-targets"] == 0x22
 assert module.OPS["get-schedule"] == 0x23

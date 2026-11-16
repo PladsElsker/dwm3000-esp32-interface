@@ -33,7 +33,7 @@ OPS = {
     # Configuration and antenna calibration (0x10–0x17).
     "get-config": 0x10, "set-config": 0x11, "reset-config": 0x12,
     "get-saved-config": 0x13, "apply-save-config": 0x14,
-    "get-ant-delays": 0x15, "set-ant-delays": 0x16,
+    "get-ant-delays": 0x15, "set-ant-delays": 0x16, "save-ant-delays": 0x17,
 
     # UWB control and ranging operations (0x20–0x2A).
     "set-role": 0x20, "get-targets": 0x21, "set-targets": 0x22,
@@ -357,7 +357,7 @@ def parse_args():
     ap.add_argument("--timeout", type=float, default=1.5)
     sub = ap.add_subparsers(dest="command", required=True)
     for name in ("ping", "get-info", "status", "stats", "clear-stats", "last-error", "get-config",
-                 "get-saved-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
+                 "get-saved-config", "reset-config", "get-ant-delays", "save-ant-delays", "get-targets", "get-schedule", "start",
                  "stop", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
                  "get-peers", "start-ble", "stop-ble", "trace"):
         sub.add_parser(name)
