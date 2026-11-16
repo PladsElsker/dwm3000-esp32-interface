@@ -1,4 +1,4 @@
-"""Persistent host API for ESP32-C3 / DWM3000 nodes."""
+"""Python host API for ESP32-C3 / DWM3000 nodes."""
 
 from .node import D3KNode
 from .exceptions import (
