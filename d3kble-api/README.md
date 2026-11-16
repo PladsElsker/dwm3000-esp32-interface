@@ -308,7 +308,7 @@ python -m pip install -e '.[dev]'
 python -m pytest
 ```
 
-Tests use a fake serial transport. Validate UART behavior, UWB ranging, and BLE communication on the target hardware as well.
+Tests use a fake serial transport. Validate UART behavior, UWB ranging, and BLE communication on the target hardware as well. The repository-level [`manual_tests/`](../manual_tests/README.md) directory contains scripts for those real-device checks.
 
 ## Exceptions
 
