@@ -560,4 +560,15 @@ class CommsManager:
             self._thread.join(timeout=2)
         self._executor.shutdown(wait=True, cancel_futures=True)
         self._dispatch_executor.shutdown(wait=True, cancel_futures=True)
+        reason = "communications manager closed before the operation completed"
+        with self._tickets_lock:
+            tickets = tuple(self._tickets.values())
+            self._tickets.clear()
+        for ticket in tickets:
+            if not ticket.ack_future.done():
+                ticket.ack_future.set_exception(RequestTimeout(reason))
+            if ticket.response_future and not ticket.response_future.done():
+                ticket.response_future.set_result(
+                    CommsResponse(status="error", error=reason, content=None)
+                )
         self.store.close()
