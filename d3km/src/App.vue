@@ -1711,7 +1711,9 @@ function loadConfigPresets() {
         const parsed = raw ? JSON.parse(raw) : [];
         configPresets.value = Array.isArray(parsed) ? parsed.filter((item: any) =>
             item && typeof item.id === 'string' && typeof item.name === 'string' &&
-            item.config && typeof item.config === 'object'
+            item.config && typeof item.config === 'object' &&
+            item.config.bleConfig && Array.isArray(item.config.bleConfig.peers) &&
+            typeof item.config.blePeers === 'string'
         ) : [];
     } catch {
         configPresets.value = [];
@@ -1800,7 +1802,8 @@ function validateImportedPreset(value: any): ConfigPreset {
     }
     const c = value.config;
     const n = (key: string) => Number(c[key]);
-    const targets = typeof c.targets === 'string' ? c.targets : '';
+    if (typeof c.targets !== 'string') throw new Error('The imported preset is missing its target list.');
+    const targets = c.targets;
     const peerText = c.blePeers == null ? '' : String(c.blePeers);
     if (!Number.isInteger(n('deviceId')) || n('deviceId') < 1 || n('deviceId') > 65534 ||
         !/^[0-9A-Fa-f]{1,4}$/.test(String(c.panId)) ||
@@ -1818,6 +1821,9 @@ function validateImportedPreset(value: any): ConfigPreset {
         targetIds.includes(n('deviceId')) || new Set(targetIds).size !== targetIds.length) {
         throw new Error('The imported preset contains invalid or duplicate target IDs.');
     }
+    if (c.autoStart && (n('role') === 0 || (n('role') === 1 && targetIds.length === 0))) {
+        throw new Error('The imported auto-start policy requires an Initiator with targets or a Responder role.');
+    }
     const peerIds = peerText.trim() ? peerText.split(',').map((item: string) => item.trim()) : [];
     if (peerIds.some((id: string) => !/^\\d+$/.test(id)) || peerIds.length > 8) {
         throw new Error('The imported preset contains invalid Bluetooth peer IDs.');
@@ -1828,7 +1834,9 @@ function validateImportedPreset(value: any): ConfigPreset {
         throw new Error('Bluetooth peers must be unique IDs from 1 to 65534, excluding this device ID.');
     }
     const bleConfig = c.bleConfig as BleConfig;
-    if (!bleConfig || !Array.isArray(bleConfig.peers)) throw new Error('The imported preset is missing its Bluetooth configuration.');
+    if (!bleConfig || !Array.isArray(bleConfig.peers) || typeof bleConfig.autoStart !== 'boolean') {
+        throw new Error('The imported preset is missing a valid Bluetooth configuration.');
+    }
     const previousDeviceId = draft.deviceId;
     try {
         draft.deviceId = n('deviceId');
@@ -1840,7 +1848,7 @@ function validateImportedPreset(value: any): ConfigPreset {
         throw new Error('The imported Bluetooth peer list does not match its settings.');
     }
     return {
-        id: typeof value.id === 'string' ? value.id : `import-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: `import-${Date.now()}-${Math.random().toString(36).slice(2)}`,
         name: value.name.trim(), updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString(),
         config: {
             deviceId: n('deviceId'), panId: String(c.panId).toUpperCase().padStart(4, '0'),
@@ -1855,6 +1863,7 @@ async function importConfigPreset(event: Event) {
     const file = input.files?.[0];
     if (!file) return;
     try {
+        if (file.size > 256 * 1024) throw new Error('Preset files must be 256 KB or smaller.');
         const preset = validateImportedPreset(JSON.parse(await file.text()));
         const duplicateName = configPresets.value.some(item => item.name.toLocaleLowerCase() === preset.name.toLocaleLowerCase());
         const imported = duplicateName
