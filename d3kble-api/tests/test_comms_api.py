@@ -12,6 +12,9 @@ class FakeTicket:
         self.future = Future()
         self.future.set_result({"delivered": True})
 
+    def wait(self, timeout=None):
+        return self.future.result(timeout=timeout)
+
 
 class FakeBle:
     def __init__(self):
