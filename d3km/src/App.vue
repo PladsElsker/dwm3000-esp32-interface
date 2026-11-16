@@ -1766,6 +1766,10 @@ async function saveConfigPreset() {
     if (!name) { error.value = 'Enter a name for this configuration preset.'; return; }
     if (name.length > 80) { error.value = 'Preset names must be 80 characters or fewer.'; return; }
     const existing = configPresets.value.find(item => item.id === selectedConfigPresetId.value);
+    if (configPresets.value.some(item => item.id !== existing?.id && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+        error.value = `A configuration named “${name}” already exists. Select it from the list to update it.`;
+        return;
+    }
     let config: ConfigPresetData;
     try {
         config = clonePresetData();
@@ -2418,8 +2422,8 @@ async function importConfigSet(event: Event) {
                     <div class="panel config-presets-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>Saved configuration set</h3>
-                                <p>Reusable configurations saved on this computer, independently of the connected board.</p>
+                                <h3>Configuration library</h3>
+                                <p>Reusable configurations saved on this computer, separate from the settings stored on the board.</p>
                             </div>
                             <Save />
                         </div>
@@ -2437,7 +2441,7 @@ async function importConfigSet(event: Event) {
                             </label>
                             <div class="preset-actions">
                                 <button class="button primary" :disabled="!selectedConfigPresetId || (selectedConfigPresetId === NEW_CONFIG_OPTION && !presetName.trim())" @click="saveConfigPreset">
-                                    <Save :size="14" /> {{ selectedConfigPresetId === NEW_CONFIG_OPTION ? 'Save new config' : 'Update selected config' }}
+                                    <Save :size="14" /> {{ selectedConfigPresetId === NEW_CONFIG_OPTION ? 'Save to library' : 'Update in library' }}
                                 </button>
                                 <button class="button danger-ghost" :disabled="!selectedConfigPresetId || selectedConfigPresetId === NEW_CONFIG_OPTION" @click="deleteConfigPreset">
                                     <Trash2 :size="14" /> Delete
@@ -2451,7 +2455,7 @@ async function importConfigSet(event: Event) {
                                 <input ref="presetImportInput" class="preset-file-input" type="file" accept=".json,application/json" @change="importConfigSet" />
                             </div>
                         </div>
-                        <p class="hint preset-hint">Select a saved configuration to load it into the editor, or choose “New config” to name the current settings. Saving here updates only this computer’s configuration set. Export set and Import set transfer the entire collection; imports are added without replacing existing entries. To send the selected settings to the board and store them in its NVS, use “Apply & save to device” below.</p>
+                        <p class="hint preset-hint">Choose a saved configuration to load it into the editor. Choose “New config” to name and save the current editor settings as another library entry. Export set and Import set transfer the entire library; imported entries are added without replacing your existing configurations. “Apply & save to device” is separate: it sends the editor settings to the connected board and writes them to NVS.</p>
                     </div>
 
                     <fieldset class="config-fields" :disabled="savingConfig">
