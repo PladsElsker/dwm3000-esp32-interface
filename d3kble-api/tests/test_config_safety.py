@@ -99,3 +99,27 @@ def test_nvs_boot_preferences_do_not_force_live_service_state():
     manager.set_source("nvs")
     assert "ranging_enabled" not in {change.path for change in manager.get_diff()}
     assert "ble_enabled" not in {change.path for change in manager.get_diff()}
+
+
+
+def test_idle_desired_role_and_ble_mode_stop_services_without_restarting():
+    runtime = {
+        "device_id": 1, "pan_id": 0xCAFE, "channel": 5,
+        "tx_antenna_delay": 16384, "rx_antenna_delay": 16384,
+        "period_ms": 100, "timeout_ms": 120, "retries": 1,
+        "targets": (2,), "ble_mode": "hub", "ble_peers": (),
+        "ble_advertising_interval_ms": 100, "ble_scan_interval_ms": 100,
+        "ble_scan_window_ms": 50, "ble_auto_start": False,
+        "ble_retry_interval_ms": 1000, "ble_connection_timeout_ms": 5000,
+        "ble_max_retries": 3, "ble_rx_message_timeout_ms": 1000,
+    }
+    status = {"role": "initiator", "ranging_enabled": True, "ble_enabled": True}
+    manager = ConfigManager(FakeTransport(), FakeState(runtime, status), FakeDispatcher())
+    manager.set_desired({"role": "idle", "ble_mode": "idle"})
+    plan = manager.get_plan()
+    names = [action.name for action in plan.actions]
+    assert "stop_ranging" in names
+    assert "stop_ble" in names
+    assert "set_role" in names
+    assert "start_ranging" not in names
+    assert "start_ble" not in names

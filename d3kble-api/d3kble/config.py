@@ -238,14 +238,24 @@ class ConfigManager:
                 True, "Update runtime UWB schedule",
             ))
 
-        want_ble = bool(desired.get("ble_enabled", was_ble_enabled))
-        want_ranging = bool(desired.get("ranging_enabled", was_ranging))
-        if want_ble and str(desired.get("ble_mode", current.get("ble_mode", "idle"))).lower() == "idle":
-            raise ReconciliationError("BLE cannot be started while desired BLE mode is IDLE")
+        desired_ble_mode = str(desired.get("ble_mode", current.get("ble_mode", "idle"))).lower()
         desired_role = str(desired.get("role", current.get("role", "idle"))).lower()
+        desired_targets = desired.get("targets", current.get("targets", ()))
+        # Preserve live service state by default, except that an IDLE mode/role
+        # or an empty initiator target list necessarily means the service is off.
+        want_ble = bool(desired.get(
+            "ble_enabled", was_ble_enabled and desired_ble_mode != "idle"
+        ))
+        default_ranging = (
+            was_ranging and desired_role != "idle"
+            and not (desired_role == "initiator" and not desired_targets)
+        )
+        want_ranging = bool(desired.get("ranging_enabled", default_ranging))
+        if want_ble and desired_ble_mode == "idle":
+            raise ReconciliationError("BLE cannot be started while desired BLE mode is IDLE")
         if want_ranging and desired_role == "idle":
             raise ReconciliationError("UWB ranging cannot be enabled with an idle role")
-        if want_ranging and desired_role == "initiator" and not desired.get("targets", current.get("targets", ())):
+        if want_ranging and desired_role == "initiator" and not desired_targets:
             raise ReconciliationError("initiator ranging requires at least one target")
         if want_ble and (ble_change or set_config_change or not was_ble_enabled):
             actions.append(ReconciliationAction(
