@@ -240,7 +240,7 @@ async def handle_request(request):
 
 A plain return value (including `None`) is treated as successful response content. Handler exceptions are sent to the requester as error responses. Request handlers are not automatically re-executed after an exception because they may already have performed side effects.
 
-By default, async handlers run on a communications worker's event loop. Call `node.comms.bind_asyncio_loop(asyncio.get_running_loop())` from a running application loop to execute async handlers on that loop instead. This allows handlers to coordinate with the application's other asyncio tasks.
+By default, each async handler runs to completion on a communications worker thread using a temporary event loop. Call `node.comms.bind_asyncio_loop(asyncio.get_running_loop())` from a running application loop to execute async handlers on that loop instead. This allows handlers to coordinate with the application's other asyncio tasks.
 
 Register `node.comms.on_response(callback)` to receive response objects through a callback as well. The callback receives an `ApplicationMessage`; its `payload` is the `CommsResponse`. A request ticket can be looked up again with `node.comms.resume_request(message_id)` while the same node process remains alive. `node.comms.pending_requests()` lists requests that have not yet received a response or timed out.
 
