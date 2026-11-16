@@ -169,11 +169,18 @@ class CommsState:
                 self._inbox.move_to_end((peer_id, message_id))
                 self._trim_inbox()
 
-    def store_response(self, request_id: str, response_json: str) -> bool:
+    def store_response(self, request_id: str, response_json: str,
+                       peer_id: int | None = None) -> bool:
         with self._lock:
             request = self._requests.get(request_id)
             if request is None or request["response_json"] is not None:
                 return False
+            if peer_id is not None and request["peer_id"] != peer_id:
+                return False
+            deadline = request["deadline"]
+            if deadline is not None and time.time() >= deadline:
+                return False
+            request["accepted"] = True
             request["response_json"] = response_json
             self._requests.move_to_end(request_id)
             self._trim_completed_requests()
