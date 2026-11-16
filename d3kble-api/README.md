@@ -165,56 +165,101 @@ The firmware supports up to eight simultaneous BLE peer links and a maximum 496-
 
 `node.comms` provides message envelopes, message IDs, acknowledgements, bounded retries, duplicate detection, and request/response correlation on top of the BLE transport.
 
-Send a message:
-
-```python
-ticket = node.comms.send(200, {"operation": "status"})
-ack = ticket.wait_ack(timeout=10)
-```
-
-Send the same payload independently to several peers:
-
-```python
-tickets = node.comms.send_many([200, 201, 202], {"operation": "sync"})
-```
-
-Each destination receives an independent unicast with its own message ID and ticket. Peer IDs must be unique in a `send_many` call.
-
-Register a message handler:
-
-```python
-@node.comms.on_message
-def on_message(message):
-    print(message.peer_id, message.message_id, message.payload)
-```
-
-The `ApplicationMessage` exposes `peer_id`, `message_id`, `kind`, `payload`, `received_at`, and optional `reply_to`. The callback receives messages from all peers; use `peer_id` to distinguish them.
-
 ### Request/response
 
+Request/response is the normal application messaging interface. Awaiting a request pauses only the current coroutine; other tasks on the same asyncio loop continue to run.
+
+Start the node before entering the application event loop:
+
 ```python
-ticket = node.comms.request(200, {"operation": "get_status"})
-ack = ticket.wait_ack(timeout=10)
-response = ticket.wait_response(timeout=10)
+import asyncio
+from d3kble import D3KNode
+
+node = D3KNode("/dev/ttyAMA2")
+node.start()
+node.wait_until_ready()
+
+async def decision_loop():
+    while True:
+        response = await node.comms.request(
+            200,
+            {"operation": "get_status"},
+        )
+
+        if response.status == "error":
+            print("Request failed:", response.error)
+            continue
+
+        status = response.content
+        print("Remote status:", status)
+
+async def main():
+    node.comms.bind_asyncio_loop(asyncio.get_running_loop())
+    await asyncio.gather(
+        decision_loop(),
+        sensor_fusion_loop(),
+        camera_loop(),
+        motor_control_loop(),
+    )
+
+try:
+    asyncio.run(main())
+finally:
+    node.close()
 ```
 
-Handle incoming requests by returning a response or calling `request.respond(payload)`:
+The other application loops above are placeholders for application-owned coroutines. CPU-intensive work must not run synchronously on the asyncio event loop.
+
+A request ticket is returned immediately. It is awaitable and resolves to a `CommsResponse`:
+
+| Field | Description |
+|---|---|
+| `status` | `"ok"` or `"error"` |
+| `error` | `None` on success, otherwise the error reason |
+| `content` | Response data, or `None` when no content is available |
+| `ok` | Convenience property; true when `status == "ok"` |
+
+The default response deadline is **1.0 second**, measured from when the request is queued. If no response arrives before the deadline, awaiting the ticket returns an error `CommsResponse`; it does not raise a timeout exception. A late response is ignored. Use `ticket.wait_response(timeout=...)` only from synchronous code; it blocks that calling thread. `ticket.wait_ack()` waits for the separate internal receipt acknowledgement and is not required before awaiting the response.
+
+Handle incoming requests by returning content, returning an explicit `CommsResponse`, calling `request.respond()`, or calling `request.fail()`:
 
 ```python
+from d3kble import CommsResponse
+
 @node.comms.on_request
-def handle_request(request):
+async def handle_request(request):
     if request.payload.get("operation") == "get_status":
-        return {"status": "ready"}
-    return {"error": "unsupported operation"}
+        return {"state": "ready"}
+
+    return CommsResponse(
+        status="error",
+        error="unsupported operation",
+        content=None,
+    )
 ```
 
-Register `node.comms.on_response(callback)` to receive response messages through a callback as well. A request ticket can also be looked up again with `node.comms.resume_request(message_id)` while the same node process remains alive. `node.comms.pending_requests()` lists requests that do not yet have a response.
+A plain return value (including `None`) is treated as successful response content. Handler exceptions are sent to the requester as error responses. Request handlers are not automatically re-executed after an exception because they may already have performed side effects.
+
+By default, async handlers run on a communications worker's event loop. Call `node.comms.bind_asyncio_loop(asyncio.get_running_loop())` from a running application loop to execute async handlers on that loop instead. This allows handlers to coordinate with the application's other asyncio tasks.
+
+Register `node.comms.on_response(callback)` to receive response objects through a callback as well. The callback receives an `ApplicationMessage`; its `payload` is the `CommsResponse`. A request ticket can be looked up again with `node.comms.resume_request(message_id)` while the same node process remains alive. `node.comms.pending_requests()` lists requests that have not yet received a response or timed out.
+
+### One-way messages
+
+One-way messages remain available for notifications or data that does not need a correlated result:
+
+```python
+ticket = node.comms.send(200, {"event": "heartbeat"})
+ack = ticket.wait_ack(timeout=2)
+```
+
+`send_many(peer_ids, payload)` creates independent unicast messages with separate message IDs and tickets. Peer IDs must be unique in a `send_many` call. Use request/response for commands where the application needs the remote outcome before making its next decision.
 
 Payloads may contain JSON-compatible values and `bytes`. Byte strings are encoded inside the message envelope and restored on receipt. The 496-byte firmware limit applies to the complete encoded envelope, including its metadata.
 
 ### Acknowledgement and state lifetime
 
-An application acknowledgement means the receiving process has recorded the message in its in-memory inbox. It does not mean the registered message handler has completed.
+An application acknowledgement means the receiving process has recorded the message in its in-memory inbox. It does not mean the registered handler has completed. The response indicates the handler's result.
 
 Messaging state is volatile and exists only in the running Python process. The library does not persist messages to disk or recover them after process restart. `stop()` and serial reconnects retain in-memory queues; `close()` clears them. The inbox deduplication history is bounded (4096 records by default), and the response history is bounded (2048 records by default). Retries are bounded (12 attempts by default); exhausted sends fail their ticket and emit `comms_failed`.
 
