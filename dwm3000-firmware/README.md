@@ -32,16 +32,36 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 ## Build and flash firmware
 
-Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The BLE manager uses **NimBLE-Arduino 2.5.0**. The NimBLE host is configured for nine connection slots, allowing the firmware to maintain up to eight application peer links.
+Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The firmware uses NimBLE-Arduino 2.5.0 and supports up to eight concurrent BLE peer links.
 
-Run the compile command from this directory:
+The BLE host/controller limits are part of the compiled ESP32 Arduino core libraries, not sketch compiler flags. This project uses the custom ESP32-C3 core libraries built by [esp32-arduino-lib-builder](https://github.com/PladsElsker/esp32-arduino-lib-builder), which sets:
+
+```ini
+CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
+CONFIG_BT_CTRL_BLE_MAX_ACT=9
+```
+
+Build and install the customized core once. The builder copies its generated libraries and configuration into a manually installed Arduino-ESP32 source tree; it does not modify a Boards Manager installation.
+
+```sh
+git clone https://github.com/PladsElsker/esp32-arduino-lib-builder
+cd esp32-arduino-lib-builder
+git checkout master
+./build.sh -f -t esp32c3 -c "$HOME/Arduino/hardware/espressif/esp32"
+```
+
+The target directory must be a manual Arduino-ESP32 installation. The builder selects its Arduino-ESP32 and ESP-IDF source revisions; keep the generated core and the toolchain versions together, and do not replace its `tools/esp32-arduino-libs` directory with files from a Boards Manager package.
+
+After the core has been built and installed, compile this sketch using that custom core's platform package. Arduino CLI must resolve the `esp32:esp32:esp32c3` platform to the manually installed core, not to a separate Boards Manager copy. For example, when the custom core is installed as a hardware package in your sketchbook:
 
 ```sh
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
-  --build-property "compiler.c.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
-  --build-property "compiler.cpp.extra_flags=-DCONFIG_BT_NIMBLE_MAX_CONNECTIONS=9" \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
+
+Do not add `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` through `compiler.c.extra_flags` or `compiler.cpp.extra_flags`: those flags do not rebuild the precompiled NimBLE host or Bluetooth controller libraries.
+
+To verify the selected core, inspect the installed platform's `tools/esp32-arduino-libs/esp32c3/sdkconfig` and the matching memory-variant header under `tools/esp32-arduino-libs/esp32c3/<memory_type>/include/sdkconfig.h`. They must contain `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8` and `CONFIG_BT_CTRL_BLE_MAX_ACT=9`. The core's `platform.txt` selects this SDK directory using the board's chip variant and memory type.
 
 Upload the compiled sketch:
 
