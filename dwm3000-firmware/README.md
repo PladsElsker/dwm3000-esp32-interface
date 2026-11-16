@@ -32,45 +32,31 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 ## Build and flash firmware
 
-Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The firmware uses NimBLE-Arduino 2.5.0 and supports up to eight concurrent BLE peer links.
+Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, and compile the firmware:
 
-The BLE host and controller limits are part of the compiled ESP32 Arduino core libraries, not sketch compiler flags. This project uses the custom ESP32-C3 libraries built by [esp32-arduino-lib-builder](https://github.com/PladsElsker/esp32-arduino-lib-builder):
+```sh
+./setup-custom-arduino-core.sh
+```
+
+The script pins the library builder to commit `165a3d6`, uses the matching Arduino-ESP32 `idf-release/v5.5` and ESP-IDF `release/v5.5` branches, and builds with:
 
 ```ini
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
 CONFIG_BT_CTRL_BLE_MAX_ACT=9
 ```
 
-Create a manual Arduino-ESP32 installation in the Arduino CLI sketchbook directory. This is separate from any Boards Manager installation:
+It installs the custom core in Arduino CLI's manual platform directory (`directories.user/hardware/espressif/esp32`), creates an isolated Python environment for the builder, installs the Arduino platform tools, and initializes the bundled DWM3000 driver submodule before compiling. It does not change a Boards Manager installation. The script checks which core Arduino CLI resolves; if a duplicate Boards Manager ESP32 core takes precedence, it stops and reports how to remove that duplicate.
 
-```sh
-SKETCHBOOK_DIR="$(arduino-cli config get directories.user)"
-CORE_DIR="$SKETCHBOOK_DIR/hardware/espressif/esp32"
-mkdir -p "$(dirname "$CORE_DIR")"
-git clone --branch idf-release/v5.5 https://github.com/espressif/arduino-esp32.git "$CORE_DIR"
-git -C "$CORE_DIR" submodule update --init --recursive
-python3 "$CORE_DIR/tools/get.py"
-```
+Requirements: Arduino CLI, Git, Python 3.9 or newer, and the ESP-IDF host build tools. If a prerequisite is missing, the script prints the install command for Ubuntu/Debian or macOS. Use `--core-only` to build and install the custom core without compiling the sketch.
 
-Build and copy the customized libraries into that manual core installation. Pin the builder to the same Arduino-ESP32 branch and ESP-IDF release used by the core:
+The default core and builder directories can be overridden with `ARDUINO_SKETCHBOOK_DIR`, `ESP32_ARDUINO_CORE_DIR`, and `ESP32_ARDUINO_LIB_BUILDER_DIR`.
 
-```sh
-git clone https://github.com/PladsElsker/esp32-arduino-lib-builder.git "$HOME/esp32-arduino-lib-builder"
-git -C "$HOME/esp32-arduino-lib-builder" checkout 165a3d6e094266eb8c54c96732c0f0cb3e1b3e84
-cd "$HOME/esp32-arduino-lib-builder"
-./build.sh -f -A idf-release/v5.5 -I release/v5.5 -t esp32c3 -c "$CORE_DIR"
-```
-
-The builder replaces `$CORE_DIR/tools/esp32-arduino-libs` with the generated SDK libraries and configuration. Run `tools/get.py` before this step, not after it, or the stock SDK library package will overwrite the customized libraries. Re-run the builder command whenever the BLE Kconfig values or ESP-IDF build inputs change.
-
-Arduino CLI discovers manual platforms under `directories.user/hardware`. Compile using the custom core:
+After the custom core has been built, subsequent firmware-only builds can use Arduino CLI directly without BLE compiler flag overrides:
 
 ```sh
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
-
-Do not add `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` through `compiler.c.extra_flags` or `compiler.cpp.extra_flags`; those flags do not rebuild the precompiled NimBLE host or Bluetooth controller libraries. Use `arduino-cli compile --verbose` and confirm the selected platform and SDK paths point into `$CORE_DIR`, not the Boards Manager installation. The installed `$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig` and the active memory-variant header under `esp32c3/*/include/sdkconfig.h` must report host connections `8` and controller activities `9`.
 
 Upload the compiled sketch:
 
