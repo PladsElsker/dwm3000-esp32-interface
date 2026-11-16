@@ -1674,12 +1674,35 @@ const presetName = ref('');
 const presetImportInput = ref<HTMLInputElement | null>(null);
 
 function clonePresetData(): ConfigPresetData {
+    const targets = draft.targets.trim() ? draft.targets.split(',').map(item => Number(item.trim())) : [];
+    const pan = parseInt(draft.panId, 16);
+    if (!Number.isInteger(draft.deviceId) || draft.deviceId < 1 || draft.deviceId > 65534 ||
+        !Number.isInteger(pan) || pan < 0 || pan > 65535 ||
+        (draft.channel !== 5 && draft.channel !== 9) ||
+        !Number.isInteger(draft.tx) || draft.tx < 0 || draft.tx > 65535 ||
+        !Number.isInteger(draft.rx) || draft.rx < 0 || draft.rx > 65535 ||
+        !Number.isInteger(draft.period) || draft.period < 20 || draft.period > 60000 ||
+        !Number.isInteger(draft.timeout) || draft.timeout < 50 || draft.timeout > 5000 ||
+        !Number.isInteger(draft.retries) || draft.retries < 0 || draft.retries > 5 ||
+        !Number.isInteger(draft.role) || draft.role < 0 || draft.role > 2) {
+        throw new Error('Check the UWB configuration values before saving a preset.');
+    }
+    if (targets.length > 16 || targets.some(id => !Number.isInteger(id) || id < 1 || id > 65534) ||
+        targets.includes(draft.deviceId) || new Set(targets).size !== targets.length) {
+        throw new Error('Targets must be unique IDs from 1 to 65534 (maximum 16).');
+    }
+    if (draft.autoStart && (draft.role === 0 || (draft.role === 1 && targets.length === 0))) {
+        throw new Error('Auto-start requires an Initiator with at least one target, or a Responder role.');
+    }
+    const bleConfig = cloneBleConfig(bleDraft);
+    bleConfig.peers = parseBlePeerIds(blePeersInput.value);
+    validateBleConfig(bleConfig);
     return {
-        deviceId: Number(draft.deviceId), panId: String(draft.panId).toUpperCase(),
+        deviceId: Number(draft.deviceId), panId: String(draft.panId).toUpperCase().padStart(4, '0'),
         channel: Number(draft.channel), tx: Number(draft.tx), rx: Number(draft.rx),
         period: Number(draft.period), timeout: Number(draft.timeout), retries: Number(draft.retries),
         role: Number(draft.role), targets: String(draft.targets), autoStart: Boolean(draft.autoStart),
-        bleConfig: cloneBleConfig(bleDraft), blePeers: String(blePeersInput.value)
+        bleConfig, blePeers: bleConfig.peers.join(', ')
     };
 }
 function loadConfigPresets() {
@@ -1709,9 +1732,16 @@ function saveConfigPreset() {
     if (!name) { error.value = 'Enter a name for this configuration preset.'; return; }
     if (name.length > 80) { error.value = 'Preset names must be 80 characters or fewer.'; return; }
     const existing = configPresets.value.find(item => item.id === selectedConfigPresetId.value);
+    let config: ConfigPresetData;
+    try {
+        config = clonePresetData();
+    } catch (e: any) {
+        error.value = String(e);
+        return;
+    }
     const preset: ConfigPreset = {
         id: existing?.id ?? (typeof crypto !== 'undefined' && 'randomUUID' in crypto ? crypto.randomUUID() : `preset-${Date.now()}-${Math.random().toString(36).slice(2)}`),
-        name, updatedAt: new Date().toISOString(), config: clonePresetData()
+        name, updatedAt: new Date().toISOString(), config
     };
     const previous = configPresets.value;
     configPresets.value = existing
