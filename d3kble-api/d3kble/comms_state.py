@@ -30,7 +30,8 @@ class CommsState:
         if self._closed:
             raise RuntimeError("communications state is closed")
 
-    def enqueue(self, message_id: str, peer_id: int, kind: str, envelope: bytes):
+    def enqueue(self, message_id: str, peer_id: int, kind: str, envelope: bytes,
+                response_deadline: float | None = None):
         with self._lock:
             self._check_open()
             self._outbox[message_id] = {
@@ -41,6 +42,7 @@ class CommsState:
             if kind == "request":
                 self._requests[message_id] = {
                     "peer_id": peer_id, "accepted": False, "response_json": None,
+                    "deadline": response_deadline,
                 }
                 self._trim_completed_requests()
 
@@ -167,13 +169,36 @@ class CommsState:
                 self._inbox.move_to_end((peer_id, message_id))
                 self._trim_inbox()
 
-    def store_response(self, request_id: str, response_json: str):
+    def store_response(self, request_id: str, response_json: str) -> bool:
         with self._lock:
             request = self._requests.get(request_id)
-            if request is not None:
-                request["response_json"] = response_json
-                self._requests.move_to_end(request_id)
-                self._trim_completed_requests()
+            if request is None or request["response_json"] is not None:
+                return False
+            request["response_json"] = response_json
+            self._requests.move_to_end(request_id)
+            self._trim_completed_requests()
+            return True
+
+    def due_requests(self, now: float):
+        with self._lock:
+            return [
+                (message_id, row["peer_id"], row["deadline"])
+                for message_id, row in self._requests.items()
+                if row["response_json"] is None
+                and row["deadline"] is not None
+                and row["deadline"] <= now
+            ]
+
+    def expire_request(self, request_id: str, response_json: str) -> bool:
+        with self._lock:
+            request = self._requests.get(request_id)
+            if request is None or request["response_json"] is not None:
+                return False
+            request["response_json"] = response_json
+            self._outbox.pop(request_id, None)
+            self._requests.move_to_end(request_id)
+            self._trim_completed_requests()
+            return True
 
     def get_request(self, request_id: str):
         with self._lock:
@@ -181,7 +206,8 @@ class CommsState:
             if request is None:
                 return None
             return (
-                request["peer_id"], request["accepted"], request["response_json"]
+                request["peer_id"], request["accepted"],
+                request["response_json"], request["deadline"],
             )
 
     def pending_requests(self):
