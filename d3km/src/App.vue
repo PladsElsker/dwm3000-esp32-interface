@@ -138,7 +138,7 @@ const DEFAULT_ANTENNA_DELAY = 16385;
 // One DW3000 device-time unit converted to one-way propagation distance.
 const DW3000_TICK_METERS = 299792458 / (499.2e6 * 128);
 const calibration = reactive({
-    phase: 'idle' as 'idle' | 'starting' | 'live' | 'saving' | 'resetting' | 'error',
+    phase: 'idle' as 'idle' | 'starting' | 'live' | 'saving' | 'resetting' | 'stopping' | 'error',
     active: false,
     processing: false,
     operationBusy: false,
@@ -1407,6 +1407,8 @@ async function pauseLiveCalibrationLoop() {
 }
 async function stopAntennaCalibration() {
     if (!calibration.active || calibration.operationBusy) return;
+    calibration.operationBusy = true;
+    calibration.phase = 'stopping';
     try {
         await endAntennaCalibrationSession();
         notice.value = calibration.message;
@@ -1414,6 +1416,8 @@ async function stopAntennaCalibration() {
     } catch (e: any) {
         calibration.error = String(e);
         calibration.phase = 'error';
+    } finally {
+        calibration.operationBusy = false;
     }
 }
 async function beginAntennaCalibration() {
@@ -2115,9 +2119,7 @@ async function importConfigPreset(event: Event) {
                                 <div>
                                     <h3>Recent measurements</h3>
                                     <p>Latest results received from the ranging engine</p>
-                                </div><button class="text-button" @click="navigate('history')">View history
-                                    <ArrowUpFromLine :size="14" />
-                                </button>
+                                </div>
                             </div>
                             <div v-if="measurements.length" class="table-wrap">
                                 <table>
@@ -2166,6 +2168,8 @@ async function importConfigPreset(event: Event) {
                                                 'SAVING' :
                                                 calibration.phase === 'resetting' ?
                                                     'RESETTING' :
+                                                    calibration.phase === 'stopping' ?
+                                                        'STOPPING' :
                                                     calibration.phase === 'error'
                                                         ?
                                                         'CHECK CONNECTION' :
@@ -2303,7 +2307,7 @@ async function importConfigPreset(event: Event) {
                                 <button class="button danger-ghost"
                                     :disabled="calibration.operationBusy || !calibration.active || !connected"
                                     @click="stopAntennaCalibration">
-                                    <CircleAlert :size="15" /> Stop calibration
+                                    <CircleAlert :size="15" /> {{ calibration.phase === 'stopping' ? 'Stopping…' : 'Stop calibration' }}
                                 </button>
                                 <button class="button secondary" :disabled="calibration.operationBusy || !connected"
                                     @click="resetAntennaCalibration">
