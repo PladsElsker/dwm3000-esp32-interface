@@ -1657,7 +1657,7 @@ onUnmounted(() => {
                                     <ShieldCheck />
                                 </div>
                                 <div class="metric-value" :class="device.status?.radio_ready ? 'good' : 'bad'">{{ health
-                                    }}
+                                }}
                                 </div>
                                 <div class="metric-foot">{{ device.status?.radio_ready ? 'DWM3000 radio initialized' :
                                     'Check radio diagnostics' }}</div>
@@ -1667,8 +1667,8 @@ onUnmounted(() => {
                                     <Antenna />
                                 </div>
                                 <div class="metric-value">{{ roleName }}</div>
-                                <div class="metric-foot">{{ device.status?.ranging ? 'Ranging enabled' : 'Ranging
-                                    stopped' }}
+                                <div class="metric-foot">{{
+                                    device.status?.ranging ? 'Ranging enabled' : 'Ranging stopped' }}
                                 </div>
                             </div>
                             <div class="metric-card">
@@ -1707,7 +1707,7 @@ onUnmounted(() => {
                                         'Unavailable' }}</b></div>
                                     <div><span>BLE peer limit</span><b>{{ device.info?.maxBlePeers ?? '—' }}</b></div>
                                     <div><span>BLE connection limit</span><b>{{ device.info?.maxBleConnections ?? '—'
-                                    }}</b></div>
+                                            }}</b></div>
                                     <div><span>BLE message limit</span><b>{{ device.info?.maxBleMessageLength ?? '—' }}
                                             bytes</b></div>
                                     <div><span>BLE maximum MTU</span><b>{{ device.info?.maxBleMtu ?? '—' }}</b></div>
@@ -1727,17 +1727,20 @@ onUnmounted(() => {
                                     </div>
                                     <div><b>{{ device.status?.standby ? 'IDLE_RC standby' : device.status?.radio_ready ?
                                         'Radio initialized' : 'Radio unavailable' }}</b>
-                                        <p>{{ device.status?.standby ? 'Radio is in IDLE_RC standby; this is not true
-                                            DWM3000 deep sleep.' : device.status?.radio_ready ? 'Radio is initialized
-                                            and available for ranging.' : 'Radio initialization failed or is
-                                            unavailable.' }}</p>
+                                        <p>{{
+                                            device.status?.standby ?
+                                                'Radio is in IDLE_RC standby; this is not true DWM3000 deep sleep.' :
+                                                device.status?.radio_ready ?
+                                                    'Radio is initialized and available for ranging.' :
+                                                    'Radio initialization failed or is unavailable.'
+                                        }}</p>
                                     </div>
                                 </div>
                                 <div class="detail-list compact">
                                     <div><span>Clock synchronized</span><b>{{ device.status?.clock ? 'Yes' : 'No' }}</b>
                                     </div>
                                     <div><span>Configured UWB targets</span><b>{{ device.status?.target_count ?? 0
-                                    }}</b>
+                                            }}</b>
                                     </div>
                                     <div><span>Bluetooth mode</span><b>{{ ble.supported ? bleModeName(ble.runtime.mode)
                                         : 'Not supported' }}</b></div>
@@ -1794,12 +1797,22 @@ onUnmounted(() => {
                         </div>
                         <span class="tag"
                             :class="calibration.connectionUnstable ? 'warning' : calibration.phase === 'live' ? 'good' : calibration.phase === 'error' ? 'bad' : 'neutral'">
-                            {{ calibration.connectionUnstable ? 'CONNECTION UNSTABLE' : calibration.phase === 'live' ?
-                                'LIVE FEEDBACK' :
-                                calibration.phase === 'starting' ? 'STARTING' : calibration.phase === 'saving' ? 'SAVING' :
-                                    calibration.phase === 'resetting' ? 'RESETTING' : calibration.phase === 'error' ? 'CHECK
-                            CONNECTION' : 'NOT
-                            STARTED' }}
+                            {{
+                                calibration.connectionUnstable ?
+                                    'CONNECTION UNSTABLE' :
+                                    calibration.phase === 'live' ?
+                                        'LIVE FEEDBACK' :
+                                        calibration.phase === 'starting' ?
+                                            'STARTING' :
+                                            calibration.phase === 'saving' ?
+                                                'SAVING' :
+                                                calibration.phase === 'resetting' ?
+                                                    'RESETTING' :
+                                                    calibration.phase === 'error'
+                                                        ?
+                                                        'CHECK CONNECTION' :
+                                                        'NOT STARTED'
+                            }}
                         </span>
                     </div>
 
@@ -1831,8 +1844,11 @@ onUnmounted(() => {
                                 :title="device.status?.ranging ? 'Stop ranging to start live calibration' : ''"
                                 :disabled="!connected || !device.status?.radio_ready || device.status?.standby || device.status?.ranging || calibration.phase === 'starting'"
                                 @click="beginAntennaCalibration">
-                                <Antenna :size="15" /> {{ calibration.phase === 'starting' ? 'Starting…' : 'Start live
-                                calibration' }}
+                                <Antenna :size="15" /> {{
+                                    calibration.phase === 'starting' ?
+                                        'Starting…' :
+                                        'Start live calibration'
+                                }}
                             </button>
                         </div>
                     </div>
@@ -1914,9 +1930,11 @@ onUnmounted(() => {
                         <div class="panel calibration-actions-panel">
                             <div class="calibration-actions-copy">
                                 <b>{{ calibration.isSaved ? 'Antenna delays saved' : 'Unsaved antenna-delay adjustment'
-                                }}</b>
-                                <p>{{ calibration.message || 'Move the slider and use the live distance reading as
-                                    feedback.' }}</p>
+                                    }}</b>
+                                <p>{{
+                                    calibration.message ||
+                                    'Move the slider and use the live distance reading as feedback.'
+                                    }}</p>
                             </div>
                             <div class="calibration-actions">
                                 <button class="button primary" :disabled="calibration.operationBusy || !connected"
@@ -1968,9 +1986,11 @@ onUnmounted(() => {
                                 :title="device.status?.ranging ? 'Stop ranging before saving configuration' : ble.runtime.connected ? 'Disconnect Bluetooth before saving configuration' : ''"
                                 :disabled="!connected || !dirty || savingConfig || device.status?.ranging || ble.runtime.connected"
                                 @click="saveSettings">
-                                <Save :size="15" :class="{ spinning: savingConfig }" /> {{ savingConfig ? 'Saving…' :
-                                'Save
-                                configuration' }}
+                                <Save :size="15" :class="{ spinning: savingConfig }" /> {{
+                                    savingConfig ?
+                                        'Saving…' :
+                                        'Save configuration'
+                                }}
                             </button>
                         </div>
                     </div>
@@ -2269,9 +2289,13 @@ onUnmounted(() => {
                             </button>
                             <button class="button" :class="ble.runtime.enabled ? 'danger-ghost' : 'primary'"
                                 :disabled="!connected || !ble.supported || ble.action !== ''" @click="toggleBle">
-                                <Power :size="15" /> {{ ble.action ? 'Updating…' : ble.runtime.enabled ? 'Disable
-                                Bluetooth' : 'Enable
-                                Bluetooth' }}
+                                <Power :size="15" /> {{
+                                    ble.action ?
+                                        'Updating…' :
+                                        ble.runtime.enabled ?
+                                            'Disable Bluetooth' :
+                                            'Enable Bluetooth'
+                                }}
                             </button>
                         </div>
                     </div>
@@ -2307,9 +2331,12 @@ onUnmounted(() => {
                                     <Link2 />
                                 </div>
                                 <div class="metric-value" :class="bleConnectedCount ? 'good' : ''">{{ bleConnectedCount
-                                }} / 8</div>
-                                <div class="metric-foot">{{ ble.runtime.connected ? 'Peer connections are maintained
-                                    automatically' : 'No active peer links' }}</div>
+                                    }} / 8</div>
+                                <div class="metric-foot">{{
+                                    ble.runtime.connected ?
+                                        'Peer connections are maintained automatically' :
+                                        'No active peer links'
+                                }}</div>
                             </div>
                             <div class="metric-card">
                                 <div class="metric-top"><span>REPRESENTATIVE MTU</span>
@@ -2346,8 +2373,9 @@ onUnmounted(() => {
                                                 <td><span class="tag"
                                                         :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{
                                                             getBlePeerStatus(peerId) ?
-                                                                blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) : 'Not
-                                                        checked' }}</span></td>
+                                                                blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) :
+                                                                'Notchecked'
+                                                        }}</span></td>
                                                 <td>{{ getBlePeerStatus(peerId)?.connected ?
                                                     getBlePeerStatus(peerId)?.mtu : '—' }}</td>
                                                 <td><small v-if="bleConnectionFailureText(getBlePeerStatus(peerId))"
@@ -2716,13 +2744,13 @@ onUnmounted(() => {
                                 <div><span>BLE messages sent</span><b>{{ device.stats?.bleMessagesSent ?? '—' }}</b>
                                 </div>
                                 <div><span>BLE messages received</span><b>{{ device.stats?.bleMessagesReceived ?? '—'
-                                }}</b></div>
+                                        }}</b></div>
                                 <div><span>BLE TX errors</span><b>{{ device.stats?.bleTxErrors ?? '—' }}</b></div>
                                 <div><span>BLE RX errors</span><b>{{ device.stats?.bleRxErrors ?? '—' }}</b></div>
                                 <div><span>BLE connection failures</span><b>{{ device.stats?.bleConnectionFailures ??
                                     '—' }}</b></div>
                                 <div><span>BLE RX queue overflows</span><b>{{ device.stats?.bleRxQueueOverflows ?? '—'
-                                }}</b></div>
+                                        }}</b></div>
                                 <div><span>BLE event queue overflows</span><b>{{ device.stats?.bleEventQueueOverflows ??
                                     '—' }}</b>
                                 </div>
@@ -2748,7 +2776,7 @@ onUnmounted(() => {
                                 </div>
                                 <div><span>BLE mode</span><b>{{ ['IDLE', 'HUB',
                                     'PERIPHERAL'][device.diagnostics?.bleMode ?? 0] ??
-                                    'Unknown' }}</b></div>
+                                        'Unknown' }}</b></div>
                                 <div><span>BLE enabled</span><b>{{ device.diagnostics?.bleEnabled ? 'Yes' : 'No' }}</b>
                                 </div>
                                 <div><span>BLE advertising / scanning</span><b>{{ device.diagnostics?.bleAdvertising ?
@@ -2772,7 +2800,7 @@ onUnmounted(() => {
                                 <div><span>Last error peer</span><b>{{ device.lastError?.peerId || '—' }}</b></div>
                                 <div><span>Last error context</span><b>{{ device.lastError?.context ?
                                     hex(device.lastError.context, 8) :
-                                    '—' }}</b></div>
+                                        '—' }}</b></div>
                                 <div><span>Last error monotonic time</span><b>{{ device.lastError?.time ?? '—' }} µs</b>
                                 </div>
                             </div>
@@ -2809,7 +2837,7 @@ onUnmounted(() => {
                                 </p>
                             </div>
                             <span class="tag neutral">{{ traceBusy ? 'Reading…' : `${traceRecords.length} retained`
-                            }}</span>
+                                }}</span>
                         </div>
                         <div v-if="traceError" class="empty-state">Could not read device trace: {{ traceError }}</div>
                         <div v-else-if="traceRecords.length" class="event-log">
@@ -2915,9 +2943,11 @@ onUnmounted(() => {
                     </div>
                 </section>
             </div>
-            <footer class="footer"><span><span class="dot" :class="{ online: connected }" /> {{ connected ? 'USB CDC
-                    session active'
-                    : 'Waiting for USB device' }}</span><span>Protocol spec v2.0 <i>·</i> wire v1 <i>·</i> USB CDC
+            <footer class="footer"><span><span class="dot" :class="{ online: connected }" /> {{ 
+            connected ? 
+            'USB CDC session active' : 
+            'Waiting for USB device' 
+            }}</span><span>Protocol spec v2.0 <i>·</i> wire v1 <i>·</i> USB CDC
                     115200 <i>·</i>
                     D3KM 0.2.0</span>
             </footer>
