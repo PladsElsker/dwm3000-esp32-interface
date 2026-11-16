@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "d3kble"
+version = "0.1.0"
+description = "Python host API for ESP32-C3/DWM3000 device management and communications"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = ["pyserial>=3.5"]
+
+[project.optional-dependencies]
+dev = ["pytest>=7.4"]
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["d3kble*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
