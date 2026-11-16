@@ -1637,7 +1637,7 @@ async function drainDeviceEvents() {
 }
 
 onMounted(async () => {
-    loadConfigPresets();
+    await loadConfigPresets();
     await refreshPorts();
     unlisten = await listen<FrameEvent>('uwb-event', e => handleEvent(e.payload));
     eventDrainTimer = window.setInterval(() => { void drainDeviceEvents(); }, 50);
@@ -1678,8 +1678,8 @@ type ConfigPresetData = {
 };
 type ConfigPreset = { id: string; name: string; updatedAt: string; config: ConfigPresetData };
 const CONFIG_PRESETS_KEY = 'd3km.configuration-presets.v1';
-const CONFIG_PRESET_FORMAT = 'd3km-configuration-preset';
-const CONFIG_PRESET_VERSION = 1;
+const CONFIG_SET_FORMAT = 'd3km-configuration-set';
+const CONFIG_SET_VERSION = 1;
 const configPresets = ref<ConfigPreset[]>([]);
 const selectedConfigPresetId = ref('');
 const presetName = ref('');
@@ -1717,31 +1717,50 @@ function clonePresetData(): ConfigPresetData {
         bleConfig, blePeers: bleConfig.peers.join(', ')
     };
 }
-function loadConfigPresets() {
+function parseStoredConfigPresets(raw: string): ConfigPreset[] {
+    const parsed = JSON.parse(raw);
+    if (!Array.isArray(parsed)) throw new Error('The saved configuration set must be a JSON array.');
+    return parsed.filter((item: any) =>
+        item && typeof item.id === 'string' && typeof item.name === 'string' &&
+        item.config && typeof item.config === 'object' &&
+        item.config.bleConfig && Array.isArray(item.config.bleConfig.peers) &&
+        typeof item.config.blePeers === 'string'
+    );
+}
+async function loadConfigPresets() {
     try {
-        const raw = localStorage.getItem(CONFIG_PRESETS_KEY);
-        const parsed = raw ? JSON.parse(raw) : [];
-        configPresets.value = Array.isArray(parsed) ? parsed.filter((item: any) =>
-            item && typeof item.id === 'string' && typeof item.name === 'string' &&
-            item.config && typeof item.config === 'object' &&
-            item.config.bleConfig && Array.isArray(item.config.bleConfig.peers) &&
-            typeof item.config.blePeers === 'string'
-        ) : [];
-    } catch {
-        configPresets.value = [];
-        error.value = 'Saved configuration presets could not be read from this browser.';
+        const saved = await invoke<string | null>('load_config_presets');
+        if (saved !== null) {
+            configPresets.value = parseStoredConfigPresets(saved);
+            return;
+        }
+
+        // One-time migration from the previous WebView-local implementation.
+        // Keep the old key untouched until the app-data write succeeds.
+        let legacy: string | null = null;
+        try { legacy = localStorage.getItem(CONFIG_PRESETS_KEY); } catch { /* localStorage may be unavailable */ }
+        if (legacy) {
+            configPresets.value = parseStoredConfigPresets(legacy);
+            if (configPresets.value.length && await persistConfigPresets()) {
+                notice.value = 'Your saved configuration presets were migrated to persistent app storage.';
+            }
+        } else {
+            configPresets.value = [];
+        }
+    } catch (e: any) {
+        error.value = `Could not load the saved configuration set: ${String(e)}`;
     }
 }
-function persistConfigPresets() {
+async function persistConfigPresets(): Promise<boolean> {
     try {
-        localStorage.setItem(CONFIG_PRESETS_KEY, JSON.stringify(configPresets.value));
+        await invoke('save_config_presets', { presetsJson: JSON.stringify(configPresets.value) });
         return true;
     } catch (e: any) {
-        error.value = `Could not persist configuration presets in this browser: ${String(e)}`;
+        error.value = `Could not persist the configuration set in the application data directory: ${String(e)}`;
         return false;
     }
 }
-function saveConfigPreset() {
+async function saveConfigPreset() {
     const name = presetName.value.trim();
     if (!name) { error.value = 'Enter a name for this configuration preset.'; return; }
     if (name.length > 80) { error.value = 'Preset names must be 80 characters or fewer.'; return; }
@@ -1761,7 +1780,7 @@ function saveConfigPreset() {
     configPresets.value = existing
         ? configPresets.value.map(item => item.id === existing.id ? preset : item)
         : [...configPresets.value, preset];
-    if (!persistConfigPresets()) { configPresets.value = previous; return; }
+    if (!await persistConfigPresets()) { configPresets.value = previous; return; }
     selectedConfigPresetId.value = preset.id;
     presetName.value = preset.name;
     notice.value = existing ? `Updated preset “${name}”. Device NVS was not changed.` : `Saved preset “${name}”. Device NVS was not changed.`;
@@ -1783,7 +1802,7 @@ function applyConfigPreset(id = selectedConfigPresetId.value) {
     notice.value = `Loaded preset “${preset.name}” into the editor. Save configuration to apply it to the board and NVS.`;
     error.value = '';
 }
-function deleteConfigPreset() {
+async function deleteConfigPreset() {
     const preset = configPresets.value.find(item => item.id === selectedConfigPresetId.value);
     if (!preset) return;
     const previous = configPresets.value;
@@ -1793,24 +1812,30 @@ function deleteConfigPreset() {
     presetName.value = '';
     notice.value = `Deleted preset “${preset.name}”.`;
 }
-function exportConfigPreset() {
-    const preset = configPresets.value.find(item => item.id === selectedConfigPresetId.value);
-    if (!preset) { error.value = 'Select a saved preset to export.'; return; }
-    const payload = { format: CONFIG_PRESET_FORMAT, version: CONFIG_PRESET_VERSION, ...preset };
+function exportConfigSet() {
+    if (!configPresets.value.length) {
+        error.value = 'There are no saved configurations to export.';
+        return;
+    }
+    const payload = {
+        format: CONFIG_SET_FORMAT,
+        version: CONFIG_SET_VERSION,
+        exportedAt: new Date().toISOString(),
+        presets: configPresets.value
+    };
     const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' });
     const url = URL.createObjectURL(blob);
     const anchor = document.createElement('a');
     anchor.href = url;
-    anchor.download = `d3km-config-${preset.name.trim().toLowerCase().replace(/[^a-z0-9]+/g, '-') || 'preset'}.json`;
+    anchor.download = `d3km-configuration-set-${new Date().toISOString().slice(0, 10)}.json`;
     anchor.click();
     URL.revokeObjectURL(url);
-    notice.value = `Exported “${preset.name}”. Share the JSON file with others.`;
+    notice.value = `Exported the complete configuration set (${configPresets.value.length} preset(s)).`;
 }
-function validateImportedPreset(value: any): ConfigPreset {
-    if (!value || value.format !== CONFIG_PRESET_FORMAT || value.version !== CONFIG_PRESET_VERSION ||
-        typeof value.name !== 'string' || !value.name.trim() || value.name.length > 80 ||
+function validateImportedPreset(value: any, index: number): ConfigPreset {
+    if (!value || typeof value.name !== 'string' || !value.name.trim() || value.name.length > 80 ||
         !value.config || typeof value.config !== 'object') {
-        throw new Error('This is not a supported D3KM configuration preset file.');
+        throw new Error(`Configuration ${index + 1} has an invalid name or is missing its settings.`);
     }
     const c = value.config;
     const n = (key: string) => Number(c[key]);
@@ -1860,7 +1885,7 @@ function validateImportedPreset(value: any): ConfigPreset {
         throw new Error('The imported Bluetooth peer list does not match its settings.');
     }
     return {
-        id: `import-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+        id: `import-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`,
         name: value.name.trim(), updatedAt: typeof value.updatedAt === 'string' ? value.updatedAt : new Date().toISOString(),
         config: {
             deviceId: n('deviceId'), panId: String(c.panId).toUpperCase().padStart(4, '0'),
@@ -1870,27 +1895,43 @@ function validateImportedPreset(value: any): ConfigPreset {
         }
     };
 }
-async function importConfigPreset(event: Event) {
+async function importConfigSet(event: Event) {
     const input = event.target as HTMLInputElement;
     const file = input.files?.[0];
     if (!file) return;
     try {
-        if (file.size > 256 * 1024) throw new Error('Preset files must be 256 KB or smaller.');
-        const preset = validateImportedPreset(JSON.parse(await file.text()));
-        const duplicateName = configPresets.value.some(item => item.name.toLocaleLowerCase() === preset.name.toLocaleLowerCase());
-        const imported = duplicateName
-            ? { ...preset, id: `import-${Date.now()}-${Math.random().toString(36).slice(2)}`, name: `${preset.name} (imported)` }
-            : preset;
+        if (file.size > 2 * 1024 * 1024) throw new Error('Configuration set files must be 2 MB or smaller.');
+        const value = JSON.parse(await file.text());
+        if (!value || value.format !== CONFIG_SET_FORMAT || value.version !== CONFIG_SET_VERSION ||
+            !Array.isArray(value.presets) || value.presets.length > 1000) {
+            throw new Error('This is not a supported D3KM configuration set. Export the full configuration set from D3KM.');
+        }
+        const importedPresets = value.presets.map((preset: any, index: number) => validateImportedPreset(preset, index));
+        if (!importedPresets.length) throw new Error('The configuration set does not contain any presets.');
+
+        // Import is additive. Existing configurations are never overwritten.
+        const usedNames = new Set(configPresets.value.map(item => item.name.toLocaleLowerCase()));
+        const additions = importedPresets.map((preset, index) => {
+            const originalName = preset.name;
+            let name = originalName;
+            let suffix = 1;
+            while (usedNames.has(name.toLocaleLowerCase())) {
+                suffix += 1;
+                name = `${originalName} (imported${suffix > 2 ? ` ${suffix - 1}` : ''})`;
+            }
+            usedNames.add(name.toLocaleLowerCase());
+            return { ...preset, id: `import-${Date.now()}-${index}-${Math.random().toString(36).slice(2)}`, name };
+        });
+
         const previous = configPresets.value;
-        configPresets.value = [...previous, imported];
-        if (!persistConfigPresets()) { configPresets.value = previous; return; }
-        selectedConfigPresetId.value = imported.id;
-        presetName.value = imported.name;
-        applyConfigPreset(imported.id);
-        notice.value = `Imported preset “${imported.name}”. It is loaded in the editor; the board has not been changed.`;
+        configPresets.value = [...previous, ...additions];
+        if (!await persistConfigPresets()) { configPresets.value = previous; return; }
+        selectedConfigPresetId.value = '';
+        presetName.value = '';
+        notice.value = `Imported ${additions.length} configuration(s) into your saved set. Existing configurations were preserved; select one from the dropdown to load it.`;
         error.value = '';
     } catch (e: any) {
-        error.value = `Could not import configuration preset: ${String(e)}`;
+        error.value = `Could not import configuration set: ${String(e)}`;
     } finally {
         input.value = '';
     }
@@ -2382,13 +2423,13 @@ async function importConfigPreset(event: Event) {
                             </label>
                             <div class="preset-actions">
                                 <button class="button primary" @click="saveConfigPreset"><Save :size="14" /> {{ configPresets.some(p => p.id === selectedConfigPresetId) ? 'Update preset' : 'Save as preset' }}</button>
-                                <button class="button secondary" :disabled="!selectedConfigPresetId" @click="exportConfigPreset"><Download :size="14" /> Export</button>
-                                <button class="button secondary" @click="presetImportInput?.click()"><Inbox :size="14" /> Import</button>
+                                <button class="button secondary"  :disabled="!configPresets.length" @click="exportConfigSet"><Download :size="14" /> Export set</button>
+                                <button class="button secondary" @click="presetImportInput?.click()"><Inbox :size="14" /> Import set</button>
                                 <button class="button danger-ghost" :disabled="!selectedConfigPresetId" @click="deleteConfigPreset"><Trash2 :size="14" /> Delete</button>
-                                <input ref="presetImportInput" class="preset-file-input" type="file" accept=".json,application/json" @change="importConfigPreset" />
+                                <input ref="presetImportInput" class="preset-file-input" type="file" accept=".json,application/json" @change="importConfigSet" />
                             </div>
                         </div>
-                        <p class="hint preset-hint">Presets are stored locally in this browser. Export a JSON file to share it, or import one from someone else. Loading a preset only updates this editor; use “Save configuration” below to send settings to the board and commit them to NVS.</p>
+                        <p class="hint preset-hint">Presets are stored in the application's persistent data directory. Export the entire saved configuration set as one JSON file, or import another set without overwriting your own. Loading a preset only updates this editor; use “Save configuration” below to send settings to the board and commit them to NVS.</p>
                     </div>
 
                     <fieldset class="config-fields" :disabled="savingConfig">
