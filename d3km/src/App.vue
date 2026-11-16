@@ -1010,7 +1010,7 @@ async function navigate(tab: string) {
         try { await endAntennaCalibrationSession(); }
         catch (e: any) { error.value = `Could not stop live calibration cleanly: ${String(e)}`; return; }
     }
-    if (tab !== 'overview' && !connected.value) {
+    if (tab !== 'overview' && tab !== 'configuration' && !connected.value) {
         active.value = 'overview';
         return;
     }
@@ -1902,7 +1902,7 @@ async function importConfigPreset(event: Event) {
                 <button :class="{ selected: active === 'overview' }" @click="navigate('overview')">
                     <LayoutDashboard />Overview
                 </button>
-                <button :class="{ selected: active === 'configuration' }" :disabled="!connected"
+                <button :class="{ selected: active === 'configuration' }"
                     @click="navigate('configuration')">
                     <Settings2 />Configuration<span v-if="dirty" class="dirty-dot" />
                 </button>
