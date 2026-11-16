@@ -2398,11 +2398,10 @@ async function importConfigSet(event: Event) {
                         <div>
                             <div class="eyebrow">DEVICE SETTINGS</div>
                             <h1>Configuration</h1>
-                            <p>Configure shared node identity, UWB ranging and Bluetooth transport. Settings are saved
-                                together.</p>
+                            <p>Edit node identity, UWB ranging and Bluetooth settings. Save reusable configurations in the library below, or apply the current settings to the connected board.</p>
                         </div>
                         <div class="heading-actions">
-                            <span v-if="dirty" class="unsaved"><span class="dirty-dot" /> Unsaved edits</span>
+                            <span v-if="dirty" class="unsaved"><span class="dirty-dot" /> Unsaved device changes</span>
                             <button class="button secondary" :disabled="!connected || savingConfig" @click="refreshAll">
                                 <RefreshCw :size="15" /> Reload from board
                             </button>
