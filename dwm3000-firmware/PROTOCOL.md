@@ -884,10 +884,10 @@ Request payload: 0 bytes — `(empty)`
 
 ~~~text
 0000  06 01 02 34 12 38 02 14 04 01 02 0C 01 01 04 0D
-0010  E0 2E 01 03 09 02 01 01 01 01 05 01 03 45 7F 00
+0010  E0 2E 01 03 09 02 01 01 01 01 05 01 0D 8B 9E 00
 ~~~
 
-Response payload: 20 bytes — `01 02 0C 00 00 00 0D E0 2E 00 00 09 02 00 00 00 00 00 01 03`
+Response payload: 20 bytes — `01 02 0C 00 00 00 0D E0 2E 00 00 09 02 00 00 00 00 00 01 0D`
 
 ### 0x40 — UWB_SLEEP
 
@@ -997,7 +997,7 @@ Response payload: 0 bytes — `(empty)`
 
 Replaces and persists the configured BLE peer-ID list. An empty list selects open mode; a non-empty list is an allow-list.
 
-**Request payload:** count:u8 followed by count peer_id:u16 values. count is 0–8. IDs must be unique and in the range 1–65534. BLE must be disabled so the manager can reconfigure peer policy.
+**Request payload:** count:u8 followed by count peer_id:u16 values. count is 0–8. IDs must be unique and in the range 1–65534. Changing the peer list requires BLE to be disabled; an update that changes peer policy while BLE is enabled returns BUSY.
 
 **Successful response payload:** Empty. Persistence failure returns INTERNAL; a BLE configuration state that prevents the update returns BUSY.
 
