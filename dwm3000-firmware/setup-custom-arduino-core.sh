@@ -214,7 +214,7 @@ export PATH="$PYTHON_ENV_DIR/bin:$PATH"
 log "Synchronizing the builder's Arduino-ESP32 source branch"
 (
   cd "$BUILDER_DIR"
-  AR_SOURCE_BRANCH="$ARDUINO_BRANCH" BUILDER_IDF_BRANCH="$BUILDER_IDF_BRANCH" bash ./tools/install-arduino.sh
+  AR_SOURCE_BRANCH="$ARDUINO_BRANCH" env IDF_BRANCH="$BUILDER_IDF_BRANCH" bash ./tools/install-arduino.sh
 )
 BUILDER_ARDUINO_DIR="$BUILDER_DIR/components/arduino"
 if [[ -e "$BUILDER_ARDUINO_DIR" ]]; then
@@ -247,7 +247,6 @@ log "Building and installing the ESP32-C3 libraries with the BLE configuration"
 (
   cd "$BUILDER_DIR"
   export AR_SOURCE_BRANCH="$ARDUINO_BRANCH"
-  export BUILDER_IDF_BRANCH="$BUILDER_IDF_BRANCH"
   bash ./build.sh -A "$ARDUINO_BRANCH" -I "$BUILDER_IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
 )
 BUILDER_ARDUINO_SHA_AFTER="$(git -C "$BUILDER_DIR/components/arduino" rev-parse HEAD)"
