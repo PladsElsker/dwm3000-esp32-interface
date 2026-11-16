@@ -25,21 +25,32 @@ TYPE_REQUEST, TYPE_RESPONSE, TYPE_EVENT = 1, 2, 3
 MAX_PAYLOAD = 500
 
 OPS = {
+    # Common commands, diagnostics, subscriptions, and time sync (0x01–0x0B).
     "ping": 0x01, "get-info": 0x02, "status": 0x03, "stats": 0x04,
-    "clear-stats": 0x05, "last-error": 0x06, "get-config": 0x10, "get-saved-config": 0x17,
-    "set-config": 0x11, "reset-config": 0x13,
-    "apply-save-config": 0x18,
-    "time-sync": 0x14, "get-ant-delays": 0x15, "set-ant-delays": 0x16,
-    "set-role": 0x20, "set-targets": 0x21, "get-targets": 0x22,
-    "set-schedule": 0x23, "get-schedule": 0x24, "start": 0x25,
+    "clear-stats": 0x05, "last-error": 0x06, "diagnostics": 0x07,
+    "trace": 0x08, "subscribe": 0x09, "unsubscribe": 0x0A, "time-sync": 0x0B,
+
+    # Configuration and antenna calibration (0x10–0x17).
+    "get-config": 0x10, "set-config": 0x11, "reset-config": 0x12,
+    "get-saved-config": 0x13, "apply-save-config": 0x14,
+    "get-ant-delays": 0x15, "set-ant-delays": 0x16,
+
+    # UWB control and ranging operations (0x20–0x2A).
+    "set-role": 0x20, "get-targets": 0x21, "set-targets": 0x22,
+    "get-schedule": 0x23, "set-schedule": 0x24, "start": 0x25,
     "stop": 0x26, "range-once": 0x27, "cancel": 0x28,
-    "get-last": 0x30, "get-history": 0x31, "subscribe": 0x32,
-    "unsubscribe": 0x33, "diagnostics": 0x35,
-    "uwb-sleep": 0x40, "uwb-wake": 0x41, "system-sleep": 0x42,
-    "reboot": 0x43,
-    "set-peers": 0x50, "get-peers": 0x51, "start-ble": 0x52,
-    "stop-ble": 0x53, "peer-status": 0x56,
-    "send-to-peer": 0x57, "get-received-data": 0x58, "trace": 0x38,
+    "uwb-sleep": 0x29, "uwb-wake": 0x2A,
+
+    # UWB measurements and history (0x30–0x31).
+    "get-last": 0x30, "get-history": 0x31,
+
+    # System power and restart (0x40–0x41).
+    "system-sleep": 0x40, "reboot": 0x41,
+
+    # BLE peer management and messaging (0x50–0x56).
+    "get-peers": 0x50, "set-peers": 0x51, "start-ble": 0x52,
+    "stop-ble": 0x53, "peer-status": 0x54,
+    "send-to-peer": 0x55, "get-received-data": 0x56,
 }
 EVENT_NAMES = {0x80: "RANGE_RESULT", 0x81: "RANGE_FAILED", 0x82: "STATE_CHANGED",
                0x83: "ERROR", 0x84: "HISTORY_OVERRUN", 0x85: "DEVICE_READY",
@@ -400,7 +411,7 @@ def parse_args():
 
 
 def record_response(op: int, payload: bytes) -> object:
-    if op == 0x38:
+    if op == 0x08:
         if not payload:
             raise ValueError("trace payload is empty")
         count = payload[0]
@@ -479,7 +490,7 @@ def record_response(op: int, payload: bytes) -> object:
         if len(payload) > 16:
             result.update(decode_ble_config(payload[16:]))
         return result
-    if op == 0x17 and len(payload) >= 19:
+    if op == 0x13 and len(payload) >= 19:
         count = payload[17]
         base = 19 + count * 2
         if count > 16 or len(payload) < base:
@@ -496,14 +507,14 @@ def record_response(op: int, payload: bytes) -> object:
         if len(payload) > base:
             result.update(decode_ble_config(payload[base:]))
         return result
-    if op == 0x50 and len(payload) == 0:
+    if op == 0x51 and len(payload) == 0:
         return {"ok": True}
-    if op == 0x51 and payload:
+    if op == 0x50 and payload:
         count = payload[0]
         if len(payload) != 1 + count * 2:
             return {"parse_error": "peer list length mismatch"}
         return {"peers": list(struct.unpack_from("<" + "H" * count, payload, 1)) if count else []}
-    if op == 0x56 and len(payload) in (10, 14):
+    if op == 0x54 and len(payload) in (10, 14):
         result = {"state": BLE_PEER_STATE_NAMES.get(payload[0], payload[0]),
                   "mode": BLE_MODE_NAMES.get(payload[1], payload[1]), "enabled": bool(payload[2]),
                   "advertising": bool(payload[3]), "scanning": bool(payload[4]),
@@ -513,9 +524,9 @@ def record_response(op: int, payload: bytes) -> object:
             (result["last_failure_reason"], result["last_failure_stage"],
              result["last_failure_detail"]) = struct.unpack_from("<BBh", payload, 10)
         return result
-    if op == 0x57 and len(payload) == 2:
+    if op == 0x55 and len(payload) == 2:
         return {"message_id": struct.unpack("<H", payload)[0], "accepted_for_transmission": True}
-    if op == 0x58 and len(payload) >= 4:
+    if op == 0x56 and len(payload) >= 4:
         message_id, length = struct.unpack_from("<HH", payload)
         data = payload[4:]
         if len(data) != length:
@@ -527,9 +538,9 @@ def record_response(op: int, payload: bytes) -> object:
         return {"message_id": message_id, "length": length, "data_hex": data.hex(), "data_utf8": text}
     if op in (0x15, 0x16) and len(payload) == 4:
         return {"tx_antenna_delay": struct.unpack_from("<H", payload)[0], "rx_antenna_delay": struct.unpack_from("<H", payload, 2)[0]}
-    if op == 0x22 and payload:
+    if op == 0x21 and payload:
         cnt = payload[0]; return {"targets": list(struct.unpack_from("<" + "H" * cnt, payload, 1)) if cnt else []}
-    if op == 0x24 and len(payload) == 18:
+    if op == 0x23 and len(payload) == 18:
         period, timeout = struct.unpack_from("<IH", payload); estimated, avg = struct.unpack_from("<II", payload, 10)
         return {"requested_period_ms": period, "timeout_ms": timeout, "retries": payload[6],
                 "target_count": payload[7], "queued_jobs": payload[8], "transaction_active": bool(payload[9]),
@@ -546,13 +557,13 @@ def record_response(op: int, payload: bytes) -> object:
         records = []
         for i in range(count): records.append(decode_record(payload[start + i * RECORD_SIZE:start + (i + 1) * RECORD_SIZE]))
         return {**meta, "records": records}
-    if op == 0x32 or op == 0x33:
+    if op == 0x09 or op == 0x0A:
         return {"subscription_mask": struct.unpack("<H", payload)[0] if len(payload) >= 2 else None}
-    if op == 0x40:
+    if op == 0x29:
         return {"sleep_kind": "IDLE_RC standby (not DWM3000 deep sleep)" if payload and payload[0] == 1 else "unknown"}
-    if op == 0x41:
+    if op == 0x2A:
         return {"already_awake": bool(payload and payload[0] == 1)}
-    if op == 0x42 and len(payload) == 4:
+    if op == 0x40 and len(payload) == 4:
         return {"sleep_ms": struct.unpack("<I", payload)[0]}
     if len(payload) == 0:
         return {"ok": True}

@@ -4,7 +4,7 @@ use serialport::{SerialPort, SerialPortInfo};
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager};
 
-const OP_UNSUBSCRIBE: u8 = 0x33;
+const OP_UNSUBSCRIBE: u8 = 0x0A;
 // Event bits 0–14 cover the UWB and BLE events defined by firmware Protocol v2.0.
 const ALL_EVENT_MASK_LE: [u8; 2] = [0xFF, 0x7F];
 

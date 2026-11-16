@@ -86,21 +86,38 @@ for bad_peers in ([1, 1], [0], [65535], list(range(1, 10))):
     else:
         raise AssertionError(f"invalid peer list accepted: {bad_peers}")
 
-# Manual peer connection commands are not part of the V2.1 command surface.
+# Command opcodes are grouped by command family and ordered canonically.
 assert "ble-connect" not in module.OPS
 assert "ble-disconnect" not in module.OPS
 assert "save-config" not in module.OPS
-assert 0x12 not in module.OPS.values()
-assert 0x54 not in module.OPS.values()
-assert 0x55 not in module.OPS.values()
+assert module.OPS["diagnostics"] == 0x07
+assert module.OPS["trace"] == 0x08
+assert module.OPS["subscribe"] == 0x09
+assert module.OPS["unsubscribe"] == 0x0A
+assert module.OPS["time-sync"] == 0x0B
+assert module.OPS["get-config"] == 0x10
+assert module.OPS["set-config"] == 0x11
+assert module.OPS["reset-config"] == 0x12
+assert module.OPS["get-saved-config"] == 0x13
+assert module.OPS["apply-save-config"] == 0x14
+assert module.OPS["get-ant-delays"] == 0x15
+assert module.OPS["set-ant-delays"] == 0x16
+assert module.OPS["get-targets"] == 0x21
+assert module.OPS["set-targets"] == 0x22
+assert module.OPS["get-schedule"] == 0x23
+assert module.OPS["set-schedule"] == 0x24
+assert module.OPS["uwb-sleep"] == 0x29
+assert module.OPS["uwb-wake"] == 0x2A
+assert module.OPS["system-sleep"] == 0x40
+assert module.OPS["reboot"] == 0x41
+assert module.OPS["get-peers"] == 0x50
+assert module.OPS["set-peers"] == 0x51
 assert module.OPS["start-ble"] == 0x52
 assert module.OPS["stop-ble"] == 0x53
-assert module.OPS["peer-status"] == 0x56
-assert module.OPS["trace"] == 0x38
+assert module.OPS["peer-status"] == 0x54
+assert module.OPS["send-to-peer"] == 0x55
+assert module.OPS["get-received-data"] == 0x56
 assert "ble-trace" not in module.OPS
-assert 0x36 not in module.OPS.values()
-assert 0x37 not in module.OPS.values()
-assert 0x59 not in module.OPS.values()
 
 # GET_TRACE merges all three record types in global insertion order.
 ble_record = struct.pack("<IBHBBhBB", 12345, 12, 3, 6, 4, -13, 1, 0b00010001)
@@ -109,7 +126,7 @@ detail_record = struct.pack("<IIIIIIIIHHBBBBBBBB", 34567, 1, 2, 3, 4, 5, 6, 7, 8
 trace_payload = (bytes([3]) + bytes([2]) + struct.pack("<I", 100) + bytes([13]) + ble_record +
                  bytes([0]) + struct.pack("<I", 101) + bytes([28]) + radio_record +
                  bytes([1]) + struct.pack("<I", 102) + bytes([44]) + detail_record)
-trace = module.record_response(0x38, trace_payload)
+trace = module.record_response(0x08, trace_payload)
 assert trace["count"] == 3
 assert [record["sequence"] for record in trace["records"]] == [100, 101, 102]
 assert [record["source"] for record in trace["records"]] == ["ble_lifecycle", "uwb_radio", "uwb_tx_start"]
@@ -118,7 +135,7 @@ assert trace["records"][1]["status_before"] == 1
 assert trace["records"][2]["failure_hint"] == 1
 for invalid_trace in (trace_payload + bytes([0]), bytes([1, 9, 0, 0, 0, 13, 0])):
     try:
-        module.record_response(0x38, invalid_trace)
+        module.record_response(0x08, invalid_trace)
     except ValueError:
         pass
     else:
@@ -193,13 +210,13 @@ assert module.BLE_PEER_STATE_NAMES[4] == "connecting"
 assert module.BLE_PEER_STATE_NAMES[5] == "handshaking"
 assert module.BLE_PEER_STATE_NAMES[6] == "backoff"
 legacy_peer_status_payload = bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23)
-legacy_peer_status = module.record_response(0x56, legacy_peer_status_payload)
+legacy_peer_status = module.record_response(0x54, legacy_peer_status_payload)
 assert legacy_peer_status["state"] == "backoff"
 assert "last_failure_reason" not in legacy_peer_status
 
 peer_status_payload = (bytes([6, 1, 1, 0, 1, 0]) + struct.pack("<HH", 8, 23) +
                         struct.pack("<BBh", 6, 4, -5))
-peer_status = module.record_response(0x56, peer_status_payload)
+peer_status = module.record_response(0x54, peer_status_payload)
 assert peer_status["state"] == "backoff"
 assert peer_status["peer_id"] == 8
 assert peer_status["enabled"] is True

@@ -68,9 +68,18 @@ An error response normally has an empty payload. Commands that sleep or reboot s
 
 ## Commands
 
-The command sections below define the command contract. Each example gives a complete on-wire request frame and a representative successful response frame as hexadecimal octets. Hexadecimal whitespace is for readability; send the octets as bytes. Frames include the COBS encoding, CRC-16/CCITT-FALSE, and final `00` delimiter. The examples use wire version `1`, request sequence `0x1234`, request type `1`, response type `2`, and response flags `0` (`OK`). Each response echoes the request sequence and opcode. Each exchange is an independent example; real hosts should manage sequence numbers per transport.
+Opcodes are assigned by command family. Values within each family follow the resource and operation order shown below.
 
-Read-operation responses contain illustrative sample state, not fixed constants. The example payloads show the exact byte layout and how to decode it; live counters, timestamps, configurations, sequence numbers, and diagnostics vary by device and time. Multi-byte fields are little-endian unless a field is explicitly signed or otherwise specified. Error responses use the shared response error codes and normally have an empty payload.
+| Opcode range | Command family |
+|---|---|
+| `0x01–0x0B` | Common commands, diagnostics, subscriptions, and time sync |
+| `0x10–0x17` | Configuration and antenna calibration |
+| `0x20–0x2A` | UWB control, ranging, and radio power |
+| `0x30–0x31` | UWB measurements and history |
+| `0x40–0x41` | System power and restart |
+| `0x50–0x56` | BLE peer management and messaging |
+
+Event opcodes use the separate `0x80–0x8E` range.
 
 ### 0x01 — PING
 
@@ -88,7 +97,7 @@ Checks that the command handler is responsive on the transport carrying the requ
 0000  06 01 01 34 12 01 01 01 03 CC D1 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -97,6 +106,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 4 bytes — `50 4F 4E 47`
+
 
 ### 0x02 — GET_INFO
 
@@ -114,7 +124,7 @@ Returns firmware identity, host protocol version, radio type, and supported BLE 
 0000  06 01 01 34 12 02 01 01 03 10 4A 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -125,6 +135,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 21 bytes — `01 00 00 01 01 00 10 00 01 01 F4 01 01 07 08 08 F0 01 00 01 01`
+
 
 ### 0x03 — GET_STATUS
 
@@ -142,7 +153,7 @@ Reads the current UWB runtime state and aggregate BLE link state.
 0000  06 01 01 34 12 03 01 01 03 A4 3C 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -153,6 +164,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 27 bytes — `01 01 01 00 02 01 40 E2 01 00 14 00 00 00 01 00 00 00 01 01 01 02 00 00 01 F7 00`
+
 
 ### 0x04 — GET_STATISTICS
 
@@ -170,7 +182,7 @@ Reads cumulative UWB, host transport, and BLE counters.
 0000  06 01 01 34 12 04 01 01 03 89 6D 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -183,6 +195,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 68 bytes — `78 00 00 00 03 00 00 00 00 00 00 00 02 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00`
+
 
 ### 0x05 — CLEAR_STATISTICS
 
@@ -200,7 +213,7 @@ Resets the UWB, host transport, and BLE statistic counters.
 0000  06 01 01 34 12 05 01 01 03 3D 1B 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -208,7 +221,8 @@ Request payload: 0 bytes — `(empty)`
 0000  06 01 02 34 12 05 01 01 03 BF C3 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
+
 
 ### 0x06 — GET_LAST_ERROR
 
@@ -226,7 +240,7 @@ Returns the most recent recorded error across the system/protocol, UWB/radio, an
 0000  06 01 01 34 12 06 01 01 03 E1 80 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -236,6 +250,147 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 16 bytes — `02 03 15 CD 5B 07 00 00 00 00 02 00 00 00 00 00`
+
+
+### 0x07 — GET_DIAGNOSTICS
+
+Reads a compact snapshot of UWB radio registers/counters and BLE runtime queue state.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 29 bytes. UWB fields (22 bytes): current_radio_status:u32, live_sys_status:u32, malformed_radio_frames:u32, rx_errors:u32, tx_errors:u32, radio_state:u8, radio_standby:u8. BLE fields (7 bytes): ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8. live_sys_status is zero when the radio is unavailable or in standby.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 07 01 01 03 55 F6 00
+~~~
+
+Request payload: 0 bytes — (empty)
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 07 02 1D 01 01 01 01 01 01 01 01
+0010  01 01 01 01 01 01 01 01 01 01 01 01 01 01 03 01
+0020  01 03 01 02 01 03 C4 61 00
+~~~
+
+Response payload: 29 bytes — `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 01 00 01 02 00 00`
+
+
+### 0x08 — GET_TRACE
+
+Reads the retained UWB radio, detailed UWB TX-start, and BLE lifecycle trace records as one globally ordered stream.
+
+**Request payload:** Empty.
+
+**Successful response payload:** count:u8 followed by count tagged records. Each record is type:u8, sequence:u32, record_size:u8, record_data[record_size]. Type 0 is UWB radio (28 data bytes), type 1 is detailed UWB TX-start (44 data bytes), and type 2 is BLE lifecycle (13 data bytes). Records are ordered oldest-first by a shared insertion sequence. The response contains the newest contiguous suffix of complete records that fits the 500-byte payload. Reading does not clear the volatile trace buffers.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 08 01 01 03 BB 22 00
+~~~
+
+Request payload: 0 bytes — (empty)
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 08 02 14 04 01 02 0C 01 01 04 0D
+0010  E0 2E 01 03 09 02 01 01 01 01 05 01 0D 7E 5E 00
+~~~
+
+Response payload: 20 bytes — `01 02 0C 00 00 00 0D E0 2E 00 00 09 02 00 00 00 00 00 01 0D`
+
+
+### 0x09 — SUBSCRIBE
+
+Adds event types to the subscription mask for the transport that carries the request.
+
+**Request payload:** subscription_mask:u16. Bit 0 selects event opcode 0x80; each successive bit selects the next event opcode. Bits 0–14 select event opcodes 0x80–0x8E.
+
+**Successful response payload:** The resulting active subscription mask:u16. Subscription state is independent for USB CDC and UART1.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 09 02 02 05 FF 7F 7B 52 00
+~~~
+
+Request payload: 2 bytes — `FF 7F`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 09 02 02 05 FF 7F 3F 7F 00
+~~~
+
+Response payload: 2 bytes — `FF 7F`
+
+
+### 0x0A — UNSUBSCRIBE
+
+Removes event types from the subscription mask for the transport that carries the request.
+
+**Request payload:** subscription_mask:u16. Each set bit clears the corresponding event subscription. The example assumes the transport's active mask is `0x7FFF` before the request.
+
+**Successful response payload:** The resulting active subscription mask:u16.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 0A 02 02 02 04 03 D8 DC 00
+~~~
+
+Request payload: 2 bytes — `04 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 0A 02 02 05 FB 7F 1B 7D 00
+~~~
+
+Response payload: 2 bytes — `FB 7F`
+
+
+### 0x0B — TIME_SYNC
+
+Sets the epoch offset used for measurement epoch timestamps. Monotonic timestamps remain available independently of synchronization.
+
+**Request payload:** Host Unix time in microseconds as u64.
+
+**Successful response payload:** 16 bytes: device_monotonic_us:u64 at command handling, followed by epoch_offset_us:i64 represented in two's-complement little-endian form.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 0B 02 08 01 07 60 0C BA 99 2A 06
+0010  03 61 0C 00
+~~~
+
+Request payload: 8 bytes — `00 60 0C BA 99 2A 06 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 0B 02 10 05 15 CD 5B 07 01 01 01
+0010  08 EB 92 B0 B2 99 2A 06 03 6D 75 00
+~~~
+
+Response payload: 16 bytes — `15 CD 5B 07 00 00 00 00 EB 92 B0 B2 99 2A 06 00`
+
 
 ### 0x10 — GET_CONFIG
 
@@ -253,7 +408,7 @@ Reads the active configuration in RAM. Operating state is reported separately by
 0000  06 01 01 34 12 10 01 01 03 DF BC 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -264,6 +419,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 32 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 00 A0 00 A0 00 50 00 00 E8 03 88 13 01 E8 03 00`
+
 
 ### 0x11 — SET_CONFIG
 
@@ -291,9 +447,10 @@ Request payload: 25 bytes — `01 00 CA DE 05 01 40 01 40 00 A0 00 A0 00 50 00 0
 0000  06 01 02 34 12 11 01 01 03 E9 12 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x13 — RESET_CONFIG
+
+### 0x12 — RESET_CONFIG
 
 Clears saved configuration in NVS and restores compiled defaults. The firmware stops BLE, disables UWB ranging, clears targets, and reinitializes the radio.
 
@@ -306,46 +463,79 @@ Clears saved configuration in NVS and restores compiled defaults. The firmware s
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 13 01 01 03 03 27 00
+0000  06 01 01 34 12 12 01 01 03 B7 51 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 13 01 01 03 81 FF 00
+0000  06 01 02 34 12 12 01 01 03 35 89 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x14 — TIME_SYNC
 
-Sets the epoch offset used for measurement epoch timestamps. Monotonic timestamps remain available independently of synchronization.
+### 0x13 — GET_SAVED_CONFIG
 
-**Request payload:** Host Unix time in microseconds as u64.
+Reads the complete configuration snapshot stored in non-volatile storage (NVS), including the saved UWB role, targets, UWB boot auto-start setting, and BLE configuration.
 
-**Successful response payload:** 16 bytes: device_monotonic_us:u64 at command handling, followed by epoch_offset_us:i64 represented in two's-complement little-endian form.
+**Request payload:** Empty.
+
+**Successful response payload:** A UWB snapshot of 19 + 2 × target_count bytes, followed by the BLE configuration extension. Base fields: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8, saved_role:u8, target_count:u8, target_ids:u16[target_count], auto_start:u8.
 
 **Wire example:**
 
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 14 02 08 01 07 60 0C BA 99 2A 06
-0010  03 D2 28 00
+0000  06 01 01 34 12 13 01 01 03 03 27 00
 ~~~
 
-Request payload: 8 bytes — `00 60 0C BA 99 2A 06 00`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 14 02 10 05 15 CD 5B 07 01 01 01
-0010  08 EB 92 B0 B2 99 2A 06 03 9E 2B 00
+0000  06 01 02 34 12 13 02 2B 02 01 09 CA DE 05 01 40
+0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
+0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
+0030  02 02 03 03 0A D9 00
 ~~~
 
-Response payload: 16 bytes — `15 CD 5B 07 00 00 00 00 EB 92 B0 B2 99 2A 06 00`
+Response payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
+
+
+### 0x14 — APPLY_SAVE_CONFIG
+
+Validates, persists, and applies a complete configuration snapshot. The request describes the intended saved UWB and BLE configuration.
+
+**Request payload:** The 19 + 2 × target_count-byte UWB snapshot followed by the BLE configuration extension. The base fields and BLE extension are defined under Configuration state and persistence.
+
+**Successful response payload:** Empty. Returns BAD_ARGUMENT for invalid values or lengths, BUSY while ranging, a transaction, queued one-shot jobs, or a connected BLE peer prevent applying the snapshot, and INTERNAL if persistence fails. The active radio profile is reinitialized after applying the snapshot.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 14 02 2B 02 01 09 CA DE 05 01 40
+0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
+0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
+0030  02 02 03 03 7C AE 00
+~~~
+
+Request payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 14 01 01 03 AC AE 00
+~~~
+
+Response payload: 0 bytes — (empty)
+
 
 ### 0x15 — GET_ANTENNA_DELAYS
 
@@ -363,7 +553,7 @@ Reads the active TX and RX antenna delay values.
 0000  06 01 01 34 12 15 01 01 02 9A 01 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -372,6 +562,7 @@ Request payload: 0 bytes — `(empty)`
 ~~~
 
 Response payload: 4 bytes — `01 40 01 40`
+
 
 ### 0x16 — SET_ANTENNA_DELAYS
 
@@ -397,67 +588,10 @@ Request payload: 4 bytes — `06 40 06 40`
 0000  06 01 02 34 12 16 01 01 03 C4 43 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x17 — GET_SAVED_CONFIG
 
-Reads the complete configuration snapshot stored in non-volatile storage (NVS), including the saved UWB role, targets, UWB boot auto-start setting, and BLE configuration.
-
-**Request payload:** Empty.
-
-**Successful response payload:** A UWB snapshot of 19 + 2 × target_count bytes, followed by the BLE configuration extension. Base fields: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8, saved_role:u8, target_count:u8, target_ids:u16[target_count], auto_start:u8.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 17 01 01 03 F2 ED 00
-~~~
-
-Request payload: 0 bytes — `(empty)`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 17 02 2B 02 01 09 CA DE 05 01 40
-0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
-0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
-0030  02 02 03 03 E1 DE 00
-~~~
-
-Response payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
-
-### 0x18 — APPLY_SAVE_CONFIG
-
-Validates, persists, and applies a complete configuration snapshot. The request describes the intended saved UWB and BLE configuration.
-
-**Request payload:** The 19 + 2 × target_count-byte UWB snapshot followed by the BLE configuration extension. The base fields and BLE extension are defined under Configuration state and persistence.
-
-**Successful response payload:** Empty. Returns BAD_ARGUMENT for invalid values or lengths, BUSY while ranging, a transaction, queued one-shot jobs, or a connected BLE peer prevent applying the snapshot, and INTERNAL if persistence fails. The active radio profile is reinitialized after applying the snapshot.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 18 02 2B 02 01 09 CA DE 05 01 40
-0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
-0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
-0030  02 02 03 03 41 A6 00
-~~~
-
-Request payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 18 01 01 03 9E E1 00
-~~~
-
-Response payload: 0 bytes — `(empty)`
-
-### 0x19 — SAVE_ANTENNA_DELAYS
+### 0x17 — SAVE_ANTENNA_DELAYS
 
 Persists the currently active TX and RX antenna delay values in NVS. Other runtime configuration fields are not included in this operation.
 
@@ -470,18 +604,19 @@ Persists the currently active TX and RX antenna delay values in NVS. Other runti
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 19 01 01 03 A8 4F 00
+0000  06 01 01 34 12 17 01 01 03 F2 ED 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 19 02 04 07 01 40 01 40 F8 C0 00
+0000  06 01 02 34 12 17 02 04 07 01 40 01 40 E9 5E 00
 ~~~
 
 Response payload: 4 bytes — `01 40 01 40`
+
 
 ### 0x20 — SET_ROLE
 
@@ -499,7 +634,7 @@ Sets the UWB role and disables ranging while the role changes. Queued one-shot j
 0000  06 01 01 34 12 20 02 01 04 01 A8 92 00
 ~~~
 
-Request payload: 1 byte — `01`
+Request payload: 1 bytes — `01`
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -507,37 +642,10 @@ Request payload: 1 byte — `01`
 0000  06 01 02 34 12 20 01 01 03 B4 48 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x21 — SET_TARGETS
 
-Replaces the runtime UWB target list. In initiator role the list contains ranging destinations. In responder role a non-empty list is an allow-list of initiator IDs.
-
-**Request payload:** count:u8 followed by count target_id:u16 values. count is 0–16. IDs must be unique, nonzero, not 0xFFFF, and different from the local device ID.
-
-**Successful response payload:** The resulting list in the same count:u8, target_ids:u16[] format. Returns BUSY while a UWB transaction is active.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 21 02 05 03 02 02 02 03 03 C6 43
-0010  00
-~~~
-
-Request payload: 5 bytes — `02 02 00 03 00`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 21 02 05 03 02 02 02 03 03 59 46
-0010  00
-~~~
-
-Response payload: 5 bytes — `02 02 00 03 00`
-
-### 0x22 — GET_TARGETS
+### 0x21 — GET_TARGETS
 
 Reads the runtime UWB target list.
 
@@ -550,10 +658,39 @@ Reads the runtime UWB target list.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 22 01 01 03 5E 7D 00
+0000  06 01 01 34 12 21 01 01 03 82 E6 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 21 02 05 03 02 02 02 03 03 59 46
+0010  00
+~~~
+
+Response payload: 5 bytes — `02 02 00 03 00`
+
+
+### 0x22 — SET_TARGETS
+
+Replaces the runtime UWB target list. In initiator role the list contains ranging destinations. In responder role a non-empty list is an allow-list of initiator IDs.
+
+**Request payload:** count:u8 followed by count target_id:u16 values. count is 0–16. IDs must be unique, nonzero, not 0xFFFF, and different from the local device ID.
+
+**Successful response payload:** The resulting list in the same count:u8, target_ids:u16[] format. Returns BUSY while a UWB transaction is active.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 22 02 05 03 02 02 02 03 03 82 6E
+0010  00
+~~~
+
+Request payload: 5 bytes — `02 02 00 03 00`
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -564,34 +701,8 @@ Request payload: 0 bytes — `(empty)`
 
 Response payload: 5 bytes — `02 02 00 03 00`
 
-### 0x23 — SET_UWB_SCHEDULE
 
-Sets the runtime per-target ranging interval, transaction timeout, and retry count.
-
-**Request payload:** period_ms:u32, transaction_timeout_ms:u16, retries:u8. Valid ranges are 20–60000 ms, 50–5000 ms, and 0–5 respectively.
-
-**Successful response payload:** Empty.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 23 02 07 02 64 01 01 02 78 04 01
-0010  EA E4 00
-~~~
-
-Request payload: 7 bytes — `64 00 00 00 78 00 01`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 23 01 01 03 68 D3 00
-~~~
-
-Response payload: 0 bytes — `(empty)`
-
-### 0x24 — GET_UWB_SCHEDULE
+### 0x23 — GET_UWB_SCHEDULE
 
 Reads the active ranging schedule and scheduler workload estimate.
 
@@ -604,19 +715,48 @@ Reads the active ranging schedule and scheduler workload estimate.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 24 01 01 03 C7 5A 00
+0000  06 01 01 34 12 23 01 01 03 EA 0B 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 24 02 12 02 64 01 01 02 78 03 01
-0010  02 01 02 FA 01 01 02 50 01 01 01 02 53 00
+0000  06 01 02 34 12 23 02 12 02 64 01 01 02 78 03 01
+0010  02 01 02 FA 01 01 02 50 01 01 03 29 42 00
 ~~~
 
 Response payload: 18 bytes — `64 00 00 00 78 00 01 02 00 00 FA 00 00 00 50 00 00 00`
+
+
+### 0x24 — SET_UWB_SCHEDULE
+
+Sets the runtime per-target ranging interval, transaction timeout, and retry count.
+
+**Request payload:** period_ms:u32, transaction_timeout_ms:u16, retries:u8. Valid ranges are 20–60000 ms, 50–5000 ms, and 0–5 respectively.
+
+**Successful response payload:** Empty.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 24 02 07 02 64 01 01 02 78 04 01
+0010  57 CD 00
+~~~
+
+Request payload: 7 bytes — `64 00 00 00 78 00 01`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 24 01 01 03 45 82 00
+~~~
+
+Response payload: 0 bytes — (empty)
+
 
 ### 0x25 — START_RANGING
 
@@ -634,7 +774,7 @@ Enables scheduled UWB ranging using the configured role, target list, and schedu
 0000  06 01 01 34 12 25 01 01 03 73 2C 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -642,7 +782,8 @@ Request payload: 0 bytes — `(empty)`
 0000  06 01 02 34 12 25 01 01 03 F1 F4 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
+
 
 ### 0x26 — STOP_RANGING
 
@@ -660,7 +801,7 @@ Disables scheduled ranging, stops an active radio transaction, and cancels queue
 0000  06 01 01 34 12 26 01 01 03 AF B7 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -668,7 +809,8 @@ Request payload: 0 bytes — `(empty)`
 0000  06 01 02 34 12 26 01 01 03 2D 6F 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
+
 
 ### 0x27 — RANGE_ONCE
 
@@ -696,6 +838,7 @@ Request payload: 2 bytes — `02 00`
 
 Response payload: 2 bytes — `07 00`
 
+
 ### 0x28 — CANCEL_OPERATION
 
 Cancels a queued or active one-shot ranging job.
@@ -720,7 +863,62 @@ Request payload: 2 bytes — `07 00`
 0000  06 01 02 34 12 28 01 01 03 77 CD 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
+
+
+### 0x29 — UWB_SLEEP
+
+Stops ranging and puts the DWM3000 radio into IDLE_RC standby. Queued one-shot jobs are cancelled.
+
+**Request payload:** Empty. The command returns BUSY while a UWB transaction is active.
+
+**Successful response payload:** One byte: sleep_kind:u8. The current firmware returns 1 for IDLE_RC standby.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 29 01 01 03 41 63 00
+~~~
+
+Request payload: 0 bytes — (empty)
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 29 02 01 04 01 A1 F2 00
+~~~
+
+Response payload: 1 bytes — `01`
+
+
+### 0x2A — UWB_WAKE
+
+Wakes or reinitializes the DWM3000 radio and reapplies its radio profile.
+
+**Request payload:** Empty.
+
+**Successful response payload:** One byte: 0 when the radio was woken/reinitialized, 1 when it was already awake.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 2A 01 01 03 9D F8 00
+~~~
+
+Request payload: 0 bytes — (empty)
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 2A 02 01 01 03 52 0C 00
+~~~
+
+Response payload: 1 bytes — `00`
+
 
 ### 0x30 — GET_LAST_RANGE
 
@@ -749,6 +947,7 @@ Request payload: 2 bytes — `02 00`
 ~~~
 
 Response payload: 29 bytes — `01 2A 00 00 00 02 00 15 CD 5B 07 00 00 00 00 40 42 0E BA 99 2A 06 00 D2 04 00 00 00 00`
+
 
 ### 0x31 — GET_HISTORY
 
@@ -782,166 +981,8 @@ Request payload: 8 bytes — `11 00 00 00 02 00 FF FF`
 
 Response payload: 70 bytes — `0A 00 00 00 16 00 00 00 13 00 00 00 00 02 12 00 00 00 02 00 15 CD 5B 07 00 00 00 00 40 42 0E BA 99 2A 06 00 D2 04 00 00 00 00 13 00 00 00 03 00 E7 CD 5B 07 00 00 00 00 1E 43 0E BA 99 2A 06 00 29 09 00 00 00 00`
 
-### 0x32 — SUBSCRIBE
 
-Adds event types to the subscription mask for the transport that carries the request.
-
-**Request payload:** subscription_mask:u16. Bit 0 selects event opcode 0x80; each successive bit selects the next event opcode. Bits 0–14 select event opcodes 0x80–0x8E.
-
-**Successful response payload:** The resulting active subscription mask:u16. Subscription state is independent for USB CDC and UART1.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 32 02 02 05 FF 7F 55 BE 00
-~~~
-
-Request payload: 2 bytes — `FF 7F`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 32 02 02 05 FF 7F 11 93 00
-~~~
-
-Response payload: 2 bytes — `FF 7F`
-
-### 0x33 — UNSUBSCRIBE
-
-Removes event types from the subscription mask for the transport that carries the request.
-
-**Request payload:** subscription_mask:u16. Each set bit clears the corresponding event subscription. The example assumes the transport's active mask is `0x7FFF` before the request.
-
-**Successful response payload:** The resulting active subscription mask:u16.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 33 02 02 02 04 03 B6 BB 00
-~~~
-
-Request payload: 2 bytes — `04 00`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 33 02 02 05 FB 7F 75 1A 00
-~~~
-
-Response payload: 2 bytes — `FB 7F`
-
-### 0x35 — GET_DIAGNOSTICS
-
-Reads a compact snapshot of UWB radio registers/counters and BLE runtime queue state.
-
-**Request payload:** Empty.
-
-**Successful response payload:** 29 bytes. UWB fields (22 bytes): current_radio_status:u32, live_sys_status:u32, malformed_radio_frames:u32, rx_errors:u32, tx_errors:u32, radio_state:u8, radio_standby:u8. BLE fields (7 bytes): ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8. live_sys_status is zero when the radio is unavailable or in standby.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 35 01 01 03 D4 37 00
-~~~
-
-Request payload: 0 bytes — `(empty)`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 35 02 1D 01 01 01 01 01 01 01 01
-0010  01 01 01 01 01 01 01 01 01 01 01 01 01 01 03 01
-0020  01 03 01 02 01 03 05 8F 00
-~~~
-
-Response payload: 29 bytes — `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 01 00 01 02 00 00`
-
-### 0x38 — GET_TRACE
-
-Reads the retained UWB radio, detailed UWB TX-start, and BLE lifecycle trace records as one globally ordered stream.
-
-**Request payload:** Empty.
-
-**Successful response payload:** count:u8 followed by count tagged records. Each record is type:u8, sequence:u32, record_size:u8, record_data[record_size]. Type 0 is UWB radio (28 data bytes), type 1 is detailed UWB TX-start (44 data bytes), and type 2 is BLE lifecycle (13 data bytes). Records are ordered oldest-first by a shared insertion sequence. The response contains the newest contiguous suffix of complete records that fits the 500-byte payload. Reading does not clear the volatile trace buffers.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 38 01 01 03 52 0E 00
-~~~
-
-Request payload: 0 bytes — `(empty)`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 38 02 14 04 01 02 0C 01 01 04 0D
-0010  E0 2E 01 03 09 02 01 01 01 01 05 01 0D 8B 9E 00
-~~~
-
-Response payload: 20 bytes — `01 02 0C 00 00 00 0D E0 2E 00 00 09 02 00 00 00 00 00 01 0D`
-
-### 0x40 — UWB_SLEEP
-
-Stops ranging and puts the DWM3000 radio into IDLE_RC standby. Queued one-shot jobs are cancelled.
-
-**Request payload:** Empty. The command returns BUSY while a UWB transaction is active.
-
-**Successful response payload:** One byte: sleep_kind:u8. The current firmware returns 1 for IDLE_RC standby.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 40 01 01 03 E4 C9 00
-~~~
-
-Request payload: 0 bytes — `(empty)`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 40 02 01 04 01 01 43 00
-~~~
-
-Response payload: 1 byte — `01`
-
-### 0x41 — UWB_WAKE
-
-Wakes or reinitializes the DWM3000 radio and reapplies its radio profile.
-
-**Request payload:** Empty.
-
-**Successful response payload:** One byte: 0 when the radio was woken/reinitialized, 1 when it was already awake.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 41 01 01 03 50 BF 00
-~~~
-
-Request payload: 0 bytes — `(empty)`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 41 02 01 01 03 71 F9 00
-~~~
-
-Response payload: 1 byte — `00`
-
-### 0x42 — SYSTEM_SLEEP
+### 0x40 — SYSTEM_SLEEP
 
 Stops UWB ranging and enters ESP32 timer-woken deep sleep. The ESP32 restarts after the timer expires.
 
@@ -954,7 +995,7 @@ Stops UWB ranging and enters ESP32 timer-woken deep sleep. The ESP32 restarts af
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 42 02 04 03 60 EA 01 03 07 8B 00
+0000  06 01 01 34 12 40 02 04 03 60 EA 01 03 A1 04 00
 ~~~
 
 Request payload: 4 bytes — `60 EA 00 00`
@@ -962,12 +1003,13 @@ Request payload: 4 bytes — `60 EA 00 00`
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 42 02 04 03 60 EA 01 03 FD F3 00
+0000  06 01 02 34 12 40 02 04 03 60 EA 01 03 5B 7C 00
 ~~~
 
 Response payload: 4 bytes — `60 EA 00 00`
 
-### 0x43 — REBOOT
+
+### 0x41 — REBOOT
 
 Restarts the ESP32 after acknowledging the request.
 
@@ -980,47 +1022,21 @@ Restarts the ESP32 after acknowledging the request.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 43 01 01 03 38 52 00
+0000  06 01 01 34 12 41 01 01 03 50 BF 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 43 01 01 03 BA 8A 00
+0000  06 01 02 34 12 41 01 01 03 D2 67 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x50 — SET_PEERS
 
-Replaces and persists the configured BLE peer-ID list. An empty list selects open mode; a non-empty list is an allow-list.
-
-**Request payload:** count:u8 followed by count peer_id:u16 values. count is 0–8. IDs must be unique and in the range 1–65534. Changing the peer list requires BLE to be disabled; an update that changes peer policy while BLE is enabled returns BUSY.
-
-**Successful response payload:** Empty. Persistence failure returns INTERNAL; a BLE configuration state that prevents the update returns BUSY.
-
-**Wire example:**
-
-**On-wire request frame (host → device; complete COBS frame):**
-
-~~~text
-0000  06 01 01 34 12 50 02 05 03 02 02 02 03 03 3E 03
-0010  00
-~~~
-
-Request payload: 5 bytes — `02 02 00 03 00`
-
-**Sample response frame (device → host; complete COBS frame):**
-
-~~~text
-0000  06 01 02 34 12 50 01 01 03 C1 0A 00
-~~~
-
-Response payload: 0 bytes — `(empty)`
-
-### 0x51 — GET_PEERS
+### 0x50 — GET_PEERS
 
 Reads the configured BLE peer-ID list.
 
@@ -1033,19 +1049,48 @@ Reads the configured BLE peer-ID list.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 51 01 01 03 F7 A4 00
+0000  06 01 01 34 12 50 01 01 03 43 D2 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 51 02 05 03 02 02 02 03 03 82 ED
+0000  06 01 02 34 12 50 02 05 03 02 02 02 03 03 A1 06
 0010  00
 ~~~
 
 Response payload: 5 bytes — `02 02 00 03 00`
+
+
+### 0x51 — SET_PEERS
+
+Replaces and persists the configured BLE peer-ID list. An empty list selects open mode; a non-empty list is an allow-list.
+
+**Request payload:** count:u8 followed by count peer_id:u16 values. count is 0–8. IDs must be unique and in the range 1–65534. Changing the peer list requires BLE to be disabled; an update that changes peer policy while BLE is enabled returns BUSY.
+
+**Successful response payload:** Empty. Persistence failure returns INTERNAL; a BLE configuration state that prevents the update returns BUSY.
+
+**Wire example:**
+
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 51 02 05 03 02 02 02 03 03 1D E8
+0010  00
+~~~
+
+Request payload: 5 bytes — `02 02 00 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 51 01 01 03 75 7C 00
+~~~
+
+Response payload: 0 bytes — (empty)
+
 
 ### 0x52 — START_BLE
 
@@ -1063,7 +1108,7 @@ Starts the configured BLE role for the current runtime session.
 0000  06 01 01 34 12 52 01 01 03 2B 3F 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -1071,7 +1116,8 @@ Request payload: 0 bytes — `(empty)`
 0000  06 01 02 34 12 52 01 01 03 A9 E7 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
+
 
 ### 0x53 — STOP_BLE
 
@@ -1089,7 +1135,7 @@ Stops BLE for the current runtime session and disconnects active peers.
 0000  06 01 01 34 12 53 01 01 03 9F 49 00
 ~~~
 
-Request payload: 0 bytes — `(empty)`
+Request payload: 0 bytes — (empty)
 
 **Sample response frame (device → host; complete COBS frame):**
 
@@ -1097,9 +1143,10 @@ Request payload: 0 bytes — `(empty)`
 0000  06 01 02 34 12 53 01 01 03 1D 91 00
 ~~~
 
-Response payload: 0 bytes — `(empty)`
+Response payload: 0 bytes — (empty)
 
-### 0x56 — GET_PEER_STATUS
+
+### 0x54 — GET_PEER_STATUS
 
 Reads the runtime status of a specific BLE peer.
 
@@ -1112,7 +1159,7 @@ Reads the runtime status of a specific BLE peer.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 56 02 02 02 02 03 09 0D 00
+0000  06 01 01 34 12 54 02 02 02 02 03 49 86 00
 ~~~
 
 Request payload: 2 bytes — `02 00`
@@ -1120,13 +1167,14 @@ Request payload: 2 bytes — `02 00`
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 56 02 0E 04 03 01 01 04 01 01 02
-0010  02 F7 01 01 01 01 03 E8 FF 00
+0000  06 01 02 34 12 54 02 0E 04 03 01 01 04 01 01 02
+0010  02 F7 01 01 01 01 03 AB 0F 00
 ~~~
 
 Response payload: 14 bytes — `03 01 01 00 01 01 02 00 F7 00 00 00 00 00`
 
-### 0x57 — SEND_TO_PEER
+
+### 0x55 — SEND_TO_PEER
 
 Queues an application message for unicast delivery to one connected BLE peer.
 
@@ -1139,8 +1187,8 @@ Queues an application message for unicast delivery to one connected BLE peer.
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 57 02 06 02 02 02 02 05 48 69 BD
-0010  53 00
+0000  06 01 01 34 12 55 02 06 02 02 02 02 05 48 69 37
+0010  8D 00
 ~~~
 
 Request payload: 6 bytes — `02 00 02 00 48 69`
@@ -1148,12 +1196,13 @@ Request payload: 6 bytes — `02 00 02 00 48 69`
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 57 02 02 02 2A 03 A2 EA 00
+0000  06 01 02 34 12 55 02 02 02 2A 03 E2 61 00
 ~~~
 
 Response payload: 2 bytes — `2A 00`
 
-### 0x58 — GET_RECEIVED_DATA
+
+### 0x56 — GET_RECEIVED_DATA
 
 Retrieves one complete unread application message from a BLE peer. Reading consumes the unread message and allows the remote sender to receive its final delivery result.
 
@@ -1166,7 +1215,7 @@ Retrieves one complete unread application message from a BLE peer. Reading consu
 **On-wire request frame (host → device; complete COBS frame):**
 
 ~~~text
-0000  06 01 01 34 12 58 02 04 02 02 02 2A 03 A8 1D 00
+0000  06 01 01 34 12 56 02 04 02 02 02 2A 03 B9 83 00
 ~~~
 
 Request payload: 4 bytes — `02 00 2A 00`
@@ -1174,8 +1223,8 @@ Request payload: 4 bytes — `02 00 2A 00`
 **Sample response frame (device → host; complete COBS frame):**
 
 ~~~text
-0000  06 01 02 34 12 58 02 06 02 2A 02 02 05 48 69 E3
-0010  F2 00
+0000  06 01 02 34 12 56 02 06 02 2A 02 02 05 48 69 17
+0010  CB 00
 ~~~
 
 Response payload: 6 bytes — `2A 00 02 00 48 69`
@@ -1237,9 +1286,11 @@ The maximum target count is 16. Target IDs must be unique, nonzero, not `0xFFFF`
 
 `RANGE_ONCE` is available in initiator role when the radio is ready and not in standby. The one-shot queue holds up to eight jobs. It returns a job ID; the eventual result or failure is stored in history and emitted as an event. `STOP_RANGING` stops ranging and cancels queued one-shot jobs. `CANCEL_OPERATION` cancels a queued or active one-shot job; an unknown job ID returns `NOT_FOUND`.
 
+
+
 ## Unified trace response
 
-GET_TRACE (0x38) returns a single record stream containing retained UWB radio, detailed UWB TX-start, and BLE lifecycle diagnostics. Its payload begins with count:u8. Each entry has a six-byte envelope—type:u8, sequence:u32, record_size:u8—followed by record_data[record_size]. The record data layouts are specified in the trace and BLE diagnostic sections below.
+GET_TRACE (0x08) returns a single record stream containing retained UWB radio, detailed UWB TX-start, and BLE lifecycle diagnostics. Its payload begins with count:u8. Each entry has a six-byte envelope—type:u8, sequence:u32, record_size:u8—followed by record_data[record_size]. The record data layouts are specified in the trace and BLE diagnostic sections below.
 
 A shared sequence orders records across all three trace sources. The response is ordered oldest-first and includes the newest contiguous suffix of complete records that fits the 500-byte host payload limit. No record is split. Trace buffers reside in RAM, survive reads without being cleared, and are cleared on reboot.
 

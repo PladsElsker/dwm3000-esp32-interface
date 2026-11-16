@@ -152,7 +152,7 @@ pub fn command(
 ) -> Result<Reply, String> {
     let packet = frame(1, seq, opcode, 0, payload);
     let timeout = match opcode {
-        0x11 | 0x13 | 0x18 | 0x41 => Duration::from_secs(5),
+        0x11 | 0x12 | 0x14 | 0x2A | 0x40 | 0x41 => Duration::from_secs(5),
         _ => Duration::from_millis(1800),
     };
 

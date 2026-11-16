@@ -87,26 +87,35 @@ Preferences preferences;
 
 // -------------------- Host command and event identifiers --------------------
 enum Opcode : uint8_t {
+  // 0x01–0x0B: Common commands, diagnostics, subscriptions, and time sync.
   OP_PING = 0x01, OP_GET_INFO = 0x02, OP_GET_STATUS = 0x03,
   OP_GET_STATISTICS = 0x04, OP_CLEAR_STATISTICS = 0x05, OP_GET_LAST_ERROR = 0x06,
-  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11,
-  OP_RESET_CONFIG = 0x13, OP_TIME_SYNC = 0x14,
+  OP_GET_DIAGNOSTICS = 0x07, OP_GET_TRACE = 0x08,
+  OP_SUBSCRIBE = 0x09, OP_UNSUBSCRIBE = 0x0A, OP_TIME_SYNC = 0x0B,
+
+  // 0x10–0x17: Configuration and antenna calibration.
+  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11, OP_RESET_CONFIG = 0x12,
+  OP_GET_SAVED_CONFIG = 0x13, OP_APPLY_SAVE_CONFIG = 0x14,
   OP_GET_ANTENNA_DELAYS = 0x15, OP_SET_ANTENNA_DELAYS = 0x16,
-  OP_GET_SAVED_CONFIG = 0x17, OP_APPLY_SAVE_CONFIG = 0x18,
-  OP_SAVE_ANTENNA_DELAYS = 0x19,
-  OP_SET_ROLE = 0x20, OP_SET_TARGETS = 0x21, OP_GET_TARGETS = 0x22,
-  OP_SET_UWB_SCHEDULE = 0x23, OP_GET_UWB_SCHEDULE = 0x24,
+  OP_SAVE_ANTENNA_DELAYS = 0x17,
+
+  // 0x20–0x2A: UWB role, target/schedule configuration, ranging, and radio power.
+  OP_SET_ROLE = 0x20, OP_GET_TARGETS = 0x21, OP_SET_TARGETS = 0x22,
+  OP_GET_UWB_SCHEDULE = 0x23, OP_SET_UWB_SCHEDULE = 0x24,
   OP_START_RANGING = 0x25, OP_STOP_RANGING = 0x26,
   OP_RANGE_ONCE = 0x27, OP_CANCEL_OPERATION = 0x28,
+  OP_UWB_SLEEP = 0x29, OP_UWB_WAKE = 0x2A,
+
+  // 0x30–0x31: UWB measurements and history.
   OP_GET_LAST_RANGE = 0x30, OP_GET_HISTORY = 0x31,
-  OP_SUBSCRIBE = 0x32, OP_UNSUBSCRIBE = 0x33,
-  OP_GET_DIAGNOSTICS = 0x35,
-  OP_GET_TRACE = 0x38,
-  OP_UWB_SLEEP = 0x40, OP_UWB_WAKE = 0x41,
-  OP_SYSTEM_SLEEP = 0x42, OP_REBOOT = 0x43,
-  OP_SET_PEERS = 0x50, OP_GET_PEERS = 0x51, OP_START_BLE = 0x52,
-  OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x56,
-  OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
+
+  // 0x40–0x41: ESP32 system power and restart.
+  OP_SYSTEM_SLEEP = 0x40, OP_REBOOT = 0x41,
+
+  // 0x50–0x56: BLE peer management and messaging.
+  OP_GET_PEERS = 0x50, OP_SET_PEERS = 0x51,
+  OP_START_BLE = 0x52, OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x54,
+  OP_SEND_TO_PEER = 0x55, OP_GET_RECEIVED_DATA = 0x56,
   EV_RANGE_RESULT = 0x80, EV_RANGE_FAILED = 0x81,
   EV_STATE_CHANGED = 0x82, EV_ERROR = 0x83,
   EV_HISTORY_OVERRUN = 0x84, EV_DEVICE_READY = 0x85,
@@ -281,7 +290,7 @@ int32_t computedRangeMm = -1;
 uint8_t computedRangeStatus = RANGE_INVALID;
 
 // Volatile-in-RAM diagnostic trace. No text is printed on USB CDC/UART because
-// both transports carry binary protocol frames. Read records with GET_TRACE (0x38).
+// both transports carry binary protocol frames. Read records with GET_TRACE (0x08).
 static constexpr uint8_t RADIO_TRACE_CAPACITY = 8;
 static constexpr uint8_t RADIO_TRACE_RECORD_BYTES = 28;
 static constexpr uint8_t RADIO_TRACE_DETAIL_CAPACITY = 8;
