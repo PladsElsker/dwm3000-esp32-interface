@@ -227,7 +227,15 @@ if [[ -e "$BUILDER_IDF_DIR" ]]; then
   check_git_origin "$BUILDER_IDF_DIR" "espressif/esp-idf"
   [[ -z "$(git -C "$BUILDER_IDF_DIR" status --porcelain --untracked-files=no)" ]] || \
     fail "The builder's ESP-IDF checkout has tracked changes: $BUILDER_IDF_DIR"
+  idf_branch="$(git -C "$BUILDER_IDF_DIR" branch --show-current)"
+  [[ "$idf_branch" == "$BUILDER_IDF_BRANCH" ]] || \
+    fail "The builder's ESP-IDF checkout is on '$idf_branch', expected '$BUILDER_IDF_BRANCH'. Move '$BUILDER_IDF_DIR' aside and rerun."
+else
+  log "Cloning ESP-IDF ($BUILDER_IDF_BRANCH)"
+  git clone --branch "$BUILDER_IDF_BRANCH" "$IDF_REPO" "$BUILDER_IDF_DIR"
 fi
+log "Initializing ESP-IDF submodules"
+git -C "$BUILDER_IDF_DIR" submodule update --init --recursive
 
 BUILDER_ARDUINO_SHA="$(git -C "$BUILDER_ARDUINO_DIR" rev-parse HEAD)"
 log "Aligning the manual Arduino core to builder source $BUILDER_ARDUINO_SHA"
@@ -243,11 +251,21 @@ CORE_SHA="$(git -C "$CORE_DIR" rev-parse HEAD)"
 log "Installing the Arduino-ESP32 platform tools"
 "$PYTHON" "$CORE_DIR/tools/get.py"
 
-log "Building and installing the ESP32-C3 libraries with the BLE configuration"
+log "Installing ESP-IDF tools and the Python environment for ESP32-C3"
 (
   cd "$BUILDER_DIR"
-  export AR_SOURCE_BRANCH="$ARDUINO_BRANCH"
-  bash ./build.sh -A "$ARDUINO_BRANCH" -I "$BUILDER_IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
+  export IDF_PATH="$BUILDER_IDF_DIR"
+  "$IDF_PATH/install.sh" esp32c3
+  source "$IDF_PATH/export.sh"
+  command -v idf.py >/dev/null 2>&1 || \
+    fail "ESP-IDF export completed without adding idf.py to PATH."
+  idf.py --version
+
+  log "Updating ESP-IDF managed components"
+  ./tools/update-components.sh
+
+  log "Building and installing the ESP32-C3 libraries with the BLE configuration"
+  bash ./build.sh -s -A "$ARDUINO_BRANCH" -I "$BUILDER_IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
 )
 BUILDER_ARDUINO_SHA_AFTER="$(git -C "$BUILDER_DIR/components/arduino" rev-parse HEAD)"
 [[ "$CORE_SHA" == "$BUILDER_ARDUINO_SHA_AFTER" ]] || \
