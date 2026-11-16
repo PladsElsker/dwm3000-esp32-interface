@@ -1,11 +1,13 @@
 # ESP32-C3 + DWM3000 Firmware and Host Tools
 
-This directory contains the firmware project, the host-side protocol reference, a Python serial client and protocol tests. The firmware sketch and its embedded dependencies live in `UwbNode/`.
+This directory contains the firmware project, its development instructions, the host API specification, a Python serial client, and protocol tests. The firmware sketch and its embedded dependencies live in `UwbNode/`.
+
+The firmware README describes how to build, flash, wire, and test the firmware. `PROTOCOL.md` is the API contract for host applications; it is the single reference for command opcodes, payload layouts, responses, events, and BLE messaging.
 
 ## Repository contents
 
 - `UwbNode/` — Arduino CLI firmware for the Seeed XIAO ESP32-C3 and DWM3000
-- `PROTOCOL.md` — host command, event, frame and payload reference
+- `PROTOCOL.md` — normative host API specification with per-command request/response schemas, examples, events, and BLE wire formats
 - `pi_client.py` — Python command-line serial client
 - `requirements.txt` — Python host-client dependencies
 - `tests/` — host-side protocol tests
@@ -90,6 +92,6 @@ These tests exercise host-side protocol code; they do not replace a firmware bui
 
 ## Protocol development
 
-Read [PROTOCOL.md](PROTOCOL.md) before implementing or changing a host. Keep command IDs, event IDs, field widths, byte order, framing and delivery semantics synchronized across the firmware, D3KM and Python client. Update the protocol document in the same change as any wire-format change.
+Read [PROTOCOL.md](PROTOCOL.md) when implementing or changing a host. Keep command IDs, event IDs, field widths, byte order, framing and delivery semantics synchronized across the firmware, D3KM and Python client. Update this API specification in the same change as any wire-format change.
 
 For system-level orientation, see the [repository README](../README.md).

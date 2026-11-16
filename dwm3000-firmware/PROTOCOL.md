@@ -1,15 +1,25 @@
-# UWB Node Host Protocol V2.3
+# UWB Node Host Protocol v2.3
 
-This document defines the host command, event, and payload formats implemented by the UWB Node firmware. The protocol is available over UART1 and USB CDC. Binary frames use wire version `1`.
+This document is the host API reference for the UWB Node firmware. It defines the binary request, response, event, configuration, measurement, trace, and BLE message formats implemented by the firmware. The wire protocol version is 1.
 
-## Transport
+## Transports
 
-- UART1: 460800 baud, 8 data bits, no parity, 1 stop bit (8N1).
-- USB: native USB CDC; the USB line-coding baud value does not set a physical bit rate.
-- Both transports use the same binary frame format and command handlers.
-- Do not send or expect text diagnostics on either transport.
-- COBS-encoded frames are terminated by `0x00`. Bytes that do not form a valid frame are discarded.
-- All multibyte integer fields are little-endian unless explicitly stated otherwise.
+The host API is available over two independent serial transports. Both expose the same command opcodes, payload layouts, response codes, and event types.
+
+| Transport | Interface | Link settings |
+|---|---|---|
+| USB CDC | ESP32-C3 native USB Serial/JTAG CDC interface | Native USB CDC; the configured line-coding baud value does not set a physical UART bit rate |
+| UART1 | Hardware UART1 | 460800 baud, 8 data bits, no parity, one stop bit (8N1) |
+
+UART1 uses XIAO D6 / GPIO21 for TX and XIAO D7 / GPIO20 for RX. The firmware build configuration and board pin map are described in the firmware README.
+
+Each transport has its own receive framing buffer, response cache, and event subscription mask. A command response is sent on the same transport that received its request. USB CDC and UART1 share device configuration, ranging state, measurement history, statistics, and BLE state.
+
+Each transport caches its eight most recent command responses. A host can retry a request using the same sequence number, opcode, and payload. An exact duplicate request is answered from that transport's response cache. The caches and subscription masks are independent.
+
+Events are delivered independently to each subscribed transport. Subscription changes on USB CDC do not affect UART1, and vice versa. DEVICE_READY is sent once at boot on both transports, independent of subscription masks. A USB CDC disconnect clears the USB framing and subscription session after disconnect detection; the UART1 session remains independent.
+
+Both transports carry binary protocol frames only. They do not provide a text console or text diagnostics. COBS-encoded frames use a zero-byte delimiter. Bytes that do not form a valid frame are discarded. Multi-byte integer fields are little-endian unless a field is explicitly identified as signed or has another encoding.
 
 ## Frame format
 
@@ -58,58 +68,1324 @@ An error response normally has an empty payload. Commands that sleep or reboot s
 
 ## Commands
 
-Unless specified otherwise, the request payload is empty. Fields are encoded little-endian. A dash in the response column means an empty response payload.
+The command sections below are the command contract. Every example shows decoded payload fields for readability; JSON is documentation notation, not an on-wire encoding. The actual request and response payloads are binary byte sequences using the field widths and byte order specified in each section. Successful responses carry flags value 0 (OK). Error responses use the shared error codes and normally have an empty payload.
 
-| Opcode | Command | Request payload | Response payload |
-|---:|---|---|---|
-| `0x01` | `PING` | — | ASCII `PONG` (4 bytes) |
-| `0x02` | `GET_INFO` | — | `major:u8, minor:u8, patch:u8, protocol:u8, device_id:u16, max_targets:u8, history_capacity:u16, radio_type:u8, max_payload:u16, ble_supported:u8, ble_mode_mask:u8, max_ble_peers:u8, max_ble_connections:u8, max_ble_message_length:u16, max_ble_mtu:u16, ble_protocol_version:u8` (21 bytes); radio type `1` is DWM3000 |
-| `0x03` | `GET_STATUS` | — | 18-byte UWB status followed by 9-byte aggregate BLE status: `ble_mode:u8, ble_enabled:u8, any_peer_connected:u8, representative_peer_id:u16, advertising:u8, scanning:u8, representative_peer_mtu:u16` (27 bytes total) |
-| `0x04` | `GET_STATISTICS` | — | Seventeen `u32` counters: ten UWB/host counters followed by `ble_messages_sent, ble_messages_received, ble_tx_errors, ble_rx_errors, ble_connection_failures, ble_rx_queue_overflows, ble_event_queue_overflows` (68 bytes total) |
-| `0x05` | `CLEAR_STATISTICS` | — | —; clears UWB and BLE counters |
-| `0x06` | `GET_LAST_ERROR` | — | `subsystem:u8, code:u8, monotonic_us:u64, peer_id:u16, context:u32` (16 bytes) |
-| `0x10` | `GET_CONFIG` | — | 16-byte UWB config followed by the mandatory complete BLE configuration extension |
-| `0x11` | `SET_CONFIG` | 9-byte UWB config followed by the mandatory complete BLE configuration extension | — |
-| `0x13` | `RESET_CONFIG` | — | — |
-| `0x14` | `TIME_SYNC` | Host Unix time in microseconds `u64` | Device monotonic time at handling `u64`, then signed epoch offset encoded as `u64` |
-| `0x15` | `GET_ANTENNA_DELAYS` | — | `tx_delay:u16, rx_delay:u16` |
-| `0x16` | `SET_ANTENNA_DELAYS` | `tx_delay:u16, rx_delay:u16` | — |
-| `0x17` | `GET_SAVED_CONFIG` | — | Saved configuration snapshot in NVS; layout below |
-| `0x18` | `APPLY_SAVE_CONFIG` | Complete configuration snapshot; layout below | — |
-| `0x19` | `SAVE_ANTENNA_DELAYS` | — | Persisted `tx_delay:u16, rx_delay:u16` |
-| `0x20` | `SET_ROLE` | `role:u8`: idle `0`, initiator `1`, responder `2` | — |
-| `0x21` | `SET_TARGETS` | `count:u8`, then `count × target_id:u16` | `count:u8`, then target IDs |
-| `0x22` | `GET_TARGETS` | — | `count:u8`, then target IDs `u16` |
-| `0x23` | `SET_UWB_SCHEDULE` | `period_ms:u32, transaction_timeout_ms:u16, retries:u8` | — |
-| `0x24` | `GET_UWB_SCHEDULE` | — | `requested_period_ms:u32, timeout_ms:u16, retries:u8, target_count:u8, queued_jobs:u8, transaction_active:u8, estimated_effective_period_per_target_ms:u32, average_transaction_ms:u32` |
-| `0x25` | `START_RANGING` | — | — |
-| `0x26` | `STOP_RANGING` | — | — |
-| `0x27` | `RANGE_ONCE` | `target_id:u16` | `job_id:u16`; result is subsequently recorded in history and reported by event |
-| `0x28` | `CANCEL_OPERATION` | `job_id:u16` | — |
-| `0x30` | `GET_LAST_RANGE` | Target filter `u16` (`0xFFFF` means all targets) | `count:u8`, then `count × 28-byte measurement record` |
-| `0x31` | `GET_HISTORY` | `after_sample_seq:u32, max_records:u16, target_filter:u16` (`0xFFFF` means all targets) | `oldest_seq:u32, newest_seq:u32, next_cursor:u32, overrun:u8, count:u8`, then records |
-| `0x32` | `SUBSCRIBE` | Event bitmask `u16` | Active subscription mask `u16` |
-| `0x33` | `UNSUBSCRIBE` | Event bitmask `u16` | Active subscription mask `u16` |
-| `0x34` | `CLEAR_HISTORY` | — | — |
-| `0x35` | `GET_DIAGNOSTICS` | — | 22-byte UWB snapshot followed by `ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8` (29 bytes total) |
-| `0x38` | `GET_TRACE` | — | `count:u8`, then `count` tagged records in insertion order; each record is `type:u8, sequence:u32, record_size:u8, record_data[record_size]` |
-| `0x40` | `UWB_SLEEP` | — | `sleep_kind:u8`; `1` means radio `IDLE_RC` standby |
-| `0x41` | `UWB_WAKE` | — | `0` means woke/reinitialized; `1` means already awake |
-| `0x42` | `SYSTEM_SLEEP` | Timer duration in milliseconds `u32` | Accepted duration `u32`; ESP32 restarts after timer wake |
-| `0x43` | `REBOOT` | — | —; response is sent before restart |
-| `0x50` | `SET_PEERS` | `count:u8, peer_ids:u16[]` (0–8 unique IDs) | —; updates and persists the peer list |
-| `0x51` | `GET_PEERS` | — | `count:u8, peer_ids:u16[]` |
-| `0x52` | `START_BLE` / enable BLE | — | —; starts the configured BLE role for the current runtime session |
-| `0x53` | `STOP_BLE` / disable BLE | — | —; stops BLE for the current runtime session and disconnects active peers |
-| `0x56` | `GET_PEER_STATUS` | `peer_id:u16` | `state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16` (14 bytes) |
-| `0x57` | `SEND_TO_PEER` | `peer_id:u16, data_length:u16, data[0..496]` | `message_id:u16`; accepted into the local TX state machine |
-| `0x58` | `GET_RECEIVED_DATA` | `peer_id:u16, message_id:u16` | `message_id:u16, data_length:u16, data[]`; consumes the unread message |
+### 0x01 — PING
 
-### Unified trace response
+Checks that the command handler is responsive on the transport carrying the request.
 
-`GET_TRACE` takes no request payload and returns records from the UWB radio, detailed UWB TX-start, and BLE lifecycle buffers in one stream. Records are ordered by a shared insertion sequence, oldest first. The response starts with `count:u8`; each record is `type:u8, sequence:u32, record_size:u8, record_data[record_size]`. Types are `0` UWB radio (28-byte data), `1` detailed UWB TX-start (44-byte data), and `2` BLE lifecycle (13-byte data). The sequence is assigned when a record enters its buffer. Because the combined buffers can exceed the 500-byte frame payload limit, `GET_TRACE` returns the newest contiguous suffix of complete records that fits. Trace buffers are volatile and are cleared on reboot; reading them does not clear them.
+**Request payload:** Empty.
 
-`GET_INFO` reports BLE capabilities: `ble_supported` is `1` when BLE is available; bits 0–2 of `ble_mode_mask` advertise IDLE, HUB/Central, and PERIPHERAL modes. `GET_STATUS` reports aggregate live BLE state, `GET_DIAGNOSTICS` reports BLE runtime and queue diagnostics, and `GET_PEER_STATUS` reports a specific peer's state.
+**Successful response payload:** Four ASCII bytes: PONG.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x01",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x01",
+    "flags": "OK",
+    "payload_fields": {
+      "ascii": "PONG",
+      "hex": "50 4F 4E 47"
+    }
+  }
+}
+~~~
+
+### 0x02 — GET_INFO
+
+Returns firmware identity, host protocol version, radio type, and supported BLE capabilities.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 21 bytes: major:u8, minor:u8, patch:u8, protocol_version:u8, device_id:u16, max_targets:u8, history_capacity:u16, radio_type:u8, max_payload:u16, ble_supported:u8, ble_mode_mask:u8, max_ble_peers:u8, max_ble_connections:u8, max_ble_message_length:u16, max_ble_mtu:u16, ble_protocol_version:u8. radio_type 1 identifies the DWM3000. BLE mode-mask bits 0, 1, and 2 represent IDLE, HUB/Central, and PERIPHERAL.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x02",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x02",
+    "flags": "OK",
+    "payload_fields": {
+      "firmware": "1.0.0",
+      "protocol_version": 1,
+      "device_id": 1,
+      "max_targets": 16,
+      "history_capacity": 256,
+      "radio_type": "DWM3000 (1)",
+      "max_payload": 500,
+      "ble_supported": true,
+      "ble_mode_mask": "0x07",
+      "max_ble_peers": 8,
+      "max_ble_connections": 8,
+      "max_ble_message_length": 496,
+      "max_ble_mtu": 256,
+      "ble_protocol_version": 1
+    }
+  }
+}
+~~~
+
+### 0x03 — GET_STATUS
+
+Reads the current UWB runtime state and aggregate BLE link state.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 27 bytes. UWB fields occupy bytes 0–17: role:u8 (0 idle, 1 initiator, 2 responder), ranging_enabled:u8, radio_ready:u8, radio_standby:u8, target_count:u8, clock_synchronized:u8, uptime_ms:u32, ranges_ok:u32, ranges_failed:u32. BLE summary occupies bytes 18–26: ble_mode:u8, ble_enabled:u8, any_peer_connected:u8, representative_peer_id:u16, advertising:u8, scanning:u8, representative_peer_mtu:u16. Representative peer fields describe one connected peer; use GET_PEER_STATUS for a particular ID.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x03",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x03",
+    "flags": "OK",
+    "payload_fields": {
+      "role": "initiator (1)",
+      "ranging_enabled": true,
+      "radio_ready": true,
+      "radio_standby": false,
+      "target_count": 2,
+      "clock_synchronized": true,
+      "uptime_ms": 123456,
+      "ranges_ok": 20,
+      "ranges_failed": 1,
+      "ble_mode": "HUB (1)",
+      "ble_enabled": true,
+      "any_peer_connected": true,
+      "representative_peer_id": 2,
+      "advertising": false,
+      "scanning": true,
+      "representative_peer_mtu": 247
+    }
+  }
+}
+~~~
+
+### 0x04 — GET_STATISTICS
+
+Reads cumulative UWB, host transport, and BLE counters.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 68 bytes containing seventeen little-endian u32 values in this order: ranges_ok, ranges_failed, rx_errors, tx_errors, transaction_timeouts, protocol_errors, uart_overflows, history_overwrites, malformed_radio_frames, duplicate_requests, ble_messages_sent, ble_messages_received, ble_tx_errors, ble_rx_errors, ble_connection_failures, ble_rx_queue_overflows, ble_event_queue_overflows. ble_messages_sent counts messages acknowledged as consumed by the remote host. uart_overflows covers receive-frame buffer overflow on either host transport.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x04",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x04",
+    "flags": "OK",
+    "payload_fields": {
+      "ranges_ok": 120,
+      "ranges_failed": 3,
+      "rx_errors": 0,
+      "tx_errors": 2,
+      "transaction_timeouts": 1,
+      "protocol_errors": 0,
+      "uart_overflows": 0,
+      "history_overwrites": 0,
+      "malformed_radio_frames": 0,
+      "duplicate_requests": 0,
+      "ble_messages_sent": 4,
+      "ble_messages_received": 5,
+      "ble_tx_errors": 0,
+      "ble_rx_errors": 0,
+      "ble_connection_failures": 1,
+      "ble_rx_queue_overflows": 0,
+      "ble_event_queue_overflows": 0
+    }
+  }
+}
+~~~
+
+### 0x05 — CLEAR_STATISTICS
+
+Resets the UWB, host transport, and BLE statistic counters.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Empty.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x05",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x05",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x06 — GET_LAST_ERROR
+
+Returns the most recent recorded error across the system/protocol, UWB/radio, and BLE subsystems.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 16 bytes: subsystem:u8 (0 system/protocol, 1 UWB/radio, 2 BLE), code:u8, monotonic_us:u64, peer_id:u16, context:u32. The code is interpreted within its subsystem. peer_id is zero when the error is not associated with a BLE peer. Context encodings are described in the Last-error record section.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x06",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x06",
+    "flags": "OK",
+    "payload_fields": {
+      "subsystem": "BLE (2)",
+      "code": 3,
+      "monotonic_us": 123456789,
+      "peer_id": 2,
+      "context": "0x00000000"
+    }
+  }
+}
+~~~
+
+### 0x10 — GET_CONFIG
+
+Reads the active configuration in RAM. Operating state is reported separately by GET_STATUS.
+
+**Request payload:** Empty.
+
+**Successful response payload:** A 16-byte UWB prefix followed by the BLE configuration extension. UWB prefix: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8. BLE extension layout is defined under Configuration state and persistence.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x10",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x10",
+    "flags": "OK",
+    "payload_fields": {
+      "device_id": 1,
+      "pan_id": "0xDECA",
+      "channel": 5,
+      "tx_antenna_delay": 16385,
+      "rx_antenna_delay": 16385,
+      "target_period_ms": 100,
+      "transaction_timeout_ms": 120,
+      "retries": 1,
+      "ble": {
+        "mode": "IDLE",
+        "advertising_interval_ms": 160,
+        "scan_interval_ms": 160,
+        "scan_window_ms": 80,
+        "auto_start": false,
+        "retry_interval_ms": 1000,
+        "connection_timeout_ms": 5000,
+        "max_retries": 1,
+        "rx_message_timeout_ms": 1000,
+        "peer_ids": []
+      }
+    }
+  }
+}
+~~~
+
+### 0x11 — SET_CONFIG
+
+Updates the active UWB identity/radio configuration and BLE configuration in RAM. Use APPLY_SAVE_CONFIG to persist a complete configuration snapshot.
+
+**Request payload:** A 9-byte UWB prefix followed by the complete BLE configuration extension. UWB prefix: device_id:u16, pan_id:u16, channel:u8 (5 or 9), tx_antenna_delay:u16, rx_antenna_delay:u16. The BLE extension contains 16 fixed bytes followed by peer_count:u16 peer IDs.
+
+**Successful response payload:** Empty. The firmware returns BUSY when ranging, a UWB transaction, a connected BLE peer, or BLE runtime state prevents reconfiguration. Invalid field values or malformed lengths return BAD_ARGUMENT.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x11",
+    "payload_fields": {
+      "device_id": 1,
+      "pan_id": "0xDECA",
+      "channel": 5,
+      "tx_antenna_delay": 16385,
+      "rx_antenna_delay": 16385,
+      "ble": {
+        "mode": "IDLE",
+        "advertising_interval_ms": 160,
+        "scan_interval_ms": 160,
+        "scan_window_ms": 80,
+        "auto_start": false,
+        "retry_interval_ms": 1000,
+        "connection_timeout_ms": 5000,
+        "max_retries": 1,
+        "rx_message_timeout_ms": 1000,
+        "peer_ids": []
+      }
+    }
+  },
+  "response": {
+    "opcode": "0x11",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x13 — RESET_CONFIG
+
+Clears saved configuration in NVS and restores compiled defaults. The firmware stops BLE, disables UWB ranging, clears targets, and reinitializes the radio.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Empty. Radio initialization failure is returned as RADIO_FAILURE.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x13",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x13",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x14 — TIME_SYNC
+
+Sets the epoch offset used for measurement epoch timestamps. Monotonic timestamps remain available independently of synchronization.
+
+**Request payload:** Host Unix time in microseconds as u64.
+
+**Successful response payload:** 16 bytes: device_monotonic_us:u64 at command handling, followed by epoch_offset_us:i64 represented in two's-complement little-endian form.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x14",
+    "payload_fields": {
+      "host_unix_time_us": 1735689600000000
+    }
+  },
+  "response": {
+    "opcode": "0x14",
+    "flags": "OK",
+    "payload_fields": {
+      "device_monotonic_us": 123456789,
+      "epoch_offset_us": 1735689476543211
+    }
+  }
+}
+~~~
+
+### 0x15 — GET_ANTENNA_DELAYS
+
+Reads the active TX and RX antenna delay values.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Four bytes: tx_delay:u16, rx_delay:u16.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x15",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x15",
+    "flags": "OK",
+    "payload_fields": {
+      "tx_delay": 16385,
+      "rx_delay": 16385
+    }
+  }
+}
+~~~
+
+### 0x16 — SET_ANTENNA_DELAYS
+
+Updates active TX and RX antenna delay values and applies them to the radio when it is initialized and awake. Use SAVE_ANTENNA_DELAYS to persist these two values.
+
+**Request payload:** Four bytes: tx_delay:u16, rx_delay:u16.
+
+**Successful response payload:** Empty. The firmware returns BUSY while ranging or a UWB transaction is active.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x16",
+    "payload_fields": {
+      "tx_delay": 16390,
+      "rx_delay": 16390
+    }
+  },
+  "response": {
+    "opcode": "0x16",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x17 — GET_SAVED_CONFIG
+
+Reads the complete configuration snapshot stored in non-volatile storage (NVS), including the saved UWB role, targets, UWB boot auto-start setting, and BLE configuration.
+
+**Request payload:** Empty.
+
+**Successful response payload:** A UWB snapshot of 19 + 2 × target_count bytes, followed by the BLE configuration extension. Base fields: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8, saved_role:u8, target_count:u8, target_ids:u16[target_count], auto_start:u8.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x17",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x17",
+    "flags": "OK",
+    "payload_fields": {
+      "device_id": 1,
+      "pan_id": "0xDECA",
+      "channel": 5,
+      "tx_antenna_delay": 16385,
+      "rx_antenna_delay": 16385,
+      "target_period_ms": 100,
+      "transaction_timeout_ms": 120,
+      "retries": 1,
+      "saved_role": "initiator",
+      "target_ids": [
+        2,
+        3
+      ],
+      "auto_start": true,
+      "ble": {
+        "mode": "HUB",
+        "auto_start": true,
+        "peer_ids": [
+          2,
+          3
+        ]
+      }
+    }
+  }
+}
+~~~
+
+### 0x18 — APPLY_SAVE_CONFIG
+
+Validates, persists, and applies a complete configuration snapshot. The request describes the intended saved UWB and BLE configuration.
+
+**Request payload:** The 19 + 2 × target_count-byte UWB snapshot followed by the BLE configuration extension. The base fields and BLE extension are defined under Configuration state and persistence.
+
+**Successful response payload:** Empty. Returns BAD_ARGUMENT for invalid values or lengths, BUSY while ranging, a transaction, queued one-shot jobs, or a connected BLE peer prevent applying the snapshot, and INTERNAL if persistence fails. The active radio profile is reinitialized after applying the snapshot.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x18",
+    "payload_fields": {
+      "device_id": 1,
+      "pan_id": "0xDECA",
+      "channel": 5,
+      "tx_antenna_delay": 16385,
+      "rx_antenna_delay": 16385,
+      "target_period_ms": 100,
+      "transaction_timeout_ms": 120,
+      "retries": 1,
+      "role": "initiator",
+      "target_ids": [
+        2,
+        3
+      ],
+      "auto_start": true,
+      "ble": {
+        "mode": "HUB",
+        "advertising_interval_ms": 160,
+        "scan_interval_ms": 160,
+        "scan_window_ms": 80,
+        "auto_start": true,
+        "retry_interval_ms": 1000,
+        "connection_timeout_ms": 5000,
+        "max_retries": 1,
+        "rx_message_timeout_ms": 1000,
+        "peer_ids": [
+          2,
+          3
+        ]
+      }
+    }
+  },
+  "response": {
+    "opcode": "0x18",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x19 — SAVE_ANTENNA_DELAYS
+
+Persists the currently active TX and RX antenna delay values in NVS. Other runtime configuration fields are not included in this operation.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Four bytes: persisted tx_delay:u16, rx_delay:u16. Returns BUSY while ranging or a UWB transaction is active.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x19",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x19",
+    "flags": "OK",
+    "payload_fields": {
+      "tx_delay": 16385,
+      "rx_delay": 16385
+    }
+  }
+}
+~~~
+
+### 0x20 — SET_ROLE
+
+Sets the UWB role and disables ranging while the role changes. Queued one-shot jobs are cancelled.
+
+**Request payload:** One byte: role:u8 (0 idle, 1 initiator, 2 responder).
+
+**Successful response payload:** Empty. Returns BUSY while a UWB transaction is active.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x20",
+    "payload_fields": {
+      "role": "initiator (1)"
+    }
+  },
+  "response": {
+    "opcode": "0x20",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x21 — SET_TARGETS
+
+Replaces the runtime UWB target list. In initiator role the list contains ranging destinations. In responder role a non-empty list is an allow-list of initiator IDs.
+
+**Request payload:** count:u8 followed by count target_id:u16 values. count is 0–16. IDs must be unique, nonzero, not 0xFFFF, and different from the local device ID.
+
+**Successful response payload:** The resulting list in the same count:u8, target_ids:u16[] format. Returns BUSY while a UWB transaction is active.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x21",
+    "payload_fields": {
+      "target_ids": [
+        2,
+        3
+      ]
+    }
+  },
+  "response": {
+    "opcode": "0x21",
+    "flags": "OK",
+    "payload_fields": {
+      "count": 2,
+      "target_ids": [
+        2,
+        3
+      ]
+    }
+  }
+}
+~~~
+
+### 0x22 — GET_TARGETS
+
+Reads the runtime UWB target list.
+
+**Request payload:** Empty.
+
+**Successful response payload:** count:u8 followed by count target_id:u16 values.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x22",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x22",
+    "flags": "OK",
+    "payload_fields": {
+      "count": 2,
+      "target_ids": [
+        2,
+        3
+      ]
+    }
+  }
+}
+~~~
+
+### 0x23 — SET_UWB_SCHEDULE
+
+Sets the runtime per-target ranging interval, transaction timeout, and retry count.
+
+**Request payload:** period_ms:u32, transaction_timeout_ms:u16, retries:u8. Valid ranges are 20–60000 ms, 50–5000 ms, and 0–5 respectively.
+
+**Successful response payload:** Empty.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x23",
+    "payload_fields": {
+      "period_ms": 100,
+      "transaction_timeout_ms": 120,
+      "retries": 1
+    }
+  },
+  "response": {
+    "opcode": "0x23",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x24 — GET_UWB_SCHEDULE
+
+Reads the active ranging schedule and scheduler workload estimate.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 18 bytes: requested_period_ms:u32, timeout_ms:u16, retries:u8, target_count:u8, queued_jobs:u8, transaction_active:u8, estimated_effective_period_per_target_ms:u32, average_transaction_ms:u32. The effective period depends on target count and transaction duration.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x24",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x24",
+    "flags": "OK",
+    "payload_fields": {
+      "requested_period_ms": 100,
+      "timeout_ms": 120,
+      "retries": 1,
+      "target_count": 2,
+      "queued_jobs": 0,
+      "transaction_active": false,
+      "estimated_effective_period_per_target_ms": 250,
+      "average_transaction_ms": 80
+    }
+  }
+}
+~~~
+
+### 0x25 — START_RANGING
+
+Enables scheduled UWB ranging using the configured role, target list, and schedule. In responder role the radio enters its receive-listen state.
+
+**Request payload:** Empty. The radio must be initialized and awake. The role must be non-idle. Initiator role requires a configured target or a queued one-shot job.
+
+**Successful response payload:** Empty. A STATE_CHANGED event is emitted.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x25",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x25",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x26 — STOP_RANGING
+
+Disables scheduled ranging, stops an active radio transaction, and cancels queued one-shot jobs. Cancellation results are recorded in history.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Empty. A STATE_CHANGED event is emitted.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x26",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x26",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x27 — RANGE_ONCE
+
+Queues a one-shot ranging transaction for a specified target without enabling the periodic schedule.
+
+**Request payload:** target_id:u16. Requires initiator role, a ready radio outside standby, and a valid target ID. The queue holds up to eight jobs.
+
+**Successful response payload:** job_id:u16. The measurement result is written to history and emitted asynchronously as RANGE_RESULT or RANGE_FAILED. A full queue returns BUSY.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x27",
+    "payload_fields": {
+      "target_id": 2
+    }
+  },
+  "response": {
+    "opcode": "0x27",
+    "flags": "OK",
+    "payload_fields": {
+      "job_id": 7
+    }
+  }
+}
+~~~
+
+### 0x28 — CANCEL_OPERATION
+
+Cancels a queued or active one-shot ranging job.
+
+**Request payload:** job_id:u16. Job ID zero is invalid.
+
+**Successful response payload:** Empty. The cancellation is written to measurement history. An unknown or completed job ID returns NOT_FOUND.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x28",
+    "payload_fields": {
+      "job_id": 7
+    }
+  },
+  "response": {
+    "opcode": "0x28",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x30 — GET_LAST_RANGE
+
+Reads the latest retained measurement for one target or the latest retained measurement for each target.
+
+**Request payload:** target_filter:u16. Use 0xFFFF to select all targets.
+
+**Successful response payload:** count:u8 followed by count 28-byte measurement records. A target-specific request returns zero or one record; an all-target request returns at most one record per configured target.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x30",
+    "payload_fields": {
+      "target_filter": 2
+    }
+  },
+  "response": {
+    "opcode": "0x30",
+    "flags": "OK",
+    "payload_fields": {
+      "count": 1,
+      "records": [
+        {
+          "sample_seq": 42,
+          "target_id": 2,
+          "monotonic_us": 123456789,
+          "epoch_us": 1735689600123456,
+          "distance_mm": 1234,
+          "status": "VALID (0)",
+          "quality_flags": 0
+        }
+      ]
+    }
+  }
+}
+~~~
+
+### 0x31 — GET_HISTORY
+
+Reads a page of retained measurement history after a sample-sequence cursor.
+
+**Request payload:** after_sample_seq:u32, max_records:u16, target_filter:u16. Use 0xFFFF for all targets. A max_records value of zero is treated as one; values above 17 are capped at 17.
+
+**Successful response payload:** A 14-byte header followed by count 28-byte records: oldest_seq:u32, newest_seq:u32, next_cursor:u32, overrun:u8, count:u8, records[]. next_cursor advances across examined records, including records excluded by target_filter. Use next_cursor as after_sample_seq for the next page.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x31",
+    "payload_fields": {
+      "after_sample_seq": 17,
+      "max_records": 2,
+      "target_filter": 65535
+    }
+  },
+  "response": {
+    "opcode": "0x31",
+    "flags": "OK",
+    "payload_fields": {
+      "oldest_seq": 10,
+      "newest_seq": 22,
+      "next_cursor": 19,
+      "overrun": false,
+      "count": 2,
+      "records": [
+        {
+          "sample_seq": 18,
+          "target_id": 2,
+          "distance_mm": 1234,
+          "status": "VALID"
+        },
+        {
+          "sample_seq": 19,
+          "target_id": 3,
+          "distance_mm": 2345,
+          "status": "VALID"
+        }
+      ]
+    }
+  }
+}
+~~~
+
+### 0x32 — SUBSCRIBE
+
+Adds event types to the subscription mask for the transport that carries the request.
+
+**Request payload:** subscription_mask:u16. Bit 0 selects event opcode 0x80; each successive bit selects the next event opcode. Bits 0–14 select event opcodes 0x80–0x8E.
+
+**Successful response payload:** The resulting active subscription mask:u16. Subscription state is independent for USB CDC and UART1.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x32",
+    "payload_fields": {
+      "subscription_mask": "0x7FFF"
+    }
+  },
+  "response": {
+    "opcode": "0x32",
+    "flags": "OK",
+    "payload_fields": {
+      "active_subscription_mask": "0x7FFF"
+    }
+  }
+}
+~~~
+
+### 0x33 — UNSUBSCRIBE
+
+Removes event types from the subscription mask for the transport that carries the request.
+
+**Request payload:** subscription_mask:u16. Each set bit clears the corresponding event subscription.
+
+**Successful response payload:** The resulting active subscription mask:u16.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x33",
+    "payload_fields": {
+      "subscription_mask": "0x0004"
+    }
+  },
+  "response": {
+    "opcode": "0x33",
+    "flags": "OK",
+    "payload_fields": {
+      "active_subscription_mask": "0x7FFB"
+    }
+  }
+}
+~~~
+
+### 0x35 — GET_DIAGNOSTICS
+
+Reads a compact snapshot of UWB radio registers/counters and BLE runtime queue state.
+
+**Request payload:** Empty.
+
+**Successful response payload:** 29 bytes. UWB fields (22 bytes): current_radio_status:u32, live_sys_status:u32, malformed_radio_frames:u32, rx_errors:u32, tx_errors:u32, radio_state:u8, radio_standby:u8. BLE fields (7 bytes): ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8. live_sys_status is zero when the radio is unavailable or in standby.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x35",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x35",
+    "flags": "OK",
+    "payload_fields": {
+      "current_radio_status": "0x00000000",
+      "live_sys_status": "0x00000000",
+      "malformed_radio_frames": 0,
+      "rx_errors": 0,
+      "tx_errors": 0,
+      "radio_state": 0,
+      "radio_standby": false,
+      "ble_mode": "HUB (1)",
+      "ble_enabled": true,
+      "advertising": false,
+      "scanning": true,
+      "active_links": 2,
+      "rx_queue_depth": 0,
+      "event_queue_depth": 0
+    }
+  }
+}
+~~~
+
+### 0x38 — GET_TRACE
+
+Reads the retained UWB radio, detailed UWB TX-start, and BLE lifecycle trace records as one globally ordered stream.
+
+**Request payload:** Empty.
+
+**Successful response payload:** count:u8 followed by count tagged records. Each record is type:u8, sequence:u32, record_size:u8, record_data[record_size]. Type 0 is UWB radio (28 data bytes), type 1 is detailed UWB TX-start (44 data bytes), and type 2 is BLE lifecycle (13 data bytes). Records are ordered oldest-first by a shared insertion sequence. The response contains the newest contiguous suffix of complete records that fits the 500-byte payload. Reading does not clear the volatile trace buffers.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x38",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x38",
+    "flags": "OK",
+    "payload_fields": {
+      "count": 1,
+      "records": [
+        {
+          "type": 2,
+          "sequence": 12,
+          "record_size": 13,
+          "data": {
+            "uptime_ms": 12000,
+            "code": 9,
+            "peer_id": 2,
+            "reason": 0,
+            "stage": 0,
+            "detail": 0,
+            "active_links": 1,
+            "state_flags": "0x03"
+          }
+        }
+      ]
+    }
+  }
+}
+~~~
+
+### 0x40 — UWB_SLEEP
+
+Stops ranging and puts the DWM3000 radio into IDLE_RC standby. Queued one-shot jobs are cancelled.
+
+**Request payload:** Empty. The command returns BUSY while a UWB transaction is active.
+
+**Successful response payload:** One byte: sleep_kind:u8. The current firmware returns 1 for IDLE_RC standby.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x40",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x40",
+    "flags": "OK",
+    "payload_fields": {
+      "sleep_kind": "IDLE_RC standby (1)"
+    }
+  }
+}
+~~~
+
+### 0x41 — UWB_WAKE
+
+Wakes or reinitializes the DWM3000 radio and reapplies its radio profile.
+
+**Request payload:** Empty.
+
+**Successful response payload:** One byte: 0 when the radio was woken/reinitialized, 1 when it was already awake.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x41",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x41",
+    "flags": "OK",
+    "payload_fields": {
+      "wake_result": "reinitialized (0)"
+    }
+  }
+}
+~~~
+
+### 0x42 — SYSTEM_SLEEP
+
+Stops UWB ranging and enters ESP32 timer-woken deep sleep. The ESP32 restarts after the timer expires.
+
+**Request payload:** sleep_ms:u32. Valid range is 1000 ms through seven days (604800000 ms).
+
+**Successful response payload:** sleep_ms:u32 containing the accepted duration. The response is transmitted and flushed before deep sleep begins. UART and USB commands cannot wake the ESP32 from deep sleep.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x42",
+    "payload_fields": {
+      "sleep_ms": 60000
+    }
+  },
+  "response": {
+    "opcode": "0x42",
+    "flags": "OK",
+    "payload_fields": {
+      "sleep_ms": 60000
+    }
+  }
+}
+~~~
+
+### 0x43 — REBOOT
+
+Restarts the ESP32 after acknowledging the request.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Empty. The successful response is transmitted and flushed before restart.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x43",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x43",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x50 — SET_PEERS
+
+Replaces and persists the configured BLE peer-ID list. An empty list selects open mode; a non-empty list is an allow-list.
+
+**Request payload:** count:u8 followed by count peer_id:u16 values. count is 0–8. IDs must be unique and in the range 1–65534. BLE must be disabled so the manager can reconfigure peer policy.
+
+**Successful response payload:** Empty. Persistence failure returns INTERNAL; a BLE configuration state that prevents the update returns BUSY.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x50",
+    "payload_fields": {
+      "peer_ids": [
+        2,
+        3
+      ]
+    }
+  },
+  "response": {
+    "opcode": "0x50",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x51 — GET_PEERS
+
+Reads the configured BLE peer-ID list.
+
+**Request payload:** Empty.
+
+**Successful response payload:** count:u8 followed by count peer_id:u16 values.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x51",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x51",
+    "flags": "OK",
+    "payload_fields": {
+      "count": 2,
+      "peer_ids": [
+        2,
+        3
+      ]
+    }
+  }
+}
+~~~
+
+### 0x52 — START_BLE
+
+Starts the configured BLE role for the current runtime session.
+
+**Request payload:** Empty. The configured BLE mode must be HUB/Central or PERIPHERAL; IDLE returns BAD_STATE.
+
+**Successful response payload:** Empty. BLE lifecycle and state events are emitted according to each transport's subscription mask.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x52",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x52",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x53 — STOP_BLE
+
+Stops BLE for the current runtime session and disconnects active peers.
+
+**Request payload:** Empty.
+
+**Successful response payload:** Empty.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x53",
+    "payload_fields": {}
+  },
+  "response": {
+    "opcode": "0x53",
+    "flags": "OK",
+    "payload_fields": {}
+  }
+}
+~~~
+
+### 0x56 — GET_PEER_STATUS
+
+Reads the runtime status of a specific BLE peer.
+
+**Request payload:** peer_id:u16.
+
+**Successful response payload:** 14 bytes: state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16. Peer states are UNKNOWN 0, CONFIGURED 1, FOUND 2, CONNECTED 3, CONNECTING 4, HANDSHAKING 5, and BACKOFF 6. Returns NOT_FOUND when no status record is available.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x56",
+    "payload_fields": {
+      "peer_id": 2
+    }
+  },
+  "response": {
+    "opcode": "0x56",
+    "flags": "OK",
+    "payload_fields": {
+      "state": "CONNECTED (3)",
+      "mode": "HUB (1)",
+      "enabled": true,
+      "advertising": false,
+      "scanning": true,
+      "connected": true,
+      "peer_id": 2,
+      "mtu": 247,
+      "last_failure_reason": 0,
+      "last_failure_stage": 0,
+      "last_failure_detail": 0
+    }
+  }
+}
+~~~
+
+### 0x57 — SEND_TO_PEER
+
+Queues an application message for unicast delivery to one connected BLE peer.
+
+**Request payload:** peer_id:u16, data_length:u16, data[data_length]. data_length is 0–496 bytes. The bytes are application payload and may contain arbitrary binary data.
+
+**Successful response payload:** message_id:u16 assigned by the BLE message state machine. This response acknowledges local acceptance for transmission; BLE_DATA_SENT reports successful remote consumption.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x57",
+    "payload_fields": {
+      "peer_id": 2,
+      "data_length": 2,
+      "data_hex": "48 69",
+      "data_utf8": "Hi"
+    }
+  },
+  "response": {
+    "opcode": "0x57",
+    "flags": "OK",
+    "payload_fields": {
+      "message_id": 42,
+      "accepted_for_transmission": true
+    }
+  }
+}
+~~~
+
+### 0x58 — GET_RECEIVED_DATA
+
+Retrieves one complete unread application message from a BLE peer. Reading consumes the unread message and allows the remote sender to receive its final delivery result.
+
+**Request payload:** peer_id:u16, message_id:u16.
+
+**Successful response payload:** message_id:u16, data_length:u16, data[data_length]. Returns NOT_FOUND if the indicated unread message is unavailable or has expired.
+
+**Example (decoded payload fields):**
+
+~~~json
+{
+  "request": {
+    "opcode": "0x58",
+    "payload_fields": {
+      "peer_id": 2,
+      "message_id": 42
+    }
+  },
+  "response": {
+    "opcode": "0x58",
+    "flags": "OK",
+    "payload_fields": {
+      "message_id": 42,
+      "data_length": 2,
+      "data_hex": "48 69",
+      "data_utf8": "Hi"
+    }
+  }
+}
+~~~
 
 ### Configuration state and persistence
 
@@ -134,7 +1410,7 @@ Unless specified otherwise, the request payload is empty. Fields are encoded lit
 | 18 | 2 × count | `target_ids:u16[]` |
 | 18 + 2×count | 1 | `auto_start:u8` (`0` or `1`) |
 
-The base UWB snapshot length is `19 + 2×target_count` bytes. The complete BLE configuration extension always follows `auto_start` in `GET_SAVED_CONFIG` responses and `APPLY_SAVE_CONFIG` requests. It is mandatory; a snapshot without BLE settings is rejected. Every supported device has BLE capabilities, even when its configured BLE mode is IDLE.
+The base UWB snapshot length is `19 + 2×target_count` bytes. The BLE configuration extension follows `auto_start` in `GET_SAVED_CONFIG` responses and is part of the request accepted by `APPLY_SAVE_CONFIG`. The complete snapshot includes this extension and its peer ID list. Every supported device reports BLE capabilities, including devices configured with BLE mode IDLE.
 
 The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` bytes:
 
@@ -152,7 +1428,7 @@ The BLE configuration extension is 16 fixed bytes followed by `peer_count × 2` 
 | 15 | 1 | `peer_count:u8` (0–8) |
 | 16 | 2 × count | `peer_ids:u16[]`; IDs must be unique and in 1–65534 |
 
-`SET_CONFIG` accepts a 9-byte UWB prefix followed by the mandatory complete BLE configuration extension. `GET_CONFIG` returns its 16-byte UWB prefix followed by the same mandatory BLE extension. Stop BLE before changing its role, peer policy, advertising or scan intervals, retry interval, connection timeout, or message timeout. BLE configuration changes are rejected with `BUSY` while BLE is enabled. `SET_PEERS` updates and persists only the peer list and also requires BLE to be disabled. Use `APPLY_SAVE_CONFIG` to persist the complete configuration snapshot. A peer count of zero selects open mode: any valid remote peer ID is eligible. A non-empty list is an allow-list. Device ID and target IDs must be nonzero, not `0xFFFF`, and target IDs must be unique and different from the device ID. Period is 20–60000 ms, timeout is 50–5000 ms, retries is 0–5, and channel is 5 or 9. `auto_start=1` requires a non-idle role; initiator auto-start also requires at least one target. `ble_auto_start=1` requires a non-IDLE BLE mode. Applying a snapshot is rejected with `BUSY` while ranging, a transaction, or queued one-shot jobs are active.
+`SET_CONFIG` request payloads contain a 9-byte UWB prefix followed by the complete BLE configuration extension. `GET_CONFIG` response payloads contain a 16-byte UWB prefix followed by the same BLE extension. BLE must be disabled when changing its role, peer policy, advertising or scan intervals, retry interval, connection timeout, or message timeout. The firmware returns `BUSY` for these configuration changes while BLE is enabled. `SET_PEERS` updates and persists the peer list; BLE must be disabled for this configuration operation. Use `APPLY_SAVE_CONFIG` to persist the complete configuration snapshot. A peer count of zero selects open mode: any valid remote peer ID is eligible. A non-empty list is an allow-list. Device ID and target IDs must be nonzero, not `0xFFFF`, and target IDs must be unique and different from the device ID. Period is 20–60000 ms, timeout is 50–5000 ms, retries is 0–5, and channel is 5 or 9. `auto_start=1` requires a non-idle role; initiator auto-start also requires at least one target. `ble_auto_start=1` requires a non-IDLE BLE mode. Applying a snapshot is rejected with `BUSY` while ranging, a transaction, or queued one-shot jobs are active.
 
 `SAVE_ANTENNA_DELAYS` persists only the current TX and RX antenna delay values. It is rejected while ranging or a transaction is active.
 
@@ -167,6 +1443,12 @@ The maximum target count is 16. Target IDs must be unique, nonzero, not `0xFFFF`
 `SET_UWB_SCHEDULE` accepts a period of 20–60000 ms, transaction timeout of 50–5000 ms, and 0–5 retries. The requested period is a per-target scheduling interval, not a guaranteed measurement rate. The effective interval depends on target count and transaction duration. `GET_UWB_SCHEDULE` reports the estimated effective per-target period and average transaction duration.
 
 `RANGE_ONCE` is available in initiator role when the radio is ready and not in standby. The one-shot queue holds up to eight jobs. It returns a job ID; the eventual result or failure is stored in history and emitted as an event. `STOP_RANGING` stops ranging and cancels queued one-shot jobs. `CANCEL_OPERATION` cancels a queued or active one-shot job; an unknown job ID returns `NOT_FOUND`.
+
+## Unified trace response
+
+GET_TRACE (0x38) returns a single record stream containing retained UWB radio, detailed UWB TX-start, and BLE lifecycle diagnostics. Its payload begins with count:u8. Each entry has a six-byte envelope—type:u8, sequence:u32, record_size:u8—followed by record_data[record_size]. The record data layouts are specified in the trace and BLE diagnostic sections below.
+
+A shared sequence orders records across all three trace sources. The response is ordered oldest-first and includes the newest contiguous suffix of complete records that fits the 500-byte host payload limit. No record is split. Trace buffers reside in RAM, survive reads without being cleared, and are cleared on reboot.
 
 ## Measurement records and history
 
