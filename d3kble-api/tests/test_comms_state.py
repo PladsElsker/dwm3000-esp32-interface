@@ -37,7 +37,7 @@ def test_request_outbox_and_ack_state_are_in_memory():
     assert state.get_request("request-1") == (7, False, None, deadline)
     assert state.acknowledge(7, "request-1") == "request"
     assert state.get_request("request-1") == (7, True, None, deadline)
-    assert state.store_response("request-1", '{"status":"ok"}')
+    assert state.store_response("request-1", '{"status":"ok"}', peer_id=7)
     assert state.get_request("request-1") == (7, True, '{"status":"ok"}', deadline)
 
 
@@ -84,5 +84,13 @@ def test_request_deadline_expires_once_and_rejects_late_response():
     ]
     assert state.expire_request("request-timeout", '{"status":"error"}')
     assert state.due_requests(time.time() + 10) == []
-    assert not state.store_response("request-timeout", '{"status":"ok"}')
+    assert not state.store_response("request-timeout", '{"status":"ok"}', peer_id=7)
     assert state.get_request("request-timeout")[2] == '{"status":"error"}'
+
+
+
+def test_response_from_wrong_peer_is_rejected():
+    state = CommsState()
+    state.enqueue("request-peer", 7, "request", b"{}")
+    assert not state.store_response("request-peer", '{"status":"ok"}', peer_id=8)
+    assert state.store_response("request-peer", '{"status":"ok"}', peer_id=7)
