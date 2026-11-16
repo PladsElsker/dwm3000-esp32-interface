@@ -1815,7 +1815,7 @@ function validateImportedPreset(value: any): ConfigPreset {
         config: {
             deviceId: n('deviceId'), panId: String(c.panId).toUpperCase().padStart(4, '0'),
             channel: n('channel'), tx: n('tx'), rx: n('rx'), period: n('period'),
-            timeout: n('timeout'), retries: n('retries'), role: n('role),
+            timeout: n('timeout'), retries: n('retries'), role: n('role'),
             targets, autoStart: c.autoStart, bleConfig: cloneBleConfig(bleConfig), blePeers: parsedPeers.join(', ')
         }
     };
