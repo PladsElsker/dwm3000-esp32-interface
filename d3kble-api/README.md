@@ -141,6 +141,16 @@ print(result["delivered"])
 
 The send operation is unicast to one numeric peer ID. The returned `BleSendTicket` exposes `peer_id`, `done`, and `wait(timeout)`. A successful result indicates that the firmware reported delivery at the BLE transport layer; it is not an application-level acknowledgement.
 
+Incoming raw BLE payloads are emitted as `ble_message` events:
+
+```python
+@node.on("ble_message")
+def on_ble_message(message):
+    print(message.peer_id, message.message_id, message.data)
+```
+
+The event value is a `BleMessage` with `peer_id`, firmware `message_id`, raw byte `data`, and host `received_at`.
+
 Other available operations are:
 
 ```python
