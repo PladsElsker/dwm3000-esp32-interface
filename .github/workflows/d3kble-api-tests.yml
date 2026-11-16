@@ -10,6 +10,7 @@ on:
     branches: [main]
     paths:
       - "d3kble-api/**"
+      - "manual_tests/**"
       - ".github/workflows/d3kble-api-tests.yml"
 
 jobs:
