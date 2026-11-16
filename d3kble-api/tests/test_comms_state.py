@@ -32,12 +32,13 @@ def test_response_is_enqueued_at_most_once_per_request():
 
 def test_request_outbox_and_ack_state_are_in_memory():
     state = CommsState()
-    state.enqueue("request-1", 7, "request", b"{}")
-    assert state.get_request("request-1") == (7, False, None)
+    deadline = time.time() + 1
+    state.enqueue("request-1", 7, "request", b"{}", response_deadline=deadline)
+    assert state.get_request("request-1") == (7, False, None, deadline)
     assert state.acknowledge(7, "request-1") == "request"
-    assert state.get_request("request-1") == (7, True, None)
-    state.store_response("request-1", '{"ok":true}')
-    assert state.get_request("request-1") == (7, True, '{"ok":true}')
+    assert state.get_request("request-1") == (7, True, None, deadline)
+    assert state.store_response("request-1", '{"status":"ok"}')
+    assert state.get_request("request-1") == (7, True, '{"status":"ok"}', deadline)
 
 
 def test_processed_inbox_history_is_bounded_but_pending_items_are_kept():
@@ -70,3 +71,18 @@ def test_bytes_are_json_safe():
     from d3kble.comms import _json_safe, _from_json_safe
     original = {"raw": b"\x00\x01", "nested": [1, b"payload"]}
     assert _from_json_safe(_json_safe(original)) == original
+
+
+
+def test_request_deadline_expires_once_and_rejects_late_response():
+    state = CommsState()
+    deadline = time.time() + 0.01
+    state.enqueue("request-timeout", 7, "request", b"{}", response_deadline=deadline)
+    time.sleep(0.02)
+    assert state.due_requests(time.time()) == [
+        ("request-timeout", 7, deadline)
+    ]
+    assert state.expire_request("request-timeout", '{"status":"error"}')
+    assert state.due_requests(time.time() + 10) == []
+    assert not state.store_response("request-timeout", '{"status":"ok"}')
+    assert state.get_request("request-timeout")[2] == '{"status":"error"}'
