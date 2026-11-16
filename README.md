@@ -1,6 +1,6 @@
 # DWM3000 ESP32 Interface
 
-A three-part project for UWB ranging and BLE messaging using an ESP32-C3 and DWM3000.
+A project for UWB ranging and BLE messaging using an ESP32-C3 and DWM3000.
 
 ## Projects
 
