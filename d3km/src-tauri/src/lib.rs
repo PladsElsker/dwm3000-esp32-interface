@@ -192,6 +192,61 @@ async fn send_command(
     .map_err(|e| format!("USB command worker failed: {e}"))?
 }
 
+
+const CONFIG_PRESETS_FILE: &str = "configuration-presets.json";
+const MAX_CONFIG_PRESETS_BYTES: usize = 2 * 1024 * 1024;
+
+/// Load the application-level configuration set. Unlike WebView localStorage,
+/// app_data_dir remains stable when the frontend is rebuilt or the app is updated.
+#[tauri::command]
+fn load_config_presets(app: AppHandle) -> Result<Option<String>, String> {
+    let path = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve the D3KM data directory: {e}"))?
+        .join(CONFIG_PRESETS_FILE);
+
+    match std::fs::read_to_string(&path) {
+        Ok(contents) => {
+            if contents.len() > MAX_CONFIG_PRESETS_BYTES {
+                return Err("Saved configuration set exceeds the 2 MB limit.".into());
+            }
+            let value: serde_json::Value = serde_json::from_str(&contents)
+                .map_err(|e| format!("Saved configuration set is not valid JSON: {e}"))?;
+            if !value.is_array() {
+                return Err("Saved configuration set must contain a JSON array.".into());
+            }
+            Ok(Some(contents))
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(e) => Err(format!("Could not read saved configurations: {e}")),
+    }
+}
+
+/// Persist the complete local configuration set outside the frontend build.
+#[tauri::command]
+fn save_config_presets(presets_json: String, app: AppHandle) -> Result<(), String> {
+    if presets_json.len() > MAX_CONFIG_PRESETS_BYTES {
+        return Err("Configuration set exceeds the 2 MB storage limit.".into());
+    }
+
+    let value: serde_json::Value = serde_json::from_str(&presets_json)
+        .map_err(|e| format!("Configuration set is not valid JSON: {e}"))?;
+    if !value.is_array() {
+        return Err("Configuration set must be a JSON array.".into());
+    }
+
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| format!("Could not resolve the D3KM data directory: {e}"))?;
+    std::fs::create_dir_all(&data_dir)
+        .map_err(|e| format!("Could not create the D3KM data directory: {e}"))?;
+    let path = data_dir.join(CONFIG_PRESETS_FILE);
+    std::fs::write(&path, presets_json)
+        .map_err(|e| format!("Could not save configurations to {}: {e}", path.display()))
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -204,7 +259,9 @@ pub fn run() {
             list_ports,
             connect,
             disconnect,
-            send_command
+            send_command,
+            load_config_presets,
+            save_config_presets
         ])
         .run(tauri::generate_context!())
         .expect("error while running D3KM");
