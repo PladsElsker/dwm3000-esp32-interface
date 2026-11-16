@@ -2,7 +2,39 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Activity, Antenna, ArrowDownToLine, ArrowUpFromLine, BadgeCheck, Bluetooth, Cable, ChartNoAxesCombined, ChevronDown, CircleAlert, CircleHelp, Clock3, Cpu, Database, Download, Gauge, History, Inbox, LayoutDashboard, Link2, ListChecks, Plug, Power, RefreshCw, RotateCcw, Save, Search, Send, Settings2, ShieldCheck, Terminal, Trash2, Unplug, Waves, Zap } from 'lucide-vue-next';
+import {
+    Activity,
+    Antenna,
+    ArrowDownToLine,
+    ArrowUpFromLine,
+    BadgeCheck,
+    Bluetooth,
+    Cable,
+    ChartNoAxesCombined,
+    CircleAlert,
+    CircleHelp,
+    Clock3,
+    Cpu,
+    Database,
+    Download,
+    History,
+    Inbox,
+    LayoutDashboard,
+    Link2,
+    Plug,
+    Power,
+    RefreshCw,
+    RotateCcw,
+    Save,
+    Send,
+    Settings2,
+    ShieldCheck,
+    Terminal,
+    Trash2,
+    Unplug,
+    Waves,
+    Zap,
+} from 'lucide-vue-next';
 
 type Port = { name: string; description: string };
 type FrameEvent = { seq: number; opcode: number; payload: number[] };
@@ -53,7 +85,20 @@ const bleMessagePeerId = ref('');
 const bleMessageText = ref('');
 const bleMessageByteLength = computed(() => new TextEncoder().encode(bleMessageText.value).length);
 const retrievingBleMessages = new Set<string>();
-const connected = ref(false), connecting = ref(false), ports = ref<Port[]>([]), selectedPort = ref(''), active = ref('overview'), busy = ref(false), savingConfig = ref(false), savingStep = ref(''), lastRefresh = ref('—'), error = ref(''), notice = ref(''), events = ref<string[]>([]), measurements = ref<any[]>([]), eventCount = ref(0);
+const connected = ref(false),
+    connecting = ref(false),
+    ports = ref<Port[]>([]),
+    selectedPort = ref(''),
+    active = ref('overview'),
+    busy = ref(false),
+    savingConfig = ref(false),
+    savingStep = ref(''),
+    lastRefresh = ref('—'),
+    error = ref(''),
+    notice = ref(''),
+    events = ref<string[]>([]),
+    measurements = ref<any[]>([]),
+    eventCount = ref(0);
 
 type CalJobResult = { target: number; status: number; mm: number | null };
 type BleDiagnosticRecord = {
@@ -192,7 +237,59 @@ async function refreshTrace(silent = false) {
 }
 const failureHintName = (n: number) => ({ 0: 'Unknown / inconclusive', 1: 'HPDWARN observed after call', 2: 'TXERR state observed after call' } as Record<number, string>)[n] ?? `Unknown hint ${n}`;
 function buildDebugReport() {
-    return { reportFormat: 'D3KM device debug report', reportVersion: 3, protocolSpecVersion: '2.3', capturedAt: new Date().toISOString(), port: selectedPort.value, appProtocolVersion: 1, device: { info: device.info, status: device.status, savedConfig: device.config, savedTargets: device.savedTargets, runtimeConfig: device.runtimeConfig, runtimeSchedule: device.schedule, runtimeTargets: device.targets, stats: device.stats, diagnostics: device.diagnostics, lastError: device.lastError }, bluetooth: { supported: ble.supported, runtime: { ...ble.runtime }, runtimeConfig: cloneBleConfig(ble.runtimeConfig), savedConfig: cloneBleConfig(ble.savedConfig), peerStatuses: ble.peerStatuses.map(item => ({ ...item })), discoveredPeers: [...ble.discoveredPeers], receivedCount: ble.inbox.length, sentCount: ble.outgoing.length, incomingMessageMetadata: ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata: ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, trace: { fetchedAt: traceFetchedAt.value, records: traceRecords.value }, antennaCalibration: { phase: calibration.phase, referenceId: calibration.referenceId, requestedDelay: calibration.requestedDelay, appliedTx: calibration.appliedTx, appliedRx: calibration.appliedRx, savedTx: calibration.savedTx, savedRx: calibration.savedRx, averageMm: calibration.averageMm, latestMm: calibration.latestMm, windowSize: CAL_WINDOW_SIZE, validSamples: calibration.validSamples, failedSamples: calibration.failedSamples, isSaved: calibration.isSaved }, recentEvents: events.value.slice(0, 40), recentMeasurements: measurements.value.slice(0, 20) };
+    return {
+        reportFormat: 'D3KM device debug report',
+        reportVersion: 3,
+        protocolSpecVersion: '2.3',
+        capturedAt: new Date().toISOString(),
+        port: selectedPort.value,
+        appProtocolVersion: 1,
+        device: {
+            info: device.info,
+            status: device.status,
+            savedConfig: device.config,
+            savedTargets: device.savedTargets,
+            runtimeConfig: device.runtimeConfig,
+            runtimeSchedule: device.schedule,
+            runtimeTargets: device.targets,
+            stats: device.stats,
+            diagnostics: device.diagnostics,
+            lastError: device.lastError
+        },
+        bluetooth: {
+            supported: ble.supported,
+            runtime: { ...ble.runtime },
+            runtimeConfig: cloneBleConfig(ble.runtimeConfig),
+            savedConfig: cloneBleConfig(ble.savedConfig),
+            peerStatuses: ble.peerStatuses.map(item => ({ ...item })),
+            discoveredPeers: [...ble.discoveredPeers],
+            receivedCount: ble.inbox.length,
+            sentCount: ble.outgoing.length,
+            incomingMessageMetadata: ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })),
+            outgoingMessageMetadata: ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error }))
+        },
+        trace: {
+            fetchedAt: traceFetchedAt.value,
+            records: traceRecords.value
+        },
+        antennaCalibration: {
+            phase: calibration.phase,
+            referenceId: calibration.referenceId,
+            requestedDelay: calibration.requestedDelay,
+            appliedTx: calibration.appliedTx,
+            appliedRx: calibration.appliedRx,
+            savedTx: calibration.savedTx,
+            savedRx: calibration.savedRx,
+            averageMm: calibration.averageMm,
+            latestMm: calibration.latestMm,
+            windowSize: CAL_WINDOW_SIZE,
+            validSamples: calibration.validSamples,
+            failedSamples: calibration.failedSamples,
+            isSaved: calibration.isSaved
+        },
+        recentEvents: events.value.slice(0, 40),
+        recentMeasurements: measurements.value.slice(0, 20),
+    };
 }
 async function copyDebugReport() {
     try { await navigator.clipboard.writeText(JSON.stringify(buildDebugReport(), null, 2)); notice.value = 'Debug report copied to clipboard'; log('Debug report copied'); }
@@ -1657,7 +1754,7 @@ onUnmounted(() => {
                                     <ShieldCheck />
                                 </div>
                                 <div class="metric-value" :class="device.status?.radio_ready ? 'good' : 'bad'">{{ health
-                                    }}
+                                }}
                                 </div>
                                 <div class="metric-foot">{{ device.status?.radio_ready ? 'DWM3000 radio initialized' :
                                     'Check radio diagnostics' }}</div>
@@ -1707,7 +1804,7 @@ onUnmounted(() => {
                                         'Unavailable' }}</b></div>
                                     <div><span>BLE peer limit</span><b>{{ device.info?.maxBlePeers ?? '—' }}</b></div>
                                     <div><span>BLE connection limit</span><b>{{ device.info?.maxBleConnections ?? '—'
-                                    }}</b></div>
+                                            }}</b></div>
                                     <div><span>BLE message limit</span><b>{{ device.info?.maxBleMessageLength ?? '—' }}
                                             bytes</b></div>
                                     <div><span>BLE maximum MTU</span><b>{{ device.info?.maxBleMtu ?? '—' }}</b></div>
@@ -1740,7 +1837,7 @@ onUnmounted(() => {
                                     <div><span>Clock synchronized</span><b>{{ device.status?.clock ? 'Yes' : 'No' }}</b>
                                     </div>
                                     <div><span>Configured UWB targets</span><b>{{ device.status?.target_count ?? 0
-                                    }}</b>
+                                            }}</b>
                                     </div>
                                     <div><span>Bluetooth mode</span><b>{{ ble.supported ? bleModeName(ble.runtime.mode)
                                         : 'Not supported' }}</b></div>
@@ -1930,11 +2027,11 @@ onUnmounted(() => {
                         <div class="panel calibration-actions-panel">
                             <div class="calibration-actions-copy">
                                 <b>{{ calibration.isSaved ? 'Antenna delays saved' : 'Unsaved antenna-delay adjustment'
-                                }}</b>
+                                    }}</b>
                                 <p>{{
                                     calibration.message ||
                                     'Move the slider and use the live distance reading as feedback.'
-                                }}</p>
+                                    }}</p>
                             </div>
                             <div class="calibration-actions">
                                 <button class="button primary" :disabled="calibration.operationBusy || !connected"
@@ -2331,7 +2428,7 @@ onUnmounted(() => {
                                     <Link2 />
                                 </div>
                                 <div class="metric-value" :class="bleConnectedCount ? 'good' : ''">{{ bleConnectedCount
-                                }} / 8</div>
+                                    }} / 8</div>
                                 <div class="metric-foot">{{
                                     ble.runtime.connected ?
                                         'Peer connections are maintained automatically' :
@@ -2744,13 +2841,13 @@ onUnmounted(() => {
                                 <div><span>BLE messages sent</span><b>{{ device.stats?.bleMessagesSent ?? '—' }}</b>
                                 </div>
                                 <div><span>BLE messages received</span><b>{{ device.stats?.bleMessagesReceived ?? '—'
-                                }}</b></div>
+                                        }}</b></div>
                                 <div><span>BLE TX errors</span><b>{{ device.stats?.bleTxErrors ?? '—' }}</b></div>
                                 <div><span>BLE RX errors</span><b>{{ device.stats?.bleRxErrors ?? '—' }}</b></div>
                                 <div><span>BLE connection failures</span><b>{{ device.stats?.bleConnectionFailures ??
                                     '—' }}</b></div>
                                 <div><span>BLE RX queue overflows</span><b>{{ device.stats?.bleRxQueueOverflows ?? '—'
-                                }}</b></div>
+                                        }}</b></div>
                                 <div><span>BLE event queue overflows</span><b>{{ device.stats?.bleEventQueueOverflows ??
                                     '—' }}</b>
                                 </div>
@@ -2776,7 +2873,7 @@ onUnmounted(() => {
                                 </div>
                                 <div><span>BLE mode</span><b>{{ ['IDLE', 'HUB',
                                     'PERIPHERAL'][device.diagnostics?.bleMode ?? 0] ??
-                                    'Unknown' }}</b></div>
+                                        'Unknown' }}</b></div>
                                 <div><span>BLE enabled</span><b>{{ device.diagnostics?.bleEnabled ? 'Yes' : 'No' }}</b>
                                 </div>
                                 <div><span>BLE advertising / scanning</span><b>{{ device.diagnostics?.bleAdvertising ?
@@ -2800,7 +2897,7 @@ onUnmounted(() => {
                                 <div><span>Last error peer</span><b>{{ device.lastError?.peerId || '—' }}</b></div>
                                 <div><span>Last error context</span><b>{{ device.lastError?.context ?
                                     hex(device.lastError.context, 8) :
-                                    '—' }}</b></div>
+                                        '—' }}</b></div>
                                 <div><span>Last error monotonic time</span><b>{{ device.lastError?.time ?? '—' }} µs</b>
                                 </div>
                             </div>
@@ -2837,7 +2934,7 @@ onUnmounted(() => {
                                 </p>
                             </div>
                             <span class="tag neutral">{{ traceBusy ? 'Reading…' : `${traceRecords.length} retained`
-                            }}</span>
+                                }}</span>
                         </div>
                         <div v-if="traceError" class="empty-state">Could not read device trace: {{ traceError }}</div>
                         <div v-else-if="traceRecords.length" class="event-log">
