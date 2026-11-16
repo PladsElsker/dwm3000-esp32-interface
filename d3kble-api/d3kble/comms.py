@@ -8,7 +8,7 @@ import time
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 
-from .comms_store import MessageStore
+from .comms_state import CommsState
 from .models import ApplicationMessage
 
 
@@ -83,13 +83,13 @@ class CommsManager:
     VERSION = 1
 
     def __init__(
-        self, ble, dispatcher, database_path: str | None,
+        self, ble, dispatcher,
         ack_timeout: float = 1.5, delivery_timeout: float = 8.0,
         max_attempts: int = 12,
     ):
         self.ble = ble
         self.dispatcher = dispatcher
-        self.store = MessageStore(database_path)
+        self.store = CommsState()
         self.ack_timeout = ack_timeout
         self.delivery_timeout = delivery_timeout
         self.max_attempts = max_attempts
@@ -204,7 +204,7 @@ class CommsManager:
                 self.duplicates += 1
             else:
                 self.rx_messages += 1
-            # The inbox write has committed before this application-level acceptance ACK.
+            # Record receipt in process memory before sending the application ACK.
             self._send_ack(message.peer_id, message_id)
             if inserted and kind == "response":
                 self._receive_response(message.peer_id, envelope)

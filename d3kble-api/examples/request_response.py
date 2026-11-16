@@ -11,7 +11,7 @@ def main():
             if request.peer_id != PEER_ID:
                 return None
             if request.payload.get("operation") == "status":
-                # Returning a value persists and queues the correlated response.
+                # Returning a value queues the correlated response in memory.
                 return {"state": "ready"}
             return {"error": "unsupported operation"}
 

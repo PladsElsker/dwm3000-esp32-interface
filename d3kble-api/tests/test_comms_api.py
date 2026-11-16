@@ -1,5 +1,4 @@
 import json
-import time
 from concurrent.futures import Future
 
 from d3kble.comms import CommsManager
@@ -29,7 +28,7 @@ class FakeDispatcher:
 
 def test_send_many_uses_numeric_peer_ids_and_separate_tickets():
     ble = FakeBle()
-    manager = CommsManager(ble, FakeDispatcher(), database_path=None)
+    manager = CommsManager(ble, FakeDispatcher())
     tickets = manager.send_many([2, 5, 8], {"operation": "status"})
     assert [ticket.peer_id for ticket in tickets] == [2, 5, 8]
     assert len({ticket.message_id for ticket in tickets}) == 3
@@ -38,9 +37,9 @@ def test_send_many_uses_numeric_peer_ids_and_separate_tickets():
     manager.close()
 
 
-def test_receiver_persists_before_sending_acceptance_ack():
+def test_receiver_records_in_memory_before_sending_acceptance_ack():
     ble = FakeBle()
-    manager = CommsManager(ble, FakeDispatcher(), database_path=None)
+    manager = CommsManager(ble, FakeDispatcher())
     envelope = {
         "v": 1, "id": "application-id", "kind": "message",
         "payload": {"value": 42},
@@ -51,8 +50,8 @@ def test_receiver_persists_before_sending_acceptance_ack():
     )
     manager.receive_ble_message(message)
 
-    # The ACK transmission is issued only after the inbox insert has committed.
-    rows = manager.store.due_inbox(time.time() + 1)
+    # The ACK transmission is issued only after recording the in-memory inbox entry.
+    rows = manager.store.due_inbox(10**12)
     assert len(rows) == 1
     assert rows[0][0:3] == (7, "application-id", "message")
     assert len(ble.sent) == 1
@@ -64,5 +63,5 @@ def test_receiver_persists_before_sending_acceptance_ack():
     manager.receive_ble_message(message)
     assert manager.duplicates == 1
     assert len(ble.sent) == 2
-    assert len(manager.store.due_inbox(time.time() + 1)) == 1
+    assert len(manager.store.due_inbox(10**12)) == 1
     manager.close()

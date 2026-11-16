@@ -24,13 +24,9 @@ class D3KNode:
         self, uart_device: str, baudrate: int = 460800,
         poll_interval: float = 1.0, request_timeout: float = 1.5,
         request_retries: int = 1,
-        message_db_path: str | None = "~/.local/state/d3kble/messages.sqlite3",
         auto_reconnect: bool = True, reconcile_interval: float = 2.0,
         serial_factory=None,
     ):
-        if message_db_path is not None:
-            import os
-            message_db_path = os.path.expanduser(message_db_path)
         self.transport = SerialTransport(
             uart_device, baudrate, request_timeout, request_retries,
             serial_factory=serial_factory,
@@ -38,7 +34,7 @@ class D3KNode:
         self.events = EventDispatcher()
         self.uwb = UwbManager(self.transport, self.events)
         self.ble = BleManager(self.transport, self.events)
-        self.comms = CommsManager(self.ble, self.events, message_db_path)
+        self.comms = CommsManager(self.ble, self.events)
         self.state = StateManager(self.transport, poll_interval)
         self.config = ConfigManager(self.transport, self.state, self.events)
         self.auto_reconnect = auto_reconnect
@@ -190,7 +186,7 @@ class D3KNode:
         return collect_diagnostics(self)
 
     def stop(self):
-        """Pause the session without discarding subscriptions or durable queues."""
+        """Pause the session without discarding subscriptions or in-memory message queues."""
         if self._closed or not self._started:
             return
         self._paused.set()
