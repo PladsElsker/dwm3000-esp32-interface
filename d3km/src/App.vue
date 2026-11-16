@@ -1761,7 +1761,7 @@ async function persistConfigPresets(): Promise<boolean> {
         return false;
     }
 }
-async async function saveConfigPreset() {
+async function saveConfigPreset() {
     const name = presetName.value.trim();
     if (!name) { error.value = 'Enter a name for this configuration preset.'; return; }
     if (name.length > 80) { error.value = 'Preset names must be 80 characters or fewer.'; return; }
@@ -1874,7 +1874,7 @@ function validateImportedPreset(value: any, index: number): ConfigPreset {
         throw new Error('The imported auto-start policy requires an Initiator with targets or a Responder role.');
     }
     const peerIds = peerText.trim() ? peerText.split(',').map((item: string) => item.trim()) : [];
-    if (peerIds.some((id: string) => !/^\\d+$/.test(id)) || peerIds.length > 8) {
+    if (peerIds.some((id: string) => !/^\d+$/.test(id)) || peerIds.length > 8) {
         throw new Error('The imported preset contains invalid Bluetooth peer IDs.');
     }
     const parsedPeers = peerIds.map(Number);
