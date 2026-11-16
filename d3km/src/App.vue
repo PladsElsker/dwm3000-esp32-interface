@@ -181,7 +181,7 @@ async function refreshTrace(silent = false) {
     if (!connected.value || traceBusy.value) return;
     traceBusy.value = true;
     try {
-        traceRecords.value = decode(await cmd(0x38));
+        traceRecords.value = decodeTrace(await cmd(0x38));
         traceFetchedAt.value = new Date().toLocaleString();
         traceError.value = '';
         log(`GET_TRACE · ${traceRecords.value.length} record(s)`);
