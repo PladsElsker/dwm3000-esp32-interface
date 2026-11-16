@@ -68,7 +68,9 @@ An error response normally has an empty payload. Commands that sleep or reboot s
 
 ## Commands
 
-The command sections below are the command contract. Every example shows decoded payload fields for readability; JSON is documentation notation, not an on-wire encoding. The actual request and response payloads are binary byte sequences using the field widths and byte order specified in each section. Successful responses carry flags value 0 (OK). Error responses use the shared error codes and normally have an empty payload.
+The command sections below define the command contract. Each example gives a complete on-wire request frame and a representative successful response frame as hexadecimal octets. Hexadecimal whitespace is for readability; send the octets as bytes. Frames include the COBS encoding, CRC-16/CCITT-FALSE, and final `00` delimiter. The examples use wire version `1`, request sequence `0x1234`, request type `1`, response type `2`, and response flags `0` (`OK`). Each response echoes the request sequence and opcode. Each exchange is an independent example; real hosts should manage sequence numbers per transport.
+
+Read-operation responses contain illustrative sample state, not fixed constants. The example payloads show the exact byte layout and how to decode it; live counters, timestamps, configurations, sequence numbers, and diagnostics vary by device and time. Multi-byte fields are little-endian unless a field is explicitly signed or otherwise specified. Error responses use the shared response error codes and normally have an empty payload.
 
 ### 0x01 — PING
 
@@ -78,24 +80,23 @@ Checks that the command handler is responsive on the transport carrying the requ
 
 **Successful response payload:** Four ASCII bytes: PONG.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x01",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x01",
-    "flags": "OK",
-    "payload_fields": {
-      "ascii": "PONG",
-      "hex": "50 4F 4E 47"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 01 01 01 03 CC D1 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 01 02 04 07 50 4F 4E 47 3D A1 00
+~~~
+
+Response payload: 4 bytes — `50 4F 4E 47`
 
 ### 0x02 — GET_INFO
 
@@ -105,36 +106,25 @@ Returns firmware identity, host protocol version, radio type, and supported BLE 
 
 **Successful response payload:** 21 bytes: major:u8, minor:u8, patch:u8, protocol_version:u8, device_id:u16, max_targets:u8, history_capacity:u16, radio_type:u8, max_payload:u16, ble_supported:u8, ble_mode_mask:u8, max_ble_peers:u8, max_ble_connections:u8, max_ble_message_length:u16, max_ble_mtu:u16, ble_protocol_version:u8. radio_type 1 identifies the DWM3000. BLE mode-mask bits 0, 1, and 2 represent IDLE, HUB/Central, and PERIPHERAL.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x02",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x02",
-    "flags": "OK",
-    "payload_fields": {
-      "firmware": "1.0.0",
-      "protocol_version": 1,
-      "device_id": 1,
-      "max_targets": 16,
-      "history_capacity": 256,
-      "radio_type": "DWM3000 (1)",
-      "max_payload": 500,
-      "ble_supported": true,
-      "ble_mode_mask": "0x07",
-      "max_ble_peers": 8,
-      "max_ble_connections": 8,
-      "max_ble_message_length": 496,
-      "max_ble_mtu": 256,
-      "ble_protocol_version": 1
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 02 01 01 03 10 4A 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 02 02 15 02 01 01 03 01 01 02 10
+0010  0B 01 01 F4 01 01 07 08 08 F0 01 05 01 01 F7 51
+0020  00
+~~~
+
+Response payload: 21 bytes — `01 00 00 01 01 00 10 00 01 01 F4 01 01 07 08 08 F0 01 00 01 01`
 
 ### 0x03 — GET_STATUS
 
@@ -144,38 +134,25 @@ Reads the current UWB runtime state and aggregate BLE link state.
 
 **Successful response payload:** 27 bytes. UWB fields occupy bytes 0–17: role:u8 (0 idle, 1 initiator, 2 responder), ranging_enabled:u8, radio_ready:u8, radio_standby:u8, target_count:u8, clock_synchronized:u8, uptime_ms:u32, ranges_ok:u32, ranges_failed:u32. BLE summary occupies bytes 18–26: ble_mode:u8, ble_enabled:u8, any_peer_connected:u8, representative_peer_id:u16, advertising:u8, scanning:u8, representative_peer_mtu:u16. Representative peer fields describe one connected peer; use GET_PEER_STATUS for a particular ID.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x03",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x03",
-    "flags": "OK",
-    "payload_fields": {
-      "role": "initiator (1)",
-      "ranging_enabled": true,
-      "radio_ready": true,
-      "radio_standby": false,
-      "target_count": 2,
-      "clock_synchronized": true,
-      "uptime_ms": 123456,
-      "ranges_ok": 20,
-      "ranges_failed": 1,
-      "ble_mode": "HUB (1)",
-      "ble_enabled": true,
-      "any_peer_connected": true,
-      "representative_peer_id": 2,
-      "advertising": false,
-      "scanning": true,
-      "representative_peer_mtu": 247
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 03 01 01 03 A4 3C 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 03 02 1B 04 01 01 01 06 02 01 40
+0010  E2 01 02 14 01 01 02 01 01 01 05 01 01 01 02 01
+0020  03 01 F7 03 A8 12 00
+~~~
+
+Response payload: 27 bytes — `01 01 01 00 02 01 40 E2 01 00 14 00 00 00 01 00 00 00 01 01 01 02 00 00 01 F7 00`
 
 ### 0x04 — GET_STATISTICS
 
@@ -185,39 +162,27 @@ Reads cumulative UWB, host transport, and BLE counters.
 
 **Successful response payload:** 68 bytes containing seventeen little-endian u32 values in this order: ranges_ok, ranges_failed, rx_errors, tx_errors, transaction_timeouts, protocol_errors, uart_overflows, history_overwrites, malformed_radio_frames, duplicate_requests, ble_messages_sent, ble_messages_received, ble_tx_errors, ble_rx_errors, ble_connection_failures, ble_rx_queue_overflows, ble_event_queue_overflows. ble_messages_sent counts messages acknowledged as consumed by the remote host. uart_overflows covers receive-frame buffer overflow on either host transport.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x04",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x04",
-    "flags": "OK",
-    "payload_fields": {
-      "ranges_ok": 120,
-      "ranges_failed": 3,
-      "rx_errors": 0,
-      "tx_errors": 2,
-      "transaction_timeouts": 1,
-      "protocol_errors": 0,
-      "uart_overflows": 0,
-      "history_overwrites": 0,
-      "malformed_radio_frames": 0,
-      "duplicate_requests": 0,
-      "ble_messages_sent": 4,
-      "ble_messages_received": 5,
-      "ble_tx_errors": 0,
-      "ble_rx_errors": 0,
-      "ble_connection_failures": 1,
-      "ble_rx_queue_overflows": 0,
-      "ble_event_queue_overflows": 0
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 04 01 01 03 89 6D 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 04 02 44 02 78 01 01 02 03 01 01
+0010  01 01 01 01 02 02 01 01 02 01 01 01 01 01 01 01
+0020  01 01 01 01 01 01 01 01 01 01 01 01 01 01 01 01
+0030  02 04 01 01 02 05 01 01 01 01 01 01 01 01 01 01
+0040  02 01 01 01 01 01 01 01 01 01 01 01 03 AE E6 00
+~~~
+
+Response payload: 68 bytes — `78 00 00 00 03 00 00 00 00 00 00 00 02 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 00 00 05 00 00 00 00 00 00 00 00 00 00 00 01 00 00 00 00 00 00 00 00 00 00 00`
 
 ### 0x05 — CLEAR_STATISTICS
 
@@ -227,21 +192,23 @@ Resets the UWB, host transport, and BLE statistic counters.
 
 **Successful response payload:** Empty.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x05",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x05",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 05 01 01 03 3D 1B 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 05 01 01 03 BF C3 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x06 — GET_LAST_ERROR
 
@@ -251,27 +218,24 @@ Returns the most recent recorded error across the system/protocol, UWB/radio, an
 
 **Successful response payload:** 16 bytes: subsystem:u8 (0 system/protocol, 1 UWB/radio, 2 BLE), code:u8, monotonic_us:u64, peer_id:u16, context:u32. The code is interpreted within its subsystem. peer_id is zero when the error is not associated with a BLE peer. Context encodings are described in the Last-error record section.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x06",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x06",
-    "flags": "OK",
-    "payload_fields": {
-      "subsystem": "BLE (2)",
-      "code": 3,
-      "monotonic_us": 123456789,
-      "peer_id": 2,
-      "context": "0x00000000"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 06 01 01 03 E1 80 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 06 02 10 07 02 03 15 CD 5B 07 01
+0010  01 01 02 02 01 01 01 01 03 21 09 00
+~~~
+
+Response payload: 16 bytes — `02 03 15 CD 5B 07 00 00 00 00 02 00 00 00 00 00`
 
 ### 0x10 — GET_CONFIG
 
@@ -281,42 +245,25 @@ Reads the active configuration in RAM. Operating state is reported separately by
 
 **Successful response payload:** A 16-byte UWB prefix followed by the BLE configuration extension. UWB prefix: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8. BLE extension layout is defined under Configuration state and persistence.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x10",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x10",
-    "flags": "OK",
-    "payload_fields": {
-      "device_id": 1,
-      "pan_id": "0xDECA",
-      "channel": 5,
-      "tx_antenna_delay": 16385,
-      "rx_antenna_delay": 16385,
-      "target_period_ms": 100,
-      "transaction_timeout_ms": 120,
-      "retries": 1,
-      "ble": {
-        "mode": "IDLE",
-        "advertising_interval_ms": 160,
-        "scan_interval_ms": 160,
-        "scan_window_ms": 80,
-        "auto_start": false,
-        "retry_interval_ms": 1000,
-        "connection_timeout_ms": 5000,
-        "max_retries": 1,
-        "rx_message_timeout_ms": 1000,
-        "peer_ids": []
-      }
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 10 01 01 03 DF BC 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 10 02 20 02 01 09 CA DE 05 01 40
+0010  01 40 64 01 01 02 78 02 01 02 A0 02 A0 02 50 01
+0020  08 E8 03 88 13 01 E8 03 03 DB 71 00
+~~~
+
+Response payload: 32 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 00 A0 00 A0 00 50 00 00 E8 03 88 13 01 E8 03 00`
 
 ### 0x11 — SET_CONFIG
 
@@ -326,39 +273,25 @@ Updates the active UWB identity/radio configuration and BLE configuration in RAM
 
 **Successful response payload:** Empty. The firmware returns BUSY when ranging, a UWB transaction, a connected BLE peer, or BLE runtime state prevents reconfiguration. Invalid field values or malformed lengths return BAD_ARGUMENT.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x11",
-    "payload_fields": {
-      "device_id": 1,
-      "pan_id": "0xDECA",
-      "channel": 5,
-      "tx_antenna_delay": 16385,
-      "rx_antenna_delay": 16385,
-      "ble": {
-        "mode": "IDLE",
-        "advertising_interval_ms": 160,
-        "scan_interval_ms": 160,
-        "scan_window_ms": 80,
-        "auto_start": false,
-        "retry_interval_ms": 1000,
-        "connection_timeout_ms": 5000,
-        "max_retries": 1,
-        "rx_message_timeout_ms": 1000,
-        "peer_ids": []
-      }
-    }
-  },
-  "response": {
-    "opcode": "0x11",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 11 02 19 02 01 08 CA DE 05 01 40
+0010  01 40 02 A0 02 A0 02 50 01 08 E8 03 88 13 01 E8
+0020  03 03 34 BB 00
 ~~~
+
+Request payload: 25 bytes — `01 00 CA DE 05 01 40 01 40 00 A0 00 A0 00 50 00 00 E8 03 88 13 01 E8 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 11 01 01 03 E9 12 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x13 — RESET_CONFIG
 
@@ -368,21 +301,23 @@ Clears saved configuration in NVS and restores compiled defaults. The firmware s
 
 **Successful response payload:** Empty. Radio initialization failure is returned as RADIO_FAILURE.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x13",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x13",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 13 01 01 03 03 27 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 13 01 01 03 81 FF 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x14 — TIME_SYNC
 
@@ -392,26 +327,25 @@ Sets the epoch offset used for measurement epoch timestamps. Monotonic timestamp
 
 **Successful response payload:** 16 bytes: device_monotonic_us:u64 at command handling, followed by epoch_offset_us:i64 represented in two's-complement little-endian form.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x14",
-    "payload_fields": {
-      "host_unix_time_us": 1735689600000000
-    }
-  },
-  "response": {
-    "opcode": "0x14",
-    "flags": "OK",
-    "payload_fields": {
-      "device_monotonic_us": 123456789,
-      "epoch_offset_us": 1735689476543211
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 14 02 08 01 07 60 0C BA 99 2A 06
+0010  03 D2 28 00
 ~~~
+
+Request payload: 8 bytes — `00 60 0C BA 99 2A 06 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 14 02 10 05 15 CD 5B 07 01 01 01
+0010  08 EB 92 B0 B2 99 2A 06 03 9E 2B 00
+~~~
+
+Response payload: 16 bytes — `15 CD 5B 07 00 00 00 00 EB 92 B0 B2 99 2A 06 00`
 
 ### 0x15 — GET_ANTENNA_DELAYS
 
@@ -421,24 +355,23 @@ Reads the active TX and RX antenna delay values.
 
 **Successful response payload:** Four bytes: tx_delay:u16, rx_delay:u16.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x15",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x15",
-    "flags": "OK",
-    "payload_fields": {
-      "tx_delay": 16385,
-      "rx_delay": 16385
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 15 01 01 02 9A 01 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 15 02 04 07 01 40 01 40 4F D1 00
+~~~
+
+Response payload: 4 bytes — `01 40 01 40`
 
 ### 0x16 — SET_ANTENNA_DELAYS
 
@@ -448,24 +381,23 @@ Updates active TX and RX antenna delay values and applies them to the radio when
 
 **Successful response payload:** Empty. The firmware returns BUSY while ranging or a UWB transaction is active.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x16",
-    "payload_fields": {
-      "tx_delay": 16390,
-      "rx_delay": 16390
-    }
-  },
-  "response": {
-    "opcode": "0x16",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 16 02 04 07 06 40 06 40 7A A9 00
 ~~~
+
+Request payload: 4 bytes — `06 40 06 40`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 16 01 01 03 C4 43 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x17 — GET_SAVED_CONFIG
 
@@ -475,44 +407,26 @@ Reads the complete configuration snapshot stored in non-volatile storage (NVS), 
 
 **Successful response payload:** A UWB snapshot of 19 + 2 × target_count bytes, followed by the BLE configuration extension. Base fields: device_id:u16, pan_id:u16, channel:u8, tx_antenna_delay:u16, rx_antenna_delay:u16, target_period_ms:u32, transaction_timeout_ms:u16, retries:u8, saved_role:u8, target_count:u8, target_ids:u16[target_count], auto_start:u8.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x17",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x17",
-    "flags": "OK",
-    "payload_fields": {
-      "device_id": 1,
-      "pan_id": "0xDECA",
-      "channel": 5,
-      "tx_antenna_delay": 16385,
-      "rx_antenna_delay": 16385,
-      "target_period_ms": 100,
-      "transaction_timeout_ms": 120,
-      "retries": 1,
-      "saved_role": "initiator",
-      "target_ids": [
-        2,
-        3
-      ],
-      "auto_start": true,
-      "ble": {
-        "mode": "HUB",
-        "auto_start": true,
-        "peer_ids": [
-          2,
-          3
-        ]
-      }
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 17 01 01 03 F2 ED 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 17 02 2B 02 01 09 CA DE 05 01 40
+0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
+0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
+0030  02 02 03 03 E1 DE 00
+~~~
+
+Response payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
 
 ### 0x18 — APPLY_SAVE_CONFIG
 
@@ -522,51 +436,26 @@ Validates, persists, and applies a complete configuration snapshot. The request 
 
 **Successful response payload:** Empty. Returns BAD_ARGUMENT for invalid values or lengths, BUSY while ranging, a transaction, queued one-shot jobs, or a connected BLE peer prevent applying the snapshot, and INTERNAL if persistence fails. The active radio profile is reinitialized after applying the snapshot.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x18",
-    "payload_fields": {
-      "device_id": 1,
-      "pan_id": "0xDECA",
-      "channel": 5,
-      "tx_antenna_delay": 16385,
-      "rx_antenna_delay": 16385,
-      "target_period_ms": 100,
-      "transaction_timeout_ms": 120,
-      "retries": 1,
-      "role": "initiator",
-      "target_ids": [
-        2,
-        3
-      ],
-      "auto_start": true,
-      "ble": {
-        "mode": "HUB",
-        "advertising_interval_ms": 160,
-        "scan_interval_ms": 160,
-        "scan_window_ms": 80,
-        "auto_start": true,
-        "retry_interval_ms": 1000,
-        "connection_timeout_ms": 5000,
-        "max_retries": 1,
-        "rx_message_timeout_ms": 1000,
-        "peer_ids": [
-          2,
-          3
-        ]
-      }
-    }
-  },
-  "response": {
-    "opcode": "0x18",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 18 02 2B 02 01 09 CA DE 05 01 40
+0010  01 40 64 01 01 02 78 05 01 01 02 02 02 03 04 01
+0020  01 A0 02 A0 02 50 0B 01 E8 03 88 13 01 E8 03 02
+0030  02 02 03 03 41 A6 00
 ~~~
+
+Request payload: 43 bytes — `01 00 CA DE 05 01 40 01 40 64 00 00 00 78 00 01 01 02 02 00 03 00 01 01 A0 00 A0 00 50 00 01 E8 03 88 13 01 E8 03 02 02 00 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 18 01 01 03 9E E1 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x19 — SAVE_ANTENNA_DELAYS
 
@@ -576,24 +465,23 @@ Persists the currently active TX and RX antenna delay values in NVS. Other runti
 
 **Successful response payload:** Four bytes: persisted tx_delay:u16, rx_delay:u16. Returns BUSY while ranging or a UWB transaction is active.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x19",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x19",
-    "flags": "OK",
-    "payload_fields": {
-      "tx_delay": 16385,
-      "rx_delay": 16385
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 19 01 01 03 A8 4F 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 19 02 04 07 01 40 01 40 F8 C0 00
+~~~
+
+Response payload: 4 bytes — `01 40 01 40`
 
 ### 0x20 — SET_ROLE
 
@@ -603,23 +491,23 @@ Sets the UWB role and disables ranging while the role changes. Queued one-shot j
 
 **Successful response payload:** Empty. Returns BUSY while a UWB transaction is active.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x20",
-    "payload_fields": {
-      "role": "initiator (1)"
-    }
-  },
-  "response": {
-    "opcode": "0x20",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 20 02 01 04 01 A8 92 00
 ~~~
+
+Request payload: 1 byte — `01`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 20 01 01 03 B4 48 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x21 — SET_TARGETS
 
@@ -629,32 +517,25 @@ Replaces the runtime UWB target list. In initiator role the list contains rangin
 
 **Successful response payload:** The resulting list in the same count:u8, target_ids:u16[] format. Returns BUSY while a UWB transaction is active.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x21",
-    "payload_fields": {
-      "target_ids": [
-        2,
-        3
-      ]
-    }
-  },
-  "response": {
-    "opcode": "0x21",
-    "flags": "OK",
-    "payload_fields": {
-      "count": 2,
-      "target_ids": [
-        2,
-        3
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 21 02 05 03 02 02 02 03 03 C6 43
+0010  00
 ~~~
+
+Request payload: 5 bytes — `02 02 00 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 21 02 05 03 02 02 02 03 03 59 46
+0010  00
+~~~
+
+Response payload: 5 bytes — `02 02 00 03 00`
 
 ### 0x22 — GET_TARGETS
 
@@ -664,27 +545,24 @@ Reads the runtime UWB target list.
 
 **Successful response payload:** count:u8 followed by count target_id:u16 values.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x22",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x22",
-    "flags": "OK",
-    "payload_fields": {
-      "count": 2,
-      "target_ids": [
-        2,
-        3
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 22 01 01 03 5E 7D 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 22 02 05 03 02 02 02 03 03 1D 6B
+0010  00
+~~~
+
+Response payload: 5 bytes — `02 02 00 03 00`
 
 ### 0x23 — SET_UWB_SCHEDULE
 
@@ -694,25 +572,24 @@ Sets the runtime per-target ranging interval, transaction timeout, and retry cou
 
 **Successful response payload:** Empty.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x23",
-    "payload_fields": {
-      "period_ms": 100,
-      "transaction_timeout_ms": 120,
-      "retries": 1
-    }
-  },
-  "response": {
-    "opcode": "0x23",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 23 02 07 02 64 01 01 02 78 04 01
+0010  EA E4 00
 ~~~
+
+Request payload: 7 bytes — `64 00 00 00 78 00 01`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 23 01 01 03 68 D3 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x24 — GET_UWB_SCHEDULE
 
@@ -722,30 +599,24 @@ Reads the active ranging schedule and scheduler workload estimate.
 
 **Successful response payload:** 18 bytes: requested_period_ms:u32, timeout_ms:u16, retries:u8, target_count:u8, queued_jobs:u8, transaction_active:u8, estimated_effective_period_per_target_ms:u32, average_transaction_ms:u32. The effective period depends on target count and transaction duration.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x24",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x24",
-    "flags": "OK",
-    "payload_fields": {
-      "requested_period_ms": 100,
-      "timeout_ms": 120,
-      "retries": 1,
-      "target_count": 2,
-      "queued_jobs": 0,
-      "transaction_active": false,
-      "estimated_effective_period_per_target_ms": 250,
-      "average_transaction_ms": 80
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 24 01 01 03 C7 5A 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 24 02 12 02 64 01 01 02 78 03 01
+0010  02 01 02 FA 01 01 02 50 01 01 01 02 53 00
+~~~
+
+Response payload: 18 bytes — `64 00 00 00 78 00 01 02 00 00 FA 00 00 00 50 00 00 00`
 
 ### 0x25 — START_RANGING
 
@@ -755,21 +626,23 @@ Enables scheduled UWB ranging using the configured role, target list, and schedu
 
 **Successful response payload:** Empty. A STATE_CHANGED event is emitted.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x25",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x25",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 25 01 01 03 73 2C 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 25 01 01 03 F1 F4 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x26 — STOP_RANGING
 
@@ -779,21 +652,23 @@ Disables scheduled ranging, stops an active radio transaction, and cancels queue
 
 **Successful response payload:** Empty. A STATE_CHANGED event is emitted.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x26",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x26",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 26 01 01 03 AF B7 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 26 01 01 03 2D 6F 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x27 — RANGE_ONCE
 
@@ -803,25 +678,23 @@ Queues a one-shot ranging transaction for a specified target without enabling th
 
 **Successful response payload:** job_id:u16. The measurement result is written to history and emitted asynchronously as RANGE_RESULT or RANGE_FAILED. A full queue returns BUSY.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x27",
-    "payload_fields": {
-      "target_id": 2
-    }
-  },
-  "response": {
-    "opcode": "0x27",
-    "flags": "OK",
-    "payload_fields": {
-      "job_id": 7
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 27 02 02 02 02 03 35 0D 00
 ~~~
+
+Request payload: 2 bytes — `02 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 27 02 02 02 07 03 84 DF 00
+~~~
+
+Response payload: 2 bytes — `07 00`
 
 ### 0x28 — CANCEL_OPERATION
 
@@ -831,23 +704,23 @@ Cancels a queued or active one-shot ranging job.
 
 **Successful response payload:** Empty. The cancellation is written to measurement history. An unknown or completed job ID returns NOT_FOUND.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x28",
-    "payload_fields": {
-      "job_id": 7
-    }
-  },
-  "response": {
-    "opcode": "0x28",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 28 02 02 02 07 03 C3 37 00
 ~~~
+
+Request payload: 2 bytes — `07 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 28 01 01 03 77 CD 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x30 — GET_LAST_RANGE
 
@@ -857,36 +730,25 @@ Reads the latest retained measurement for one target or the latest retained meas
 
 **Successful response payload:** count:u8 followed by count 28-byte measurement records. A target-specific request returns zero or one record; an all-target request returns at most one record per configured target.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x30",
-    "payload_fields": {
-      "target_filter": 2
-    }
-  },
-  "response": {
-    "opcode": "0x30",
-    "flags": "OK",
-    "payload_fields": {
-      "count": 1,
-      "records": [
-        {
-          "sample_seq": 42,
-          "target_id": 2,
-          "monotonic_us": 123456789,
-          "epoch_us": 1735689600123456,
-          "distance_mm": 1234,
-          "status": "VALID (0)",
-          "quality_flags": 0
-        }
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 30 02 02 02 02 03 F0 DF 00
 ~~~
+
+Request payload: 2 bytes — `02 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 30 02 1D 03 01 2A 01 01 02 02 05
+0010  15 CD 5B 07 01 01 01 08 40 42 0E BA 99 2A 06 03
+0020  D2 04 01 01 01 03 9E 4D 00
+~~~
+
+Response payload: 29 bytes — `01 2A 00 00 00 02 00 15 CD 5B 07 00 00 00 00 40 42 0E BA 99 2A 06 00 D2 04 00 00 00 00`
 
 ### 0x31 — GET_HISTORY
 
@@ -896,45 +758,29 @@ Reads a page of retained measurement history after a sample-sequence cursor.
 
 **Successful response payload:** A 14-byte header followed by count 28-byte records: oldest_seq:u32, newest_seq:u32, next_cursor:u32, overrun:u8, count:u8, records[]. next_cursor advances across examined records, including records excluded by target_filter. Use next_cursor as after_sample_seq for the next page.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x31",
-    "payload_fields": {
-      "after_sample_seq": 17,
-      "max_records": 2,
-      "target_filter": 65535
-    }
-  },
-  "response": {
-    "opcode": "0x31",
-    "flags": "OK",
-    "payload_fields": {
-      "oldest_seq": 10,
-      "newest_seq": 22,
-      "next_cursor": 19,
-      "overrun": false,
-      "count": 2,
-      "records": [
-        {
-          "sample_seq": 18,
-          "target_id": 2,
-          "distance_mm": 1234,
-          "status": "VALID"
-        },
-        {
-          "sample_seq": 19,
-          "target_id": 3,
-          "distance_mm": 2345,
-          "status": "VALID"
-        }
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 31 02 08 02 11 01 01 02 02 05 FF
+0010  FF F3 CC 00
 ~~~
+
+Request payload: 8 bytes — `11 00 00 00 02 00 FF FF`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 31 02 46 02 0A 01 01 02 16 01 01
+0010  02 13 01 01 01 03 02 12 01 01 02 02 05 15 CD 5B
+0020  07 01 01 01 08 40 42 0E BA 99 2A 06 03 D2 04 01
+0030  01 01 02 13 01 01 02 03 05 E7 CD 5B 07 01 01 01
+0040  08 1E 43 0E BA 99 2A 06 03 29 09 01 01 01 03 FD
+0050  F3 00
+~~~
+
+Response payload: 70 bytes — `0A 00 00 00 16 00 00 00 13 00 00 00 00 02 12 00 00 00 02 00 15 CD 5B 07 00 00 00 00 40 42 0E BA 99 2A 06 00 D2 04 00 00 00 00 13 00 00 00 03 00 E7 CD 5B 07 00 00 00 00 1E 43 0E BA 99 2A 06 00 29 09 00 00 00 00`
 
 ### 0x32 — SUBSCRIBE
 
@@ -944,53 +790,49 @@ Adds event types to the subscription mask for the transport that carries the req
 
 **Successful response payload:** The resulting active subscription mask:u16. Subscription state is independent for USB CDC and UART1.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x32",
-    "payload_fields": {
-      "subscription_mask": "0x7FFF"
-    }
-  },
-  "response": {
-    "opcode": "0x32",
-    "flags": "OK",
-    "payload_fields": {
-      "active_subscription_mask": "0x7FFF"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 32 02 02 05 FF 7F 55 BE 00
 ~~~
+
+Request payload: 2 bytes — `FF 7F`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 32 02 02 05 FF 7F 11 93 00
+~~~
+
+Response payload: 2 bytes — `FF 7F`
 
 ### 0x33 — UNSUBSCRIBE
 
 Removes event types from the subscription mask for the transport that carries the request.
 
-**Request payload:** subscription_mask:u16. Each set bit clears the corresponding event subscription.
+**Request payload:** subscription_mask:u16. Each set bit clears the corresponding event subscription. The example assumes the transport's active mask is `0x7FFF` before the request.
 
 **Successful response payload:** The resulting active subscription mask:u16.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x33",
-    "payload_fields": {
-      "subscription_mask": "0x0004"
-    }
-  },
-  "response": {
-    "opcode": "0x33",
-    "flags": "OK",
-    "payload_fields": {
-      "active_subscription_mask": "0x7FFB"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 33 02 02 02 04 03 B6 BB 00
 ~~~
+
+Request payload: 2 bytes — `04 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 33 02 02 05 FB 7F 75 1A 00
+~~~
+
+Response payload: 2 bytes — `FB 7F`
 
 ### 0x35 — GET_DIAGNOSTICS
 
@@ -1000,36 +842,25 @@ Reads a compact snapshot of UWB radio registers/counters and BLE runtime queue s
 
 **Successful response payload:** 29 bytes. UWB fields (22 bytes): current_radio_status:u32, live_sys_status:u32, malformed_radio_frames:u32, rx_errors:u32, tx_errors:u32, radio_state:u8, radio_standby:u8. BLE fields (7 bytes): ble_mode:u8, ble_enabled:u8, advertising:u8, scanning:u8, active_links:u8, rx_queue_depth:u8, event_queue_depth:u8. live_sys_status is zero when the radio is unavailable or in standby.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x35",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x35",
-    "flags": "OK",
-    "payload_fields": {
-      "current_radio_status": "0x00000000",
-      "live_sys_status": "0x00000000",
-      "malformed_radio_frames": 0,
-      "rx_errors": 0,
-      "tx_errors": 0,
-      "radio_state": 0,
-      "radio_standby": false,
-      "ble_mode": "HUB (1)",
-      "ble_enabled": true,
-      "advertising": false,
-      "scanning": true,
-      "active_links": 2,
-      "rx_queue_depth": 0,
-      "event_queue_depth": 0
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 35 01 01 03 D4 37 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 35 02 1D 01 01 01 01 01 01 01 01
+0010  01 01 01 01 01 01 01 01 01 01 01 01 01 01 03 01
+0020  01 03 01 02 01 03 05 8F 00
+~~~
+
+Response payload: 29 bytes — `00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 01 01 00 01 02 00 00`
 
 ### 0x38 — GET_TRACE
 
@@ -1039,40 +870,24 @@ Reads the retained UWB radio, detailed UWB TX-start, and BLE lifecycle trace rec
 
 **Successful response payload:** count:u8 followed by count tagged records. Each record is type:u8, sequence:u32, record_size:u8, record_data[record_size]. Type 0 is UWB radio (28 data bytes), type 1 is detailed UWB TX-start (44 data bytes), and type 2 is BLE lifecycle (13 data bytes). Records are ordered oldest-first by a shared insertion sequence. The response contains the newest contiguous suffix of complete records that fits the 500-byte payload. Reading does not clear the volatile trace buffers.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x38",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x38",
-    "flags": "OK",
-    "payload_fields": {
-      "count": 1,
-      "records": [
-        {
-          "type": 2,
-          "sequence": 12,
-          "record_size": 13,
-          "data": {
-            "uptime_ms": 12000,
-            "code": 9,
-            "peer_id": 2,
-            "reason": 0,
-            "stage": 0,
-            "detail": 0,
-            "active_links": 1,
-            "state_flags": "0x03"
-          }
-        }
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 38 01 01 03 52 0E 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 38 02 14 04 01 02 0C 01 01 04 0D
+0010  E0 2E 01 03 09 02 01 01 01 01 05 01 03 45 7F 00
+~~~
+
+Response payload: 20 bytes — `01 02 0C 00 00 00 0D E0 2E 00 00 09 02 00 00 00 00 00 01 03`
 
 ### 0x40 — UWB_SLEEP
 
@@ -1082,23 +897,23 @@ Stops ranging and puts the DWM3000 radio into IDLE_RC standby. Queued one-shot j
 
 **Successful response payload:** One byte: sleep_kind:u8. The current firmware returns 1 for IDLE_RC standby.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x40",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x40",
-    "flags": "OK",
-    "payload_fields": {
-      "sleep_kind": "IDLE_RC standby (1)"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 40 01 01 03 E4 C9 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 40 02 01 04 01 01 43 00
+~~~
+
+Response payload: 1 byte — `01`
 
 ### 0x41 — UWB_WAKE
 
@@ -1108,23 +923,23 @@ Wakes or reinitializes the DWM3000 radio and reapplies its radio profile.
 
 **Successful response payload:** One byte: 0 when the radio was woken/reinitialized, 1 when it was already awake.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x41",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x41",
-    "flags": "OK",
-    "payload_fields": {
-      "wake_result": "reinitialized (0)"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 41 01 01 03 50 BF 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 41 02 01 01 03 71 F9 00
+~~~
+
+Response payload: 1 byte — `00`
 
 ### 0x42 — SYSTEM_SLEEP
 
@@ -1134,25 +949,23 @@ Stops UWB ranging and enters ESP32 timer-woken deep sleep. The ESP32 restarts af
 
 **Successful response payload:** sleep_ms:u32 containing the accepted duration. The response is transmitted and flushed before deep sleep begins. UART and USB commands cannot wake the ESP32 from deep sleep.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x42",
-    "payload_fields": {
-      "sleep_ms": 60000
-    }
-  },
-  "response": {
-    "opcode": "0x42",
-    "flags": "OK",
-    "payload_fields": {
-      "sleep_ms": 60000
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 42 02 04 03 60 EA 01 03 07 8B 00
 ~~~
+
+Request payload: 4 bytes — `60 EA 00 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 42 02 04 03 60 EA 01 03 FD F3 00
+~~~
+
+Response payload: 4 bytes — `60 EA 00 00`
 
 ### 0x43 — REBOOT
 
@@ -1162,21 +975,23 @@ Restarts the ESP32 after acknowledging the request.
 
 **Successful response payload:** Empty. The successful response is transmitted and flushed before restart.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x43",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x43",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 43 01 01 03 38 52 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 43 01 01 03 BA 8A 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x50 — SET_PEERS
 
@@ -1186,26 +1001,24 @@ Replaces and persists the configured BLE peer-ID list. An empty list selects ope
 
 **Successful response payload:** Empty. Persistence failure returns INTERNAL; a BLE configuration state that prevents the update returns BUSY.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x50",
-    "payload_fields": {
-      "peer_ids": [
-        2,
-        3
-      ]
-    }
-  },
-  "response": {
-    "opcode": "0x50",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 50 02 05 03 02 02 02 03 03 3E 03
+0010  00
 ~~~
+
+Request payload: 5 bytes — `02 02 00 03 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 50 01 01 03 C1 0A 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x51 — GET_PEERS
 
@@ -1215,27 +1028,24 @@ Reads the configured BLE peer-ID list.
 
 **Successful response payload:** count:u8 followed by count peer_id:u16 values.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x51",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x51",
-    "flags": "OK",
-    "payload_fields": {
-      "count": 2,
-      "peer_ids": [
-        2,
-        3
-      ]
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 51 01 01 03 F7 A4 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 51 02 05 03 02 02 02 03 03 82 ED
+0010  00
+~~~
+
+Response payload: 5 bytes — `02 02 00 03 00`
 
 ### 0x52 — START_BLE
 
@@ -1245,21 +1055,23 @@ Starts the configured BLE role for the current runtime session.
 
 **Successful response payload:** Empty. BLE lifecycle and state events are emitted according to each transport's subscription mask.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x52",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x52",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 52 01 01 03 2B 3F 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 52 01 01 03 A9 E7 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x53 — STOP_BLE
 
@@ -1269,21 +1081,23 @@ Stops BLE for the current runtime session and disconnects active peers.
 
 **Successful response payload:** Empty.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x53",
-    "payload_fields": {}
-  },
-  "response": {
-    "opcode": "0x53",
-    "flags": "OK",
-    "payload_fields": {}
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 53 01 01 03 9F 49 00
 ~~~
+
+Request payload: 0 bytes — `(empty)`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 53 01 01 03 1D 91 00
+~~~
+
+Response payload: 0 bytes — `(empty)`
 
 ### 0x56 — GET_PEER_STATUS
 
@@ -1293,35 +1107,24 @@ Reads the runtime status of a specific BLE peer.
 
 **Successful response payload:** 14 bytes: state:u8, mode:u8, enabled:u8, advertising:u8, scanning:u8, connected:u8, peer_id:u16, mtu:u16, last_failure_reason:u8, last_failure_stage:u8, last_failure_detail:i16. Peer states are UNKNOWN 0, CONFIGURED 1, FOUND 2, CONNECTED 3, CONNECTING 4, HANDSHAKING 5, and BACKOFF 6. Returns NOT_FOUND when no status record is available.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x56",
-    "payload_fields": {
-      "peer_id": 2
-    }
-  },
-  "response": {
-    "opcode": "0x56",
-    "flags": "OK",
-    "payload_fields": {
-      "state": "CONNECTED (3)",
-      "mode": "HUB (1)",
-      "enabled": true,
-      "advertising": false,
-      "scanning": true,
-      "connected": true,
-      "peer_id": 2,
-      "mtu": 247,
-      "last_failure_reason": 0,
-      "last_failure_stage": 0,
-      "last_failure_detail": 0
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 56 02 02 02 02 03 09 0D 00
 ~~~
+
+Request payload: 2 bytes — `02 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 56 02 0E 04 03 01 01 04 01 01 02
+0010  02 F7 01 01 01 01 03 E8 FF 00
+~~~
+
+Response payload: 14 bytes — `03 01 01 00 01 01 02 00 F7 00 00 00 00 00`
 
 ### 0x57 — SEND_TO_PEER
 
@@ -1331,29 +1134,24 @@ Queues an application message for unicast delivery to one connected BLE peer.
 
 **Successful response payload:** message_id:u16 assigned by the BLE message state machine. This response acknowledges local acceptance for transmission; BLE_DATA_SENT reports successful remote consumption.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x57",
-    "payload_fields": {
-      "peer_id": 2,
-      "data_length": 2,
-      "data_hex": "48 69",
-      "data_utf8": "Hi"
-    }
-  },
-  "response": {
-    "opcode": "0x57",
-    "flags": "OK",
-    "payload_fields": {
-      "message_id": 42,
-      "accepted_for_transmission": true
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 57 02 06 02 02 02 02 05 48 69 BD
+0010  53 00
 ~~~
+
+Request payload: 6 bytes — `02 00 02 00 48 69`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 57 02 02 02 2A 03 A2 EA 00
+~~~
+
+Response payload: 2 bytes — `2A 00`
 
 ### 0x58 — GET_RECEIVED_DATA
 
@@ -1363,29 +1161,24 @@ Retrieves one complete unread application message from a BLE peer. Reading consu
 
 **Successful response payload:** message_id:u16, data_length:u16, data[data_length]. Returns NOT_FOUND if the indicated unread message is unavailable or has expired.
 
-**Example (decoded payload fields):**
+**Wire example:**
 
-~~~json
-{
-  "request": {
-    "opcode": "0x58",
-    "payload_fields": {
-      "peer_id": 2,
-      "message_id": 42
-    }
-  },
-  "response": {
-    "opcode": "0x58",
-    "flags": "OK",
-    "payload_fields": {
-      "message_id": 42,
-      "data_length": 2,
-      "data_hex": "48 69",
-      "data_utf8": "Hi"
-    }
-  }
-}
+**On-wire request frame (host → device; complete COBS frame):**
+
+~~~text
+0000  06 01 01 34 12 58 02 04 02 02 02 2A 03 A8 1D 00
 ~~~
+
+Request payload: 4 bytes — `02 00 2A 00`
+
+**Sample response frame (device → host; complete COBS frame):**
+
+~~~text
+0000  06 01 02 34 12 58 02 06 02 2A 02 02 05 48 69 E3
+0010  F2 00
+~~~
+
+Response payload: 6 bytes — `2A 00 02 00 48 69`
 
 ### Configuration state and persistence
 
