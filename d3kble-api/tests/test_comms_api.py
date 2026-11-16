@@ -1,8 +1,10 @@
+import asyncio
 import json
+import time
 from concurrent.futures import Future
 
 from d3kble.comms import CommsManager
-from d3kble.models import BleMessage
+from d3kble.models import BleMessage, CommsResponse
 
 
 class FakeTicket:
@@ -50,7 +52,6 @@ def test_receiver_records_in_memory_before_sending_acceptance_ack():
     )
     manager.receive_ble_message(message)
 
-    # The ACK transmission is issued only after recording the in-memory inbox entry.
     rows = manager.store.due_inbox(10**12)
     assert len(rows) == 1
     assert rows[0][0:3] == (7, "application-id", "message")
@@ -59,9 +60,98 @@ def test_receiver_records_in_memory_before_sending_acceptance_ack():
     assert ack["kind"] == "ack"
     assert ack["ack_id"] == "application-id"
 
-    # Re-delivery is deduplicated but still acknowledged.
     manager.receive_ble_message(message)
     assert manager.duplicates == 1
     assert len(ble.sent) == 2
     assert len(manager.store.due_inbox(10**12)) == 1
+    manager.close()
+
+
+def test_request_ticket_is_awaitable_and_returns_response_object():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    ticket = manager.request(7, {"operation": "status"})
+    manager._receive_response(7, {
+        "v": 1,
+        "id": "response-id",
+        "kind": "response",
+        "reply_to": ticket.message_id,
+        "payload": {
+            "status": "ok",
+            "error": None,
+            "content": {"ready": True},
+        },
+    })
+
+    async def wait_for_ticket():
+        return await ticket
+
+    response = asyncio.run(wait_for_ticket())
+    assert response == CommsResponse("ok", None, {"ready": True})
+    manager.close()
+
+
+def test_request_timeout_resolves_to_error_response_and_cleans_up():
+    manager = CommsManager(FakeBle(), FakeDispatcher(), response_timeout=0.05)
+    ticket = manager.request(7, {"operation": "status"})
+    manager.start()
+    try:
+        response = ticket.wait_response(timeout=0.5)
+        assert response.status == "error"
+        assert "0.050 seconds" in response.error
+        assert response.content is None
+        assert manager.pending_requests() == []
+        assert all(row[0] != ticket.message_id for row in manager.store.due_outbox(time.time() + 10))
+    finally:
+        manager.close()
+
+
+def test_async_request_handler_returns_structured_response():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+
+    async def handler(request):
+        await asyncio.sleep(0.001)
+        return {"echo": request.payload}
+
+    manager.on_request(handler)
+    envelope = {
+        "v": 1, "id": "incoming-request", "kind": "request",
+        "payload": {"value": 42},
+    }
+    manager.store.insert_inbox(
+        8, "incoming-request", "request", json.dumps(envelope), time.time()
+    )
+    manager._dispatch_inbox(manager.store.due_inbox(time.time() + 1)[0])
+
+    rows = manager.store.due_outbox(time.time() + 1)
+    assert len(rows) == 1
+    assert rows[0][2] == "response"
+    wire = json.loads(rows[0][3].decode("utf-8"))["payload"]
+    assert wire == {"status": "ok", "error": None, "content": {"echo": {"value": 42}}}
+    manager.close()
+
+
+def test_request_handler_failure_is_returned_and_not_retried():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    calls = []
+
+    def handler(request):
+        calls.append(request.message_id)
+        raise RuntimeError("operation failed")
+
+    manager.on_request(handler)
+    envelope = {
+        "v": 1, "id": "failing-request", "kind": "request", "payload": {},
+    }
+    manager.store.insert_inbox(
+        8, "failing-request", "request", json.dumps(envelope), time.time()
+    )
+    manager._dispatch_inbox(manager.store.due_inbox(time.time() + 1)[0])
+
+    assert calls == ["failing-request"]
+    assert manager.store.due_inbox(time.time() + 60) == []
+    rows = manager.store.due_outbox(time.time() + 1)
+    assert len(rows) == 1
+    response = json.loads(rows[0][3].decode("utf-8"))["payload"]
+    assert response["status"] == "error"
+    assert "operation failed" in response["error"]
     manager.close()
