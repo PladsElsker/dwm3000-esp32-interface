@@ -128,7 +128,23 @@ check_core_worktree() {
   done <<< "$status"
 }
 
+
+initialize_driver_submodule() {
+  [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.gitmodules" ]] || \
+    fail "Run this script from a clone of dwm3000-esp32-interface with its .gitmodules file present."
+  if [[ ! -f "$DRIVER_LIB/Dw3000/library.properties" ]]; then
+    log "Initializing the DWM3000 driver submodule"
+    git -C "$REPO_ROOT" submodule update --init --recursive -- "$SUBMODULE_PATH"
+  fi
+  [[ -f "$DRIVER_LIB/Dw3000/library.properties" ]] || \
+    fail "The Makerfabs DWM3000 driver submodule is missing or incomplete: $DRIVER_LIB"
+}
+
 check_commands
+
+if ((COMPILE_FIRMWARE)); then
+  initialize_driver_submodule
+fi
 
 if [[ -n "${ARDUINO_SKETCHBOOK_DIR:-}" ]]; then
   SKETCHBOOK_DIR="$ARDUINO_SKETCHBOOK_DIR"
@@ -200,10 +216,29 @@ log "Synchronizing the builder's Arduino-ESP32 source branch"
   cd "$BUILDER_DIR"
   AR_SOURCE_BRANCH="$ARDUINO_BRANCH" IDF_BRANCH="$IDF_BRANCH" bash ./tools/install-arduino.sh
 )
-BUILDER_ARDUINO_SHA="$(git -C "$BUILDER_DIR/components/arduino" rev-parse HEAD)"
+BUILDER_ARDUINO_DIR="$BUILDER_DIR/components/arduino"
+if [[ -e "$BUILDER_ARDUINO_DIR" ]]; then
+  check_git_origin "$BUILDER_ARDUINO_DIR" "espressif/arduino-esp32"
+  [[ -z "$(git -C "$BUILDER_ARDUINO_DIR" status --porcelain --untracked-files=no)" ]] || \
+    fail "The builder's Arduino source checkout has tracked changes: $BUILDER_ARDUINO_DIR"
+fi
+BUILDER_IDF_DIR="$BUILDER_DIR/esp-idf"
+if [[ -e "$BUILDER_IDF_DIR" ]]; then
+  check_git_origin "$BUILDER_IDF_DIR" "espressif/esp-idf"
+  [[ -z "$(git -C "$BUILDER_IDF_DIR" status --porcelain --untracked-files=no)" ]] || \
+    fail "The builder's ESP-IDF checkout has tracked changes: $BUILDER_IDF_DIR"
+fi
+
+BUILDER_ARDUINO_SHA="$(git -C "$BUILDER_ARDUINO_DIR" rev-parse HEAD)"
+log "Aligning the manual Arduino core to builder source $BUILDER_ARDUINO_SHA"
+git -C "$CORE_DIR" restore -- package/package_esp32_index.template.json
+git -C "$CORE_DIR" fetch origin "$ARDUINO_BRANCH"
+git -C "$CORE_DIR" checkout -B "$ARDUINO_BRANCH" "$BUILDER_ARDUINO_SHA"
+git -C "$CORE_DIR" submodule sync --recursive
+git -C "$CORE_DIR" submodule update --init --recursive
 CORE_SHA="$(git -C "$CORE_DIR" rev-parse HEAD)"
 [[ "$CORE_SHA" == "$BUILDER_ARDUINO_SHA" ]] || \
-  fail "The manual Arduino core revision ($CORE_SHA) does not match the builder source ($BUILDER_ARDUINO_SHA). Move '$CORE_DIR' aside and rerun this script to create a matching checkout."
+  fail "The manual Arduino core revision ($CORE_SHA) does not match the builder source ($BUILDER_ARDUINO_SHA)."
 
 log "Installing the Arduino-ESP32 platform tools"
 "$PYTHON" "$CORE_DIR/tools/get.py"
@@ -250,15 +285,6 @@ SELECTED_PLATFORM="$(cd "$SELECTED_PLATFORM" && pwd -P)"
 }
 
 if ((COMPILE_FIRMWARE)); then
-  if [[ ! -f "$DRIVER_LIB/Dw3000/library.properties" ]]; then
-    if [[ -n "$REPO_ROOT" && -f "$REPO_ROOT/.gitmodules" ]]; then
-      log "Initializing the DWM3000 driver submodule"
-      git -C "$REPO_ROOT" submodule update --init --recursive -- "$SUBMODULE_PATH"
-    fi
-  fi
-  [[ -f "$DRIVER_LIB/Dw3000/library.properties" ]] || \
-    fail "The Makerfabs DWM3000 library submodule is missing. Clone this repository with submodules or initialize $SUBMODULE_PATH."
-
   log "Compiling the firmware with the verified custom core"
   "$ARDUINO_CLI_PATH" compile \
     --fqbn "$FQBN" \
