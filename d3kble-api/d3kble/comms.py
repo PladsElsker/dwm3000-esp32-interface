@@ -237,7 +237,10 @@ class CommsManager:
         if accepted:
             ack.set_result({"accepted": True, "message_id": message_id})
         if response_json is not None:
-            response.set_result(self._decode_response(json.loads(response_json)))
+            saved_response = self._decode_response(json.loads(response_json))
+            response.set_result(saved_response)
+            if not accepted:
+                ack.set_exception(RequestTimeout(saved_response.error or "request did not receive an acknowledgement"))
         ticket = CommsTicket(message_id, peer_id, "request", ack, response)
         with self._tickets_lock:
             self._tickets[message_id] = ticket
@@ -331,7 +334,7 @@ class CommsManager:
             self._response_to_wire(response), separators=(",", ":"), ensure_ascii=False
         )
         # A response that arrives after the local deadline is deliberately ignored.
-        if not self.store.store_response(request_id, serialized):
+        if not self.store.store_response(request_id, serialized, peer_id=peer_id):
             return
         with self._tickets_lock:
             ticket = self._tickets.get(request_id)
@@ -556,10 +559,6 @@ class CommsManager:
 
     def close(self):
         self._running.clear()
-        if self._thread and self._thread is not threading.current_thread():
-            self._thread.join(timeout=2)
-        self._executor.shutdown(wait=True, cancel_futures=True)
-        self._dispatch_executor.shutdown(wait=True, cancel_futures=True)
         reason = "communications manager closed before the operation completed"
         with self._tickets_lock:
             tickets = tuple(self._tickets.values())
@@ -571,4 +570,8 @@ class CommsManager:
                 ticket.response_future.set_result(
                     CommsResponse(status="error", error=reason, content=None)
                 )
+        if self._thread and self._thread is not threading.current_thread():
+            self._thread.join(timeout=2)
+        self._executor.shutdown(wait=True, cancel_futures=True)
+        self._dispatch_executor.shutdown(wait=True, cancel_futures=True)
         self.store.close()
