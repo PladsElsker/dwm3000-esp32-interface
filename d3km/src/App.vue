@@ -17,7 +17,6 @@ import {
     Cpu,
     Database,
     Download,
-    History,
     Inbox,
     LayoutDashboard,
     Link2,
@@ -54,7 +53,7 @@ const OP = {
     CANCEL_OPERATION: 0x28, UWB_SLEEP: 0x29, UWB_WAKE: 0x2A,
 
     // UWB measurements and history.
-    GET_LAST_RANGE: 0x30, GET_HISTORY: 0x31,
+    GET_LAST_RANGE: 0x30,
 
     // System power and restart.
     SYSTEM_SLEEP: 0x40, REBOOT: 0x41,
@@ -1406,6 +1405,17 @@ async function pauseLiveCalibrationLoop() {
     if (calibrationLoopPromise) await calibrationLoopPromise;
     calibrationLoopPromise = null;
 }
+async function stopAntennaCalibration() {
+    if (!calibration.active || calibration.operationBusy) return;
+    try {
+        await endAntennaCalibrationSession();
+        notice.value = calibration.message;
+        log('Live antenna calibration stopped');
+    } catch (e: any) {
+        calibration.error = String(e);
+        calibration.phase = 'error';
+    }
+}
 async function beginAntennaCalibration() {
     if (calibration.active || !connected.value) return;
     calibration.error = '';
@@ -1585,17 +1595,15 @@ async function startRange() { try { await cmd(OP.START_RANGING); await refreshSt
 async function stopRange() { try { await cmd(OP.STOP_RANGING); await refreshStatus(); notice.value = 'Ranging stopped and queued one-shots cleared'; } catch (e: any) { error.value = String(e) } }
 async function rangeOnce() { try { const target = Number(oneShotTarget.value); if (!Number.isInteger(target) || target < 1 || target > 65534) throw new Error('Enter a valid target ID.'); const p = await cmd(OP.RANGE_ONCE, u16(target)); notice.value = `One-shot job ${get16(p)} queued for target ${target}`; log(`RANGE_ONCE queued · target ${target} · job ${get16(p)}`) } catch (e: any) { error.value = String(e) } }
 const oneShotTarget = ref('2'), cancelJobId = ref('1'), advancedOutput = ref('No advanced command run yet.');
-async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let page = 0; page < 16; page++) { const p = await cmd(OP.GET_HISTORY, [...u32(cursor), ...u16(17), ...u16(0xffff)]); const count = p[13]; cursor = get32(p, 8); for (let j = 0; j < count; j++)rows.push(decodeMeasurement(p.slice(14 + j * 28, 14 + (j + 1) * 28))); if (count < 17 || cursor === 0) break; } measurements.value = rows.reverse().slice(-256); notice.value = `Loaded ${measurements.value.length} retained measurements`; } catch (e: any) { error.value = String(e) } }
 async function quick(op: number, label: string) { try { const p = await cmd(op); notice.value = label; log(label); return p } catch (e: any) { error.value = String(e); return null } }
 async function pingNode() { const p = await quick(1, 'PING completed'); if (p) advancedOutput.value = `PING response: ${readString(p)}` }
 async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(OP.TIME_SYNC, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
-async function readLastRange() { try { const p = await cmd(OP.GET_LAST_RANGE, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
+async function readLastRange() { try { const p = await cmd(OP.GET_LAST_RANGE, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; } catch (e: any) { error.value = String(e) } }
 async function cancelJob() { try { await cmd(OP.CANCEL_OPERATION, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
 async function subscribeAll() { try { const p = await cmd(OP.SUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
 async function unsubscribeAll() { try { const p = await cmd(OP.UNSUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
 async function readAntenna() { try { const p = await cmd(OP.GET_ANTENNA_DELAYS); advancedOutput.value = `TX antenna delay: ${get16(p)} · RX antenna delay: ${get16(p, 2)}`; } catch (e: any) { error.value = String(e) } }
 async function clearStats() { if (confirm('Clear all device diagnostic counters?')) { await quick(5, 'Statistics counters cleared'); await refreshAll() } }
-async function clearHistory() { if (confirm('Clear retained measurement history?')) { await quick(0x34, 'Measurement history cleared'); measurements.value = [] } }
 async function sleepRadio() { await quick(0x40, 'Radio entered IDLE_RC standby (not deep sleep)'); await refreshStatus() }
 async function wakeRadio() { await quick(0x41, 'Radio wake command completed'); await refreshStatus() }
 async function reboot() { if (confirm('Reboot the ESP32 node? The USB connection will be interrupted.')) { await quick(0x43, 'Reboot command sent'); setTimeout(() => { void handleUsbLoss('Device rebooted. Reconnect when it appears on USB.'); }, 1000); } }
@@ -1926,9 +1934,6 @@ async function importConfigPreset(event: Event) {
                     @click="navigate('bluetooth')">
                     <Bluetooth />Bluetooth<span v-if="ble.runtime.connected" class="nav-live-dot" />
                 </button>
-                <button :class="{ selected: active === 'history' }" :disabled="!connected" @click="navigate('history')">
-                    <History />Measurements
-                </button>
                 <button :class="{ selected: active === 'diagnostics' }" :disabled="!connected"
                     @click="navigate('diagnostics')">
                     <Activity />Diagnostics
@@ -1950,7 +1955,7 @@ async function importConfigPreset(event: Event) {
                     {{ ({
                         overview: 'Overview', configuration: 'Configuration', calibration: 'Antenna calibration', ranging:
                             'Ranging test', bluetooth: 'Bluetooth messaging',
-                        history: 'Measurements', diagnostics: 'Diagnostics', system: 'Device controls'
+                        diagnostics: 'Diagnostics', system: 'Device controls'
                     } as any)[active] }}
                 </div>
                 <div class="top-actions">
@@ -2294,6 +2299,11 @@ async function importConfigPreset(event: Event) {
                                     @click="saveAntennaCalibration">
                                     <Save :size="15" /> {{ calibration.operationBusy && calibration.phase === 'saving' ?
                                         'Saving…' : 'Save' }}
+                                </button>
+                                <button class="button danger-ghost"
+                                    :disabled="calibration.operationBusy || !calibration.active || !connected"
+                                    @click="stopAntennaCalibration">
+                                    <CircleAlert :size="15" /> Stop calibration
                                 </button>
                                 <button class="button secondary" :disabled="calibration.operationBusy || !connected"
                                     @click="resetAntennaCalibration">
@@ -3003,66 +3013,6 @@ async function importConfigPreset(event: Event) {
                             </table>
                         </div>
                         <div v-else class="empty-state">Waiting for ranging measurements.</div>
-                    </div>
-                </section>
-
-                <section v-else-if="active === 'history'">
-                    <div class="page-heading">
-                        <div>
-                            <div class="eyebrow">MEASUREMENT DATA</div>
-                            <h1>Measurements & history</h1>
-                            <p>Review retained ranging records from the device circular buffer (up to 256 records).</p>
-                        </div>
-                        <div class="heading-actions"><button class="button secondary" :disabled="!connected"
-                                @click="loadHistory">
-                                <Download :size="15" /> Load device history
-                            </button><button class="button danger-ghost" :disabled="!connected" @click="clearHistory">
-                                <Trash2 :size="15" /> Clear history
-                            </button></div>
-                    </div>
-                    <div class="panel">
-                        <div class="panel-heading">
-                            <div>
-                                <h3>Retained samples</h3>
-                                <p>{{ measurements.length }} samples currently loaded into this view</p>
-                            </div><span class="tag neutral">Max 256</span>
-                        </div>
-                        <div v-if="measurements.length" class="table-wrap">
-                            <table>
-                                <thead>
-                                    <tr>
-                                        <th>SAMPLE SEQ</th>
-                                        <th>TARGET ID</th>
-                                        <th>MONOTONIC TIME (µs)</th>
-                                        <th>DISTANCE</th>
-                                        <th>STATUS</th>
-                                        <th>QUALITY FLAGS</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    <tr v-for="m in measurements" :key="`${m.seq}-${m.time}`">
-                                        <td>#{{ m.seq }}</td>
-                                        <td>{{ m.target }}</td>
-                                        <td class="mono">{{ m.mono ?? '—' }}</td>
-                                        <td>{{ fmtRange(m.mm < 0 ? null : m.mm) }}</td>
-                                        <td><span class="tag" :class="m.status === 0 ? 'good' : 'bad'">{{
-                                            statusText(m.status) }}</span>
-                                        </td>
-                                        <td>{{ hex(m.quality ?? 0, 2) }}</td>
-                                    </tr>
-                                </tbody>
-                            </table>
-                        </div>
-                        <div v-else class="empty-state">
-                            <Database :size="25" /><b>No measurement data loaded</b><span>Load retained history from the
-                                connected node
-                                or start a ranging test.</span>
-                        </div>
-                    </div>
-                    <div class="hint-block">
-                        <CircleHelp :size="17" /><span>History is fetched in pages of up to 17 records. The device
-                            retains up to 256
-                            records; if the cursor predates retained data, firmware reports an overrun.</span>
                     </div>
                 </section>
 
