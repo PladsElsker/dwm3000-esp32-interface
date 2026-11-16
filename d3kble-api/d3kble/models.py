@@ -50,6 +50,27 @@ class ApplicationMessage:
 
 
 @dataclass(frozen=True, slots=True)
+class CommsResponse:
+    """Result of an application-level request."""
+
+    status: str
+    error: str | None
+    content: Any
+
+    def __post_init__(self):
+        if self.status not in {"ok", "error"}:
+            raise ValueError("response status must be 'ok' or 'error'")
+        if self.status == "ok" and self.error is not None:
+            raise ValueError("successful responses cannot have an error")
+        if self.status == "error" and not self.error:
+            raise ValueError("error responses require an error reason")
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+@dataclass(frozen=True, slots=True)
 class RuntimeConfig:
     values: dict[str, Any] = field(default_factory=dict)
     valid: bool = False
