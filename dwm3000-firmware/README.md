@@ -34,34 +34,43 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 Build with Arduino CLI and the Seeed XIAO ESP32-C3 board definition. The firmware uses NimBLE-Arduino 2.5.0 and supports up to eight concurrent BLE peer links.
 
-The BLE host/controller limits are part of the compiled ESP32 Arduino core libraries, not sketch compiler flags. This project uses the custom ESP32-C3 core libraries built by [esp32-arduino-lib-builder](https://github.com/PladsElsker/esp32-arduino-lib-builder), which sets:
+The BLE host and controller limits are part of the compiled ESP32 Arduino core libraries, not sketch compiler flags. This project uses the custom ESP32-C3 libraries built by [esp32-arduino-lib-builder](https://github.com/PladsElsker/esp32-arduino-lib-builder):
 
 ```ini
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
 CONFIG_BT_CTRL_BLE_MAX_ACT=9
 ```
 
-Build and install the customized core once. The builder copies its generated libraries and configuration into a manually installed Arduino-ESP32 source tree; it does not modify a Boards Manager installation.
+Create a manual Arduino-ESP32 installation in the Arduino CLI sketchbook directory. This is separate from any Boards Manager installation:
 
 ```sh
-git clone https://github.com/PladsElsker/esp32-arduino-lib-builder
-cd esp32-arduino-lib-builder
-git checkout master
-./build.sh -f -t esp32c3 -c "$HOME/Arduino/hardware/espressif/esp32"
+SKETCHBOOK_DIR="$(arduino-cli config get directories.user)"
+CORE_DIR="$SKETCHBOOK_DIR/hardware/espressif/esp32"
+mkdir -p "$(dirname "$CORE_DIR")"
+git clone --branch idf-release/v5.5 https://github.com/espressif/arduino-esp32.git "$CORE_DIR"
+git -C "$CORE_DIR" submodule update --init --recursive
+python3 "$CORE_DIR/tools/get.py"
 ```
 
-The target directory must be a manual Arduino-ESP32 installation. The builder selects its Arduino-ESP32 and ESP-IDF source revisions; keep the generated core and the toolchain versions together, and do not replace its `tools/esp32-arduino-libs` directory with files from a Boards Manager package.
+Build and copy the customized libraries into that manual core installation. Pin the builder to the same Arduino-ESP32 branch and ESP-IDF release used by the core:
 
-After the core has been built and installed, compile this sketch using that custom core's platform package. Arduino CLI must resolve the `esp32:esp32:esp32c3` platform to the manually installed core, not to a separate Boards Manager copy. For example, when the custom core is installed as a hardware package in your sketchbook:
+```sh
+git clone https://github.com/PladsElsker/esp32-arduino-lib-builder.git "$HOME/esp32-arduino-lib-builder"
+git -C "$HOME/esp32-arduino-lib-builder" checkout 165a3d6e094266eb8c54c96732c0f0cb3e1b3e84
+cd "$HOME/esp32-arduino-lib-builder"
+./build.sh -f -A idf-release/v5.5 -I release/v5.5 -t esp32c3 -c "$CORE_DIR"
+```
+
+The builder replaces `$CORE_DIR/tools/esp32-arduino-libs` with the generated SDK libraries and configuration. Run `tools/get.py` before this step, not after it, or the stock SDK library package will overwrite the customized libraries. Re-run the builder command whenever the BLE Kconfig values or ESP-IDF build inputs change.
+
+Arduino CLI discovers manual platforms under `directories.user/hardware`. Compile using the custom core:
 
 ```sh
 arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
-Do not add `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` through `compiler.c.extra_flags` or `compiler.cpp.extra_flags`: those flags do not rebuild the precompiled NimBLE host or Bluetooth controller libraries.
-
-To verify the selected core, inspect the installed platform's `tools/esp32-arduino-libs/esp32c3/sdkconfig` and the matching memory-variant header under `tools/esp32-arduino-libs/esp32c3/<memory_type>/include/sdkconfig.h`. They must contain `CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8` and `CONFIG_BT_CTRL_BLE_MAX_ACT=9`. The core's `platform.txt` selects this SDK directory using the board's chip variant and memory type.
+Do not add `CONFIG_BT_NIMBLE_MAX_CONNECTIONS` through `compiler.c.extra_flags` or `compiler.cpp.extra_flags`; those flags do not rebuild the precompiled NimBLE host or Bluetooth controller libraries. Use `arduino-cli compile --verbose` and confirm the selected platform and SDK paths point into `$CORE_DIR`, not the Boards Manager installation. The installed `$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig` and the active memory-variant header under `esp32c3/*/include/sdkconfig.h` must report host connections `8` and controller activities `9`.
 
 Upload the compiled sketch:
 
@@ -79,7 +88,7 @@ BLE uses NimBLE-Arduino 2.5.0 and runs independently of UWB ranging.
 - Configuration stores the BLE role, peer policy, timing parameters, and the `Automatically start Bluetooth after boot` preference in NVS. At boot, the node starts the saved HUB or PERIPHERAL role when auto-start is enabled.
 - `START_BLE` and `STOP_BLE` start and stop BLE for the current runtime session. The boot auto-start preference is configured and saved separately.
 - While enabled, HUB nodes scan for peers and run one Central connection attempt at a time; scanning pauses through connection and GATT identity validation. Failed attempts enter backoff and are retried automatically. PERIPHERAL nodes advertise and accept permitted peers. The node manages scanning, advertising, connections, and reconnection autonomously; hosts read per-peer status and detailed connection failure events.
-- Up to eight concurrent peer links are maintained. The NimBLE host build uses nine connection slots.
+- Up to eight concurrent peer links are maintained. The NimBLE host is configured for eight connections; the Bluetooth controller activity pool is configured for nine activities.
 - An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
 - Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
 - Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. \`BLE_DATA_SENT\` indicates that the remote host retrieved the complete message.

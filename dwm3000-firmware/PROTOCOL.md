@@ -1348,7 +1348,7 @@ Subscription bits 0–5 correspond to event opcodes `0x80`–`0x85`; BLE event o
 
 ## BLE peer transport
 
-The BLE transport uses NimBLE-Arduino 2.5.0 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for nine connection slots; the application manages up to eight peer links.
+The BLE transport uses NimBLE-Arduino 2.5.0 on the ESP32-C3. `ble_mode` selects IDLE (`0`), HUB/Central (`1`), or PERIPHERAL (`2`). The firmware supports up to eight simultaneous peer connections in either role. The NimBLE host is configured for eight connection slots, matching the application link limit. The Bluetooth controller activity pool is configured for nine activities to allow eight links plus one scan or advertising activity.
 
 
 A peer list with zero entries selects open mode. In HUB mode, the node discovers peers advertising a valid `UWB-XXXX` device name and can connect to any valid discovered peer ID. In PERIPHERAL mode, the node accepts any valid remote peer ID. A non-empty peer list is an allow-list checked during the identity handshake. The list holds up to eight unique peer IDs.
