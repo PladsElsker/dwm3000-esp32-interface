@@ -69,7 +69,8 @@ class CommsTicket:
         if self.response_future is None:
             raise RuntimeError("only request tickets can be awaited")
         async def wait_for_response():
-            return await asyncio.wrap_future(self.response_future)
+            wrapped = asyncio.wrap_future(self.response_future)
+            return await asyncio.shield(wrapped)
         return wait_for_response().__await__()
 
 
@@ -119,6 +120,7 @@ class CommsManager:
         self.ble = ble
         self.dispatcher = dispatcher
         self.store = CommsState()
+        self._asyncio_loop: asyncio.AbstractEventLoop | None = None
         self.ack_timeout = ack_timeout
         self.delivery_timeout = delivery_timeout
         self.max_attempts = max_attempts
@@ -146,6 +148,24 @@ class CommsManager:
         self._running.set()
         self._thread = threading.Thread(target=self._run, name="d3kble-comms", daemon=True)
         self._thread.start()
+
+    def bind_asyncio_loop(self, loop: asyncio.AbstractEventLoop):
+        """Run async request/message/response handlers on an application event loop."""
+        if not loop.is_running():
+            raise RuntimeError("the asyncio event loop must already be running")
+        self._asyncio_loop = loop
+
+    @staticmethod
+    async def _await_value(value):
+        return await value
+
+    def _run_awaitable(self, value):
+        loop = self._asyncio_loop
+        if loop is not None and loop.is_running():
+            return asyncio.run_coroutine_threadsafe(
+                self._await_value(value), loop
+            ).result()
+        return asyncio.run(self._await_value(value))
 
     def on_message(self, callback=None):
         return self._register("message", callback)
@@ -373,7 +393,9 @@ class CommsManager:
 
     def _safe_response_callback(self, callback, response):
         try:
-            callback(response)
+            result = callback(response)
+            if inspect.isawaitable(result):
+                self._run_awaitable(result)
         except Exception as exc:
             self.dispatcher.emit("comms_handler_error", {
                 "peer_id": response.peer_id, "message_id": response.message_id, "error": exc,
@@ -477,18 +499,14 @@ class CommsManager:
                 )
                 result = callbacks[0](request)
                 if inspect.isawaitable(result):
-                    async def await_result():
-                        return await result
-                    result = asyncio.run(await_result())
+                    result = self._run_awaitable(result)
                 if not request._responded:
                     request.respond(result)
             else:
                 for callback in callbacks:
                     result = callback(message)
                     if inspect.isawaitable(result):
-                        async def await_result():
-                            return await result
-                        asyncio.run(await_result())
+                        self._run_awaitable(result)
             self.store.complete_inbox(peer_id, message_id)
             self.dispatcher.emit("comms_processed", {
                 "peer_id": peer_id, "message_id": message_id, "kind": kind,
