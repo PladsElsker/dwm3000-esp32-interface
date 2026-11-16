@@ -25,6 +25,7 @@ The protocol reference is [dwm3000-firmware/PROTOCOL.md](dwm3000-firmware/PROTOC
 - `dwm3000-firmware/UwbNode/` — ESP32-C3 Arduino/PlatformIO firmware sketch and its embedded dependencies
 - `d3km/` — Vue frontend and Tauri/Rust desktop backend
 - `d3kble-api/` — Python host API for ESP32-C3 / DWM3000 nodes
+- `manual_tests/` — manually run real-device checks for UART, UWB, BLE, and application messaging
 - `dwm3000-board/` — KiCad design and manufacturing files
 
 ## Development workflow
