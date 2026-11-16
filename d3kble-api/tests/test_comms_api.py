@@ -155,3 +155,13 @@ def test_request_handler_failure_is_returned_and_not_retried():
     assert response["status"] == "error"
     assert "operation failed" in response["error"]
     manager.close()
+
+
+
+def test_closing_manager_resolves_outstanding_request_ticket():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    ticket = manager.request(7, {"operation": "status"})
+    manager.close()
+    response = ticket.wait_response(timeout=0.1)
+    assert response.status == "error"
+    assert "manager closed" in response.error
