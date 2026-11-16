@@ -54,14 +54,14 @@ The default core and builder directories can be overridden with `ARDUINO_SKETCHB
 After the custom core has been built, subsequent firmware-only builds can use Arduino CLI directly without BLE compiler flag overrides:
 
 ```sh
-arduino-cli compile --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
+arduino-cli compile --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
 Upload the compiled sketch:
 
 ```sh
-arduino-cli upload -p /dev/ttyACM0 --fqbn esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin ./UwbNode
+arduino-cli upload -p /dev/ttyACM0 --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin ./UwbNode
 ```
 
 The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.

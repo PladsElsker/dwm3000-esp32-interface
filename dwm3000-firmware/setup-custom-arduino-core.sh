@@ -4,6 +4,7 @@ set -Eeuo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 FIRMWARE_DIR="$SCRIPT_DIR"
 UWB_NODE_DIR="$FIRMWARE_DIR/UwbNode"
+DRIVER_LIB="$UWB_NODE_DIR/lib/Makerfabs-ESP32-UWB-DW3000"
 REPO_ROOT="$(git -C "$FIRMWARE_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 
 readonly BUILDER_REPO="https://github.com/PladsElsker/esp32-arduino-lib-builder.git"
@@ -11,7 +12,7 @@ readonly BUILDER_COMMIT="165a3d6e094266eb8c54c96732c0f0cb3e1b3e84"
 readonly ARDUINO_REPO="https://github.com/espressif/arduino-esp32.git"
 readonly ARDUINO_BRANCH="idf-release/v5.5"
 readonly IDF_BRANCH="release/v5.5"
-readonly FQBN="esp32:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin"
+readonly FQBN="espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin"
 readonly SUBMODULE_PATH="dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"
 
 COMPILE_FIRMWARE=1
@@ -79,7 +80,7 @@ check_commands() {
     *) fail "This script supports Linux and macOS. Use WSL on Windows." ;;
   esac
 
-  if (("${#missing[@]}")); then
+  if ((${#missing[@]})); then
     printf 'Missing build prerequisites: %s\n' "${missing[*]}" >&2
     case "$(uname -s)" in
       Linux)
