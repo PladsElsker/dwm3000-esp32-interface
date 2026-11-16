@@ -536,7 +536,7 @@ def record_response(op: int, payload: bytes) -> object:
         except UnicodeDecodeError:
             text = None
         return {"message_id": message_id, "length": length, "data_hex": data.hex(), "data_utf8": text}
-    if op in (0x15, 0x16) and len(payload) == 4:
+    if op in (0x15, 0x16, 0x17) and len(payload) == 4:
         return {"tx_antenna_delay": struct.unpack_from("<H", payload)[0], "rx_antenna_delay": struct.unpack_from("<H", payload, 2)[0]}
     if op == 0x21 and payload:
         cnt = payload[0]; return {"targets": list(struct.unpack_from("<" + "H" * cnt, payload, 1)) if cnt else []}

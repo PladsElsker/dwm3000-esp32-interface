@@ -1,6 +1,7 @@
 use serialport::SerialPort;
 use std::io::{Read, Write};
 use std::time::{Duration, Instant};
+use tauri::{AppHandle, Emitter};
 
 const OP_SET_CONFIG: u8 = 0x11;
 const OP_RESET_CONFIG: u8 = 0x12;
@@ -8,7 +9,6 @@ const OP_APPLY_SAVE_CONFIG: u8 = 0x14;
 const OP_UWB_WAKE: u8 = 0x2A;
 const OP_SYSTEM_SLEEP: u8 = 0x40;
 const OP_REBOOT: u8 = 0x41;
-use tauri::{AppHandle, Emitter};
 
 pub const ERRORS: [&str; 11] = [
     "OK",

@@ -103,6 +103,8 @@ assert module.OPS["apply-save-config"] == 0x14
 assert module.OPS["get-ant-delays"] == 0x15
 assert module.OPS["set-ant-delays"] == 0x16
 assert module.OPS["save-ant-delays"] == 0x17
+saved_delays = module.record_response(0x17, struct.pack("<HH", 16385, 16390))
+assert saved_delays == {"tx_antenna_delay": 16385, "rx_antenna_delay": 16390}
 assert module.OPS["get-targets"] == 0x21
 assert module.OPS["set-targets"] == 0x22
 assert module.OPS["get-schedule"] == 0x23
