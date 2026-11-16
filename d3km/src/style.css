@@ -658,3 +658,41 @@ tbody tr:hover { background: #f7f9fa; }
         padding-top: 12px;
     }
 }
+
+
+/* Browser-local named configuration presets (separate from device NVS). */
+.config-presets-panel { margin-bottom: 13px; }
+.preset-controls {
+    display: grid;
+    grid-template-columns: minmax(180px, 1fr) minmax(180px, 1fr);
+    align-items: end;
+    gap: 12px;
+}
+.preset-controls > label {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    min-width: 0;
+    color: #52616a;
+    font-size: 10px;
+    font-weight: 650;
+}
+.preset-controls select,
+.preset-controls input {
+    width: 100%;
+    min-width: 0;
+}
+.preset-actions {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+}
+.preset-file-input { display: none !important; }
+.preset-hint { margin: 12px 0 0; line-height: 1.5; }
+@media (max-width: 650px) {
+    .preset-controls { grid-template-columns: 1fr; }
+    .preset-actions { grid-column: auto; }
+    .preset-actions .button { flex: 1 1 auto; justify-content: center; }
+}
