@@ -346,14 +346,14 @@ The diagnostics snapshot includes transport frame and receive-error counters, ev
 
 The package implements the host protocol documented in [`../dwm3000-firmware/PROTOCOL.md`](../dwm3000-firmware/PROTOCOL.md). Host and firmware versions must use compatible command, event, and payload definitions.
 
-Run the test suite:
+Run the automated tests:
 
 ```sh
 python -m pip install -e '.[dev]'
 python -m pytest
 ```
 
-Tests use a fake serial transport. Validate UART behavior, UWB ranging, and BLE communication on the target hardware as well. The repository-level [`manual_tests/`](../manual_tests/README.md) directory contains scripts for those real-device checks.
+Automated tests use a fake serial transport. The [`manual_tests/`](manual_tests/README.md) directory contains hardware integration scripts for validating UART, UWB ranging, BLE transport, and application messaging on real devices. Run those tests from this directory after installing the package.
 
 ## Exceptions
 
