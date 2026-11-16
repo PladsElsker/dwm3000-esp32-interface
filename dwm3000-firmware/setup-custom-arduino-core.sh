@@ -209,7 +209,6 @@ python3 -m venv "$PYTHON_ENV_DIR"
 PYTHON="$PYTHON_ENV_DIR/bin/python"
 "$PYTHON" -m pip install --upgrade pip
 "$PYTHON" -m pip install setuptools pyserial click future wheel cryptography pyparsing pyelftools
-export PATH="$PYTHON_ENV_DIR/bin:$PATH"
 
 log "Synchronizing the builder's Arduino-ESP32 source branch"
 (
@@ -255,7 +254,15 @@ log "Installing ESP-IDF tools and the Python environment for ESP32-C3"
 (
   cd "$BUILDER_DIR"
   export IDF_PATH="$BUILDER_IDF_DIR"
+  export IDF_TOOLS_PATH="${IDF_TOOLS_PATH:-$HOME/.espressif}"
+  unset IDF_PYTHON_ENV_PATH
+
+  # ESP-IDF must use the system Python to create its own managed virtual
+  # environment. Do not put the builder's separate venv on PATH here.
+  log "Installing ESP-IDF tools and Python packages"
   "$IDF_PATH/install.sh" esp32c3
+
+  log "Activating the ESP-IDF environment"
   source "$IDF_PATH/export.sh"
   command -v idf.py >/dev/null 2>&1 || \
     fail "ESP-IDF export completed without adding idf.py to PATH."

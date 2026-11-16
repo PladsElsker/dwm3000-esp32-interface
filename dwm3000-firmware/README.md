@@ -45,7 +45,7 @@ CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
 CONFIG_BT_CTRL_BLE_MAX_ACT=9
 ```
 
-It installs the custom core in Arduino CLI's manual platform directory (`directories.user/hardware/espressif/esp32`), creates an isolated Python environment for the builder, installs the Arduino platform tools, aligns the core checkout to the exact Arduino-ESP32 source revision used by the builder, and initializes the bundled DWM3000 driver submodule before the long build. It does not change a Boards Manager installation. The local platform is selected with the `espressif:esp32` FQBN, distinct from the Boards Manager package's `esp32:esp32` FQBN.
+It installs the custom core in Arduino CLI's manual platform directory (`directories.user/hardware/espressif/esp32`), creates an isolated Python environment for the builder, installs the Arduino platform tools, installs the ESP-IDF tools and ESP32-C3 Python environment using the system Python, activates `idf.py`, aligns the core checkout to the exact Arduino-ESP32 source revision used by the builder, and initializes the bundled DWM3000 driver submodule before the long build. It does not change a Boards Manager installation. The local platform is selected with the `espressif:esp32` FQBN, distinct from the Boards Manager package's `esp32:esp32` FQBN.
 
 Requirements: Arduino CLI, Git, Python 3.9 or newer, and the native build prerequisites listed by the script for Ubuntu/Debian or macOS. The script installs the matching ESP-IDF tools and Python environment for the ESP32-C3 itself, then activates that environment before running the library build. Use `--core-only` to build and install the custom core without compiling the sketch.
 
