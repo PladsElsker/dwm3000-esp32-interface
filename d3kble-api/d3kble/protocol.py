@@ -331,3 +331,26 @@ def decode_history(payload: bytes):
     )
     from .models import UwbHistoryPage
     return UwbHistoryPage(oldest, newest, cursor, bool(overrun), records)
+
+
+
+def decode_event_payload(opcode: int, payload: bytes):
+    """Decode non-BLE asynchronous event payloads into simple typed records."""
+    if opcode == 0x82 and len(payload) == 4:
+        role, ranging_enabled, radio_standby, radio_ready = payload
+        return {
+            "role": ROLE_NAMES.get(role, "unknown"),
+            "ranging_enabled": bool(ranging_enabled),
+            "radio_standby": bool(radio_standby),
+            "radio_ready": bool(radio_ready),
+        }
+    if opcode == 0x83 and len(payload) == 9:
+        error_code, monotonic_us = struct.unpack("<BQ", payload)
+        return {"error_code": error_code, "monotonic_us": monotonic_us}
+    if opcode == 0x84 and len(payload) == 8:
+        overwritten, newest = struct.unpack("<II", payload)
+        return {"overwritten_sample_seq": overwritten, "new_sample_seq": newest}
+    if opcode == 0x85 and len(payload) == 2:
+        radio_ready, protocol_version = payload
+        return {"radio_ready": bool(radio_ready), "protocol_version": protocol_version}
+    return payload

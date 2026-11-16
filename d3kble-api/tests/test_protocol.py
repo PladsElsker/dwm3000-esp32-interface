@@ -107,3 +107,18 @@ def test_history_decode_cursor_and_records():
     assert page.newest_seq == 4
     assert page.next_cursor == 4
     assert page.records[0].distance_m == pytest.approx(0.9)
+
+
+
+def test_non_ble_event_decoding():
+    from d3kble.protocol import decode_event_payload
+
+    state = decode_event_payload(0x82, bytes([1, 1, 0, 1]))
+    assert state == {
+        "role": "initiator", "ranging_enabled": True,
+        "radio_standby": False, "radio_ready": True,
+    }
+    ready = decode_event_payload(0x85, bytes([1, 1]))
+    assert ready["protocol_version"] == 1
+    overrun = decode_event_payload(0x84, struct.pack("<II", 10, 15))
+    assert overrun == {"overwritten_sample_seq": 10, "new_sample_seq": 15}
