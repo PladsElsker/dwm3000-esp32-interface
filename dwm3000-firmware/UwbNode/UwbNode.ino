@@ -29,6 +29,11 @@
 
 using namespace UwbProto;
 
+// The Arduino-ESP32 HWCDC and HardwareSerial defaults both use 256-byte RX
+// queues. A maximum-size COBS command frame can be MAX_ENCODED bytes, so leave
+// room for the full frame plus another frame's worth of USB/UART burst data.
+static constexpr size_t HOST_RX_BUFFER_SIZE = MAX_ENCODED * 2;
+
 // This firmware uses the ESP32-C3 native USB Serial/JTAG peripheral through
 // Arduino-ESP32 Hardware CDC. Select: USB Mode = Hardware CDC and JTAG,
 // USB CDC On Boot = Enabled. ESP32-C3 does not use the S2/S3 USB-OTG CDC API.
@@ -82,29 +87,35 @@ Preferences preferences;
 
 // -------------------- Host command and event identifiers --------------------
 enum Opcode : uint8_t {
+  // 0x01–0x0B: Common commands, diagnostics, subscriptions, and time sync.
   OP_PING = 0x01, OP_GET_INFO = 0x02, OP_GET_STATUS = 0x03,
-  OP_GET_STATS = 0x04, OP_CLEAR_STATS = 0x05, OP_GET_LAST_ERROR = 0x06,
-  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11, OP_SAVE_CONFIG = 0x12,
-  OP_RESET_CONFIG = 0x13, OP_TIME_SYNC = 0x14,
+  OP_GET_STATISTICS = 0x04, OP_CLEAR_STATISTICS = 0x05, OP_GET_LAST_ERROR = 0x06,
+  OP_GET_DIAGNOSTICS = 0x07, OP_GET_TRACE = 0x08,
+  OP_SUBSCRIBE = 0x09, OP_UNSUBSCRIBE = 0x0A, OP_TIME_SYNC = 0x0B,
+
+  // 0x10–0x17: Configuration and antenna calibration.
+  OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11, OP_RESET_CONFIG = 0x12,
+  OP_GET_SAVED_CONFIG = 0x13, OP_APPLY_SAVE_CONFIG = 0x14,
   OP_GET_ANTENNA_DELAYS = 0x15, OP_SET_ANTENNA_DELAYS = 0x16,
-  // Persistent configuration extensions. These keep NVS reads/writes separate
-  // from the runtime controls used by the ranging test page.
-  OP_GET_SAVED_CONFIG = 0x17, OP_APPLY_SAVE_CONFIG = 0x18,
-  OP_SAVE_ANTENNA_DELAYS = 0x19,
-  OP_SET_ROLE = 0x20, OP_SET_TARGETS = 0x21, OP_GET_TARGETS = 0x22,
-  OP_SET_SCHEDULE = 0x23, OP_GET_SCHEDULE = 0x24,
+  OP_SAVE_ANTENNA_DELAYS = 0x17,
+
+  // 0x20–0x2A: UWB role, target/schedule configuration, ranging, and radio power.
+  OP_SET_ROLE = 0x20, OP_GET_TARGETS = 0x21, OP_SET_TARGETS = 0x22,
+  OP_GET_UWB_SCHEDULE = 0x23, OP_SET_UWB_SCHEDULE = 0x24,
   OP_START_RANGING = 0x25, OP_STOP_RANGING = 0x26,
   OP_RANGE_ONCE = 0x27, OP_CANCEL_OPERATION = 0x28,
-  OP_GET_LAST = 0x30, OP_GET_HISTORY = 0x31,
-  OP_SUBSCRIBE = 0x32, OP_UNSUBSCRIBE = 0x33,
-  OP_CLEAR_HISTORY = 0x34, OP_GET_DIAGNOSTICS = 0x35,
-  OP_GET_RADIO_TRACE = 0x36, // Additive diagnostic extension; existing v1 payloads unchanged.
-  OP_GET_RADIO_TRACE_DETAIL = 0x37, // Application-only delayed-TX register snapshots.
-  OP_UWB_SLEEP = 0x40, OP_UWB_WAKE = 0x41,
-  OP_SYSTEM_SLEEP = 0x42, OP_REBOOT = 0x43,
-  OP_SET_PEERS = 0x50, OP_GET_PEERS = 0x51, OP_START_BLE = 0x52,
-  OP_STOP_BLE = 0x53, OP_BLE_CONNECT = 0x54, OP_BLE_DISCONNECT = 0x55,
-  OP_GET_PEER_STATUS = 0x56, OP_SEND_TO_PEER = 0x57, OP_GET_RECEIVED_DATA = 0x58,
+  OP_UWB_SLEEP = 0x29, OP_UWB_WAKE = 0x2A,
+
+  // 0x30–0x31: UWB measurements and history.
+  OP_GET_LAST_RANGE = 0x30, OP_GET_HISTORY = 0x31,
+
+  // 0x40–0x41: ESP32 system power and restart.
+  OP_SYSTEM_SLEEP = 0x40, OP_REBOOT = 0x41,
+
+  // 0x50–0x56: BLE peer management and messaging.
+  OP_GET_PEERS = 0x50, OP_SET_PEERS = 0x51,
+  OP_START_BLE = 0x52, OP_STOP_BLE = 0x53, OP_GET_PEER_STATUS = 0x54,
+  OP_SEND_TO_PEER = 0x55, OP_GET_RECEIVED_DATA = 0x56,
   EV_RANGE_RESULT = 0x80, EV_RANGE_FAILED = 0x81,
   EV_STATE_CHANGED = 0x82, EV_ERROR = 0x83,
   EV_HISTORY_OVERRUN = 0x84, EV_DEVICE_READY = 0x85,
@@ -195,8 +206,19 @@ uint16_t nextJobId = 1;
 uint16_t eventSeq = 0;
 int64_t epochOffsetUs = 0;
 bool clockSynchronized = false;
+static constexpr uint8_t ERROR_SUBSYSTEM_SYSTEM = 0;
+static constexpr uint8_t ERROR_SUBSYSTEM_UWB = 1;
+static constexpr uint8_t ERROR_SUBSYSTEM_BLE = 2;
+enum TraceRecordType : uint8_t {
+  TRACE_TYPE_UWB_RADIO = 0,
+  TRACE_TYPE_UWB_TX_START = 1,
+  TRACE_TYPE_BLE_LIFECYCLE = 2
+};
+uint8_t lastErrorSubsystem = ERROR_SUBSYSTEM_SYSTEM;
 uint8_t lastErrorCode = ERR_OK;
 uint64_t lastErrorMonoUs = 0;
+uint16_t lastErrorPeerId = 0;
+uint32_t lastErrorContext = 0;
 uint32_t currentRadioStatus = 0;
 
 // -------------------- Host transport state --------------------
@@ -268,7 +290,7 @@ int32_t computedRangeMm = -1;
 uint8_t computedRangeStatus = RANGE_INVALID;
 
 // Volatile-in-RAM diagnostic trace. No text is printed on USB CDC/UART because
-// both transports carry binary protocol frames. Read records with opcode 0x36.
+// both transports carry binary protocol frames. Read records with GET_TRACE (0x08).
 static constexpr uint8_t RADIO_TRACE_CAPACITY = 8;
 static constexpr uint8_t RADIO_TRACE_RECORD_BYTES = 28;
 static constexpr uint8_t RADIO_TRACE_DETAIL_CAPACITY = 8;
@@ -280,6 +302,7 @@ enum RadioTraceEvent : uint8_t {
   TRACE_RX_ERROR = 4
 };
 struct RadioTraceRecord {
+  uint32_t sequence;
   uint32_t uptimeMs;
   uint32_t statusBefore;
   uint32_t statusAfter;
@@ -308,6 +331,7 @@ enum RadioTraceFailureHint : uint8_t {
   TRACE_HINT_TXERR_STATE_OBSERVED_AFTER = 2
 };
 struct RadioTraceDetailRecord {
+  uint32_t sequence;
   uint32_t uptimeMs;
   uint32_t statusBefore;
   uint32_t statusAfter;
@@ -360,6 +384,7 @@ static void recordRadioTraceDetail(uint8_t function, bool delayed,
                     : ((sysStateAfter == DW_SYS_STATE_TXERR)
                         ? TRACE_HINT_TXERR_STATE_OBSERVED_AFTER
                         : TRACE_HINT_UNKNOWN);
+  r.sequence = UwbBle::nextTraceSequence();
   radioTraceDetailHead = (radioTraceDetailHead + 1) % RADIO_TRACE_DETAIL_CAPACITY;
   if (radioTraceDetailCount < RADIO_TRACE_DETAIL_CAPACITY) ++radioTraceDetailCount;
 }
@@ -382,6 +407,7 @@ static void recordRadioTrace(uint8_t event, uint8_t function, bool delayed,
   r.retriesUsed = txnRetriesUsed;
   r.rc = static_cast<uint8_t>(rc);
   r.reserved = 0;
+  r.sequence = UwbBle::nextTraceSequence();
   radioTraceHead = (radioTraceHead + 1) % RADIO_TRACE_CAPACITY;
   if (radioTraceCount < RADIO_TRACE_CAPACITY) ++radioTraceCount;
 }
@@ -479,15 +505,19 @@ static void sendFrameTo(HostTransport &transport, const Frame &f) {
 
 // Do not send unsolicited USB events into a disconnected CDC session. The
 // measurement itself is stored independently in history and remains available
-// to GET_LAST / GET_HISTORY after the host reconnects.
+// to GET_LAST_RANGE / GET_HISTORY after the host reconnects.
 static void sendEventFrameTo(HostTransport &transport, const Frame &f) {
   if (&transport == &UsbTransport && !usbCdcConnected()) return;
   sendFrameTo(transport, f);
 }
 
-static void rememberError(uint8_t code) {
+static void rememberError(uint8_t code, uint8_t subsystem = ERROR_SUBSYSTEM_SYSTEM,
+                          uint16_t peerId = 0, uint32_t context = 0) {
+  lastErrorSubsystem = subsystem;
   lastErrorCode = code;
   lastErrorMonoUs = monoMicros();
+  lastErrorPeerId = peerId;
+  lastErrorContext = context;
   if (code == ERR_OK) return;
 
   const bool usbSubscribed = (UsbTransport.subscriptionMask & SUB_ERROR) != 0;
@@ -515,7 +545,23 @@ static void sendResponse(HostTransport &source, const Frame &request, uint8_t er
     e.valid = true; e.seq = request.seq; e.opcode = request.opcode;
     e.payloadCrc = crc16(request.payload, request.length); e.response = r;
   }
-  if (error != ERR_OK) rememberError(error);
+  if (error != ERR_OK) {
+    uint8_t subsystem = error == ERR_RADIO_FAILURE ? ERROR_SUBSYSTEM_UWB : ERROR_SUBSYSTEM_SYSTEM;
+    uint16_t peerId = 0;
+    const bool isBleCommand =
+        request.opcode == OP_SET_PEERS || request.opcode == OP_GET_PEERS ||
+        request.opcode == OP_START_BLE || request.opcode == OP_STOP_BLE ||
+        request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
+        request.opcode == OP_GET_RECEIVED_DATA;
+    if (isBleCommand) {
+      subsystem = ERROR_SUBSYSTEM_BLE;
+      if ((request.opcode == OP_GET_PEER_STATUS || request.opcode == OP_SEND_TO_PEER ||
+           request.opcode == OP_GET_RECEIVED_DATA) && request.length >= 2) {
+        peerId = getU16(request.payload);
+      }
+    }
+    rememberError(error, subsystem, peerId, request.opcode);
+  }
 }
 
 static void emitEvent(uint8_t opcode, const uint8_t *payload, uint16_t length, bool force = false) {
@@ -589,7 +635,7 @@ static uint16_t encodeBleConfig(uint8_t *dst, const UwbBle::Config &c) {
   putU16(dst + 1, c.advertisingIntervalMs);
   putU16(dst + 3, c.scanIntervalMs);
   putU16(dst + 5, c.scanWindowMs);
-  dst[7] = c.reconnectEnabled;
+  dst[7] = c.autoStart; // Automatically start BLE after boot; independent of runtime state.
   putU16(dst + 8, c.reconnectIntervalMs);
   putU16(dst + 10, c.connectionTimeoutMs);
   dst[12] = c.maxRetries;
@@ -606,7 +652,7 @@ static bool decodeBleConfig(const uint8_t *src, uint16_t length, UwbBle::Config 
   parsed.advertisingIntervalMs = getU16(src + 1);
   parsed.scanIntervalMs = getU16(src + 3);
   parsed.scanWindowMs = getU16(src + 5);
-  parsed.reconnectEnabled = src[7];
+  parsed.autoStart = src[7]; // Persisted boot preference; independent of runtime state.
   parsed.reconnectIntervalMs = getU16(src + 8);
   parsed.connectionTimeoutMs = getU16(src + 10);
   parsed.maxRetries = src[12];
@@ -615,7 +661,7 @@ static bool decodeBleConfig(const uint8_t *src, uint16_t length, UwbBle::Config 
   if (parsed.peerCount > UwbBle::MAX_PEERS ||
       length != BLE_CONFIG_FIXED_LENGTH + uint16_t(parsed.peerCount) * 2) return false;
   for (uint8_t i = 0; i < parsed.peerCount; ++i) parsed.peers[i] = getU16(src + 16 + i * 2);
-  if (parsed.mode > UwbBle::MODE_PERIPHERAL || parsed.reconnectEnabled > 1 ||
+  if (parsed.mode > UwbBle::MODE_PERIPHERAL || parsed.autoStart > 1 ||
       parsed.maxRetries > 5 || parsed.advertisingIntervalMs < 20 ||
       parsed.advertisingIntervalMs > 10240 || parsed.scanIntervalMs < 10 ||
       parsed.scanIntervalMs > 10240 || parsed.scanWindowMs < 10 ||
@@ -686,7 +732,7 @@ static bool readStoredSettings(StoredSettings &stored) {
   stored.bleConfig.advertisingIntervalMs = preferences.getUShort("ble_adv", stored.bleConfig.advertisingIntervalMs);
   stored.bleConfig.scanIntervalMs = preferences.getUShort("ble_scan_i", stored.bleConfig.scanIntervalMs);
   stored.bleConfig.scanWindowMs = preferences.getUShort("ble_scan_w", stored.bleConfig.scanWindowMs);
-  stored.bleConfig.reconnectEnabled = preferences.getUChar("ble_reconn", stored.bleConfig.reconnectEnabled);
+  stored.bleConfig.autoStart = preferences.getBool("ble_auto", preferences.getBool("ble_on", false)) ? 1 : 0; // Migrate the previous persisted-enabled behavior.
   stored.bleConfig.reconnectIntervalMs = preferences.getUShort("ble_rec_ms", stored.bleConfig.reconnectIntervalMs);
   stored.bleConfig.connectionTimeoutMs = preferences.getUShort("ble_con_ms", stored.bleConfig.connectionTimeoutMs);
   stored.bleConfig.maxRetries = preferences.getUChar("ble_retry", stored.bleConfig.maxRetries);
@@ -734,7 +780,8 @@ static bool writeStoredSettings(const Config &savedCfg, Role savedRole,
   ok &= preferences.putUShort("ble_adv", savedBle.advertisingIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_scan_i", savedBle.scanIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_scan_w", savedBle.scanWindowMs) == sizeof(uint16_t);
-  ok &= preferences.putUChar("ble_reconn", savedBle.reconnectEnabled) == sizeof(uint8_t);
+  ok &= preferences.putBool("ble_auto", savedBle.autoStart != 0) == sizeof(uint8_t);
+  preferences.remove("ble_on"); // Remove the legacy runtime/auto-start key after migration.
   ok &= preferences.putUShort("ble_rec_ms", savedBle.reconnectIntervalMs) == sizeof(uint16_t);
   ok &= preferences.putUShort("ble_con_ms", savedBle.connectionTimeoutMs) == sizeof(uint16_t);
   ok &= preferences.putUChar("ble_retry", savedBle.maxRetries) == sizeof(uint8_t);
@@ -1252,7 +1299,16 @@ static void processRequest(HostTransport &source, const Frame &q) {
       out[0] = 1; out[1] = 0; out[2] = 0; out[3] = VERSION;
       putU16(out + 4, cfg.deviceId); out[6] = static_cast<uint8_t>(MAX_TARGETS);
       putU16(out + 7, HISTORY_CAPACITY); out[9] = 1; // radioType 1 = DWM3000
-      putU16(out + 10, MAX_PAYLOAD); outLen = 12;
+      putU16(out + 10, MAX_PAYLOAD);
+      out[12] = 1; // BLE is supported on this device.
+      out[13] = (1u << UwbBle::MODE_IDLE) | (1u << UwbBle::MODE_HUB) |
+                (1u << UwbBle::MODE_PERIPHERAL);
+      out[14] = UwbBle::MAX_PEERS;
+      out[15] = UwbBle::MAX_ACTIVE_CONNECTIONS;
+      putU16(out + 16, UwbBle::MAX_MESSAGE_LENGTH);
+      putU16(out + 18, UwbBle::MAX_ATT_MTU);
+      out[20] = 1; // BLE application protocol version.
+      outLen = 21;
       break;
     }
 
@@ -1277,25 +1333,50 @@ static void processRequest(HostTransport &source, const Frame &q) {
       break;
     }
 
-    case OP_GET_STATS: {
+    case OP_GET_STATISTICS: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
       putU32(out, stats.rangesOk); putU32(out + 4, stats.rangesFailed);
       putU32(out + 8, stats.rxErrors); putU32(out + 12, stats.txErrors);
       putU32(out + 16, stats.transactionTimeouts); putU32(out + 20, stats.protocolErrors);
       putU32(out + 24, stats.uartOverflows); putU32(out + 28, stats.historyOverwrites);
       putU32(out + 32, stats.malformedRadioFrames); putU32(out + 36, stats.duplicateRequests);
-      outLen = 40;
+      UwbBle::Statistics bleStats; ble.getStatistics(bleStats);
+      putU32(out + 40, bleStats.messagesSent); putU32(out + 44, bleStats.messagesReceived);
+      putU32(out + 48, bleStats.txErrors); putU32(out + 52, bleStats.rxErrors);
+      putU32(out + 56, bleStats.connectionFailures); putU32(out + 60, bleStats.rxQueueOverflows);
+      putU32(out + 64, bleStats.eventQueueOverflows);
+      outLen = 68;
       break;
     }
 
-    case OP_CLEAR_STATS: {
+    case OP_CLEAR_STATISTICS: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      stats = Counters(); outLen = 0; break;
+      stats = Counters(); ble.clearStatistics(); outLen = 0; break;
     }
 
     case OP_GET_LAST_ERROR: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = lastErrorCode; putU64(out + 1, lastErrorMonoUs); outLen = 9; break;
+      uint8_t subsystem = lastErrorSubsystem;
+      uint8_t code = lastErrorCode;
+      uint64_t errorTimeUs = lastErrorMonoUs;
+      uint16_t peerId = lastErrorPeerId;
+      uint32_t context = lastErrorContext;
+      UwbBle::LastError bleError;
+      if (ble.getLastError(bleError)) {
+        const uint64_t bleErrorTimeUs = bleError.monotonicUs;
+        if (bleErrorTimeUs > errorTimeUs) {
+          subsystem = ERROR_SUBSYSTEM_BLE;
+          code = bleError.code;
+          errorTimeUs = bleErrorTimeUs;
+          peerId = bleError.peerId;
+          context = uint32_t(bleError.reason) |
+                    (uint32_t(bleError.stage) << 8) |
+                    (uint32_t(static_cast<uint16_t>(bleError.detail)) << 16);
+        }
+      }
+      out[0] = subsystem; out[1] = code;
+      putU64(out + 2, errorTimeUs); putU16(out + 10, peerId);
+      putU32(out + 12, context); outLen = 16; break;
     }
 
     case OP_GET_CONFIG: {
@@ -1341,17 +1422,20 @@ static void processRequest(HostTransport &source, const Frame &q) {
       const uint16_t newTimeout = getU16(p + 13);
       const uint8_t newRetries = p[15], newRoleValue = p[16], newCount = p[17];
       const uint16_t baseLength = 19 + 2 * newCount;
-      if (newCount > MAX_TARGETS || n < baseLength) { error = ERR_BAD_ARGUMENT; break; }
+      if (newCount > MAX_TARGETS || n < baseLength + BLE_CONFIG_FIXED_LENGTH) {
+        error = ERR_BAD_ARGUMENT; break;
+      }
       const uint8_t autoStartValue = p[18 + 2 * newCount];
-      UwbBle::Config newBleCfg = bleCfg;
-      if (n != baseLength && !decodeBleConfig(p + baseLength, n - baseLength, newBleCfg)) {
+      UwbBle::Config newBleCfg;
+      if (!decodeBleConfig(p + baseLength, n - baseLength, newBleCfg)) {
         error = ERR_BAD_ARGUMENT; break;
       }
       if (newDev == 0 || newDev == 0xFFFF ||
           (newChannel != 5 && newChannel != 9) ||
           newPeriod < 20 || newPeriod > 60000 ||
           newTimeout < 50 || newTimeout > 5000 || newRetries > 5 ||
-          newRoleValue > ROLE_RESPONDER || autoStartValue > 1) {
+          newRoleValue > ROLE_RESPONDER || autoStartValue > 1 ||
+          (newBleCfg.autoStart && newBleCfg.mode == UwbBle::MODE_IDLE)) {
         error = ERR_BAD_ARGUMENT; break;
       }
       if (autoStartValue && (newRoleValue == ROLE_IDLE ||
@@ -1395,9 +1479,16 @@ static void processRequest(HostTransport &source, const Frame &q) {
       schedulePeriodMs = newPeriod; scheduleTimeoutMs = newTimeout;
       scheduleRetries = newRetries; autoStartRanging = newAutoStart;
       rangingEnabled = false;
+      // BLE is an independent subsystem; restore it even when UWB radio startup
+      // fails so a temporary UWB fault does not suppress the configured BLE role.
+      // Preserve the live enabled/disabled state across configuration saves.
+      // The auto-start preference controls only what happens on the next boot.
+      if (bleWasEnabled && newBleCfg.mode != UwbBle::MODE_IDLE && !ble.start()) {
+        error = ERR_INTERNAL;
+      }
       if (!radioStandby) radioReady = radioInitialize();
       for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
-      if (!radioReady && !radioStandby) { error = ERR_RADIO_FAILURE; break; }
+      if (!radioReady && !radioStandby && error == ERR_OK) error = ERR_RADIO_FAILURE;
       emitStateChanged();
       outLen = 0;
       break;
@@ -1421,7 +1512,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
     }
 
     case OP_SET_CONFIG: {
-      if (n != 9 && n < 9 + BLE_CONFIG_FIXED_LENGTH) { error = ERR_BAD_ARGUMENT; break; }
+      if (n < 9 + BLE_CONFIG_FIXED_LENGTH) { error = ERR_BAD_ARGUMENT; break; }
       const uint16_t newDev = getU16(p), newPan = getU16(p + 2);
       const uint8_t newChannel = p[4];
       const uint16_t txDly = getU16(p + 5), rxDly = getU16(p + 7);
@@ -1429,8 +1520,8 @@ static void processRequest(HostTransport &source, const Frame &q) {
       if (txnActive || rangingEnabled || ble.connected()) { error = ERR_BUSY; break; }
       for (uint8_t i = 0; i < targetCount; ++i) if (targetIds[i] == newDev) { error = ERR_BAD_ARGUMENT; break; }
       if (error != ERR_OK) break;
-      UwbBle::Config newBleCfg = bleCfg;
-      if (n > 9 && !decodeBleConfig(p + 9, n - 9, newBleCfg)) { error = ERR_BAD_ARGUMENT; break; }
+      UwbBle::Config newBleCfg;
+      if (!decodeBleConfig(p + 9, n - 9, newBleCfg)) { error = ERR_BAD_ARGUMENT; break; }
       if (!ble.configure(newBleCfg, newDev)) { error = ERR_BUSY; break; }
       bleCfg = newBleCfg;
       cfg.deviceId = newDev; cfg.panId = newPan; cfg.channel = newChannel;
@@ -1439,16 +1530,6 @@ static void processRequest(HostTransport &source, const Frame &q) {
       if (!radioStandby) radioReady = radioInitialize();
       if (!radioReady) { error = ERR_RADIO_FAILURE; break; }
       outLen = 0;
-      break;
-    }
-
-    case OP_SAVE_CONFIG: {
-      // Deprecated: a generic RAM-to-NVS commit can accidentally persist a
-      // temporary Ranging-test role/configuration. Use OP_APPLY_SAVE_CONFIG
-      // with an explicit settings snapshot, or OP_SAVE_ANTENNA_DELAYS for
-      // the calibration wizard's narrowly scoped TX/RX persistence.
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      error = ERR_NOT_SUPPORTED;
       break;
     }
 
@@ -1527,7 +1608,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       outLen = 1 + 2 * targetCount; break;
     }
 
-    case OP_SET_SCHEDULE: {
+    case OP_SET_UWB_SCHEDULE: {
       if (n != 7) { error = ERR_BAD_ARGUMENT; break; }
       const uint32_t period = getU32(p); const uint16_t timeout = getU16(p + 4); const uint8_t retries = p[6];
       if (period < 20 || period > 60000 || timeout < 50 || timeout > 5000 || retries > 5) { error = ERR_BAD_ARGUMENT; break; }
@@ -1537,7 +1618,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       outLen = 0; break;
     }
 
-    case OP_GET_SCHEDULE: {
+    case OP_GET_UWB_SCHEDULE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
       putU32(out, schedulePeriodMs); putU16(out + 4, scheduleTimeoutMs); out[6] = scheduleRetries;
       out[7] = targetCount; out[8] = jobCount; out[9] = txnActive ? 1 : 0;
@@ -1591,7 +1672,7 @@ static void processRequest(HostTransport &source, const Frame &q) {
       outLen = 0; break;
     }
 
-    case OP_GET_LAST: {
+    case OP_GET_LAST_RANGE: {
       if (n != 2) { error = ERR_BAD_ARGUMENT; break; }
       const uint16_t filter = getU16(p);
       Measurement found[MAX_TARGETS]; uint8_t foundCount = 0;
@@ -1674,28 +1755,17 @@ static void processRequest(HostTransport &source, const Frame &q) {
     case OP_START_BLE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
       if (bleCfg.mode == UwbBle::MODE_IDLE) { error = ERR_BAD_STATE; break; }
-      if (!ble.configure(bleCfg) || !ble.start()) { error = ERR_INTERNAL; break; }
+      if (!ble.enabled() && !ble.start()) {
+        error = ERR_INTERNAL; break;
+      }
       outLen = 0;
       break;
     }
 
     case OP_STOP_BLE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      ble.stop(); outLen = 0; break;
-    }
-
-    case OP_BLE_CONNECT: {
-      if (n != 2) { error = ERR_BAD_ARGUMENT; break; }
-      if (!ble.connect(getU16(p))) { error = ble.connected() ? ERR_BUSY : ERR_BAD_STATE; break; }
-      outLen = 0;
-      break;
-    }
-
-    case OP_BLE_DISCONNECT: {
-      if (n != 2) { error = ERR_BAD_ARGUMENT; break; }
-      if (!ble.disconnect(getU16(p))) { error = ERR_NOT_FOUND; break; }
-      outLen = 0;
-      break;
+      ble.stop();
+      outLen = 0; break;
     }
 
     case OP_GET_PEER_STATUS: {
@@ -1705,7 +1775,10 @@ static void processRequest(HostTransport &source, const Frame &q) {
       out[0] = status.state; out[1] = status.mode; out[2] = status.enabled;
       out[3] = status.advertising; out[4] = status.scanning; out[5] = status.connected;
       putU16(out + 6, status.peerId); putU16(out + 8, status.mtu);
-      outLen = 10;
+      out[10] = status.lastFailureReason;
+      out[11] = status.lastFailureStage;
+      putU16(out + 12, static_cast<uint16_t>(status.lastFailureDetail));
+      outLen = 14;
       break;
     }
 
@@ -1740,58 +1813,104 @@ static void processRequest(HostTransport &source, const Frame &q) {
       putU32(out, currentRadioStatus); putU32(out + 4, radioReady && !radioStandby ? dwt_read32bitreg(SYS_STATUS_ID) : 0);
       putU32(out + 8, stats.malformedRadioFrames); putU32(out + 12, stats.rxErrors);
       putU32(out + 16, stats.txErrors); out[20] = static_cast<uint8_t>(radioState);
-      out[21] = radioStandby ? 1 : 0; outLen = 22; break;
+      out[21] = radioStandby ? 1 : 0;
+      UwbBle::Diagnostics bleDiag; ble.getDiagnostics(bleDiag);
+      out[22] = bleDiag.mode; out[23] = bleDiag.enabled;
+      out[24] = bleDiag.advertising; out[25] = bleDiag.scanning;
+      out[26] = bleDiag.activeLinks; out[27] = bleDiag.rxQueueDepth;
+      out[28] = bleDiag.eventQueueDepth; outLen = 29; break;
     }
 
-    // Additive diagnostic extension; all existing v1 commands/payloads stay unchanged.
-    // Response: count:u8, then count 28-byte records, oldest first.
-    // Record: uptimeMs:u32, statusBefore:u32, statusAfter:u32, delayedTimeReg:u32,
-    //         peer:u16, jobId:u16, event:u8, state:u8, function:u8, radioSeq:u8,
-    //         delayed:u8, retriesUsed:u8, rc:u8, reserved:u8.
-    case OP_GET_RADIO_TRACE: {
+    // Return every retained trace type in global insertion order.
+    // Each record: type:u8, sequence:u32, record_size:u8, record_data[].
+    case OP_GET_TRACE: {
       if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = radioTraceCount;
-      const uint8_t oldest = (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY;
+      struct TraceReference { uint32_t sequence; uint8_t type; uint8_t index; };
+      static constexpr uint8_t MAX_TRACE_RECORDS =
+          RADIO_TRACE_CAPACITY + RADIO_TRACE_DETAIL_CAPACITY + UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY;
+      static TraceReference references[MAX_TRACE_RECORDS]{};
+      static UwbBle::DiagnosticTraceRecord bleRecords[UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY]{};
+      uint8_t referenceCount = 0;
+      const uint8_t radioOldest = static_cast<uint8_t>(
+          (radioTraceHead + RADIO_TRACE_CAPACITY - radioTraceCount) % RADIO_TRACE_CAPACITY);
       for (uint8_t i = 0; i < radioTraceCount; ++i) {
-        const RadioTraceRecord &r = radioTrace[(oldest + i) % RADIO_TRACE_CAPACITY];
-        uint8_t *d = out + 1 + i * RADIO_TRACE_RECORD_BYTES;
-        putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
-        putU32(d + 8, r.statusAfter); putU32(d + 12, r.delayedTimeReg);
-        putU16(d + 16, r.peer); putU16(d + 18, r.jobId);
-        d[20] = r.event; d[21] = r.state; d[22] = r.function;
-        d[23] = r.radioSeq; d[24] = r.delayed; d[25] = r.retriesUsed;
-        d[26] = r.rc; d[27] = r.reserved;
+        const uint8_t index = static_cast<uint8_t>((radioOldest + i) % RADIO_TRACE_CAPACITY);
+        references[referenceCount++] = {radioTrace[index].sequence, TRACE_TYPE_UWB_RADIO, index};
       }
-      outLen = 1 + radioTraceCount * RADIO_TRACE_RECORD_BYTES;
-      break;
-    }
-
-    // Detail response: count:u8 followed by 48-byte records, oldest first.
-    // This is an application-only snapshot; post-call registers may already
-    // reflect the driver's TXRXOFF cleanup after a failed start.
-    case OP_GET_RADIO_TRACE_DETAIL: {
-      if (n != 0) { error = ERR_BAD_ARGUMENT; break; }
-      out[0] = radioTraceDetailCount;
-      const uint8_t oldest = (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY -
-                              radioTraceDetailCount) % RADIO_TRACE_DETAIL_CAPACITY;
+      const uint8_t detailOldest = static_cast<uint8_t>(
+          (radioTraceDetailHead + RADIO_TRACE_DETAIL_CAPACITY - radioTraceDetailCount) %
+          RADIO_TRACE_DETAIL_CAPACITY);
       for (uint8_t i = 0; i < radioTraceDetailCount; ++i) {
-        const RadioTraceDetailRecord &r =
-          radioTraceDetail[(oldest + i) % RADIO_TRACE_DETAIL_CAPACITY];
-        uint8_t *d = out + 1 + i * RADIO_TRACE_DETAIL_RECORD_BYTES;
-        putU32(d, r.uptimeMs);
-        putU32(d + 4, r.statusBefore);
-        putU32(d + 8, r.statusAfter);
-        putU32(d + 12, r.sysStateBefore);
-        putU32(d + 16, r.sysStateAfter);
-        putU32(d + 20, r.sysTimeBefore);
-        putU32(d + 24, r.delayedTimeReg);
-        putU32(d + 28, r.scheduledTxTimestampLow);
-        putU16(d + 32, r.peer);
-        putU16(d + 34, r.jobId);
-        d[36] = r.event; d[37] = r.state; d[38] = r.function; d[39] = r.radioSeq;
-        d[40] = r.delayed; d[41] = r.retriesUsed; d[42] = r.rc; d[43] = r.failureHint;
+        const uint8_t index = static_cast<uint8_t>((detailOldest + i) % RADIO_TRACE_DETAIL_CAPACITY);
+        references[referenceCount++] = {radioTraceDetail[index].sequence, TRACE_TYPE_UWB_TX_START, index};
       }
-      outLen = 1 + radioTraceDetailCount * RADIO_TRACE_DETAIL_RECORD_BYTES;
+      const uint8_t bleCount = ble.copyDiagnosticTrace(bleRecords, UwbBle::BLE_DIAGNOSTIC_TRACE_CAPACITY);
+      for (uint8_t i = 0; i < bleCount; ++i) {
+        references[referenceCount++] = {bleRecords[i].sequence, TRACE_TYPE_BLE_LIFECYCLE, i};
+      }
+
+      // At most 48 records are retained; insertion sort preserves write order.
+      // Signed subtraction also orders correctly across uint32 sequence wrap.
+      for (uint8_t i = 1; i < referenceCount; ++i) {
+        const TraceReference key = references[i];
+        uint8_t j = i;
+        while (j > 0 && static_cast<int32_t>(references[j - 1].sequence - key.sequence) > 0) {
+          references[j] = references[j - 1];
+          --j;
+        }
+        references[j] = key;
+      }
+
+      // Return the newest contiguous suffix that fits; never split a record.
+      uint8_t first = referenceCount;
+      uint16_t responseBytes = 1; // count:u8
+      while (first > 0) {
+        const uint8_t type = references[first - 1].type;
+        const uint8_t dataSize = type == TRACE_TYPE_UWB_RADIO ? RADIO_TRACE_RECORD_BYTES :
+                                 type == TRACE_TYPE_UWB_TX_START ? RADIO_TRACE_DETAIL_RECORD_BYTES : 13;
+        if (responseBytes + 6 + dataSize > sizeof(out)) break;
+        responseBytes += 6 + dataSize;
+        --first;
+      }
+
+      const uint8_t count = static_cast<uint8_t>(referenceCount - first);
+      out[0] = count;
+      uint16_t offset = 1;
+      for (uint8_t i = first; i < referenceCount; ++i) {
+        const TraceReference &reference = references[i];
+        const uint8_t dataSize = reference.type == TRACE_TYPE_UWB_RADIO ? RADIO_TRACE_RECORD_BYTES :
+                                 reference.type == TRACE_TYPE_UWB_TX_START ? RADIO_TRACE_DETAIL_RECORD_BYTES : 13;
+        out[offset++] = reference.type;
+        putU32(out + offset, reference.sequence); offset += 4;
+        out[offset++] = dataSize;
+        uint8_t *d = out + offset;
+        if (reference.type == TRACE_TYPE_UWB_RADIO) {
+          const RadioTraceRecord &r = radioTrace[reference.index];
+          putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
+          putU32(d + 8, r.statusAfter); putU32(d + 12, r.delayedTimeReg);
+          putU16(d + 16, r.peer); putU16(d + 18, r.jobId);
+          d[20] = r.event; d[21] = r.state; d[22] = r.function;
+          d[23] = r.radioSeq; d[24] = r.delayed; d[25] = r.retriesUsed;
+          d[26] = r.rc; d[27] = r.reserved;
+        } else if (reference.type == TRACE_TYPE_UWB_TX_START) {
+          const RadioTraceDetailRecord &r = radioTraceDetail[reference.index];
+          putU32(d, r.uptimeMs); putU32(d + 4, r.statusBefore);
+          putU32(d + 8, r.statusAfter); putU32(d + 12, r.sysStateBefore);
+          putU32(d + 16, r.sysStateAfter); putU32(d + 20, r.sysTimeBefore);
+          putU32(d + 24, r.delayedTimeReg); putU32(d + 28, r.scheduledTxTimestampLow);
+          putU16(d + 32, r.peer); putU16(d + 34, r.jobId);
+          d[36] = r.event; d[37] = r.state; d[38] = r.function; d[39] = r.radioSeq;
+          d[40] = r.delayed; d[41] = r.retriesUsed; d[42] = r.rc; d[43] = r.failureHint;
+        } else {
+          const UwbBle::DiagnosticTraceRecord &r = bleRecords[reference.index];
+          putU32(d, r.uptimeMs); d[4] = r.code;
+          putU16(d + 5, r.peerId); d[7] = r.reason; d[8] = r.stage;
+          putU16(d + 9, static_cast<uint16_t>(r.detail));
+          d[11] = r.activeLinks; d[12] = r.stateFlags;
+        }
+        offset += dataSize;
+      }
+      outLen = offset;
       break;
     }
 
@@ -1881,6 +2000,28 @@ static void processBleEvents() {
       case UwbBle::EVENT_DATA_EXPIRED: opcode = EV_BLE_DATA_EXPIRED; break;
       default: break;
     }
+    if (event.code == UwbBle::EVENT_ERROR && event.length >= 7) {
+      const uint16_t peerId = static_cast<uint16_t>(event.payload[1]) |
+                              (static_cast<uint16_t>(event.payload[2]) << 8);
+      const uint16_t messageId = static_cast<uint16_t>(event.payload[3]) |
+                                 (static_cast<uint16_t>(event.payload[4]) << 8);
+      rememberError(event.payload[6], ERROR_SUBSYSTEM_BLE, peerId,
+                    uint32_t(messageId) | (uint32_t(event.payload[5]) << 16) |
+                    (uint32_t(event.payload[0]) << 24));
+    } else if (event.code == UwbBle::EVENT_CONNECTION_FAILED && event.length >= 6) {
+      const uint16_t peerId = static_cast<uint16_t>(event.payload[0]) |
+                              (static_cast<uint16_t>(event.payload[1]) << 8);
+      const uint16_t detail = static_cast<uint16_t>(event.payload[4]) |
+                              (static_cast<uint16_t>(event.payload[5]) << 8);
+      const uint32_t context = uint32_t(event.payload[3]) | (uint32_t(detail) << 8);
+      rememberError(event.payload[2], ERROR_SUBSYSTEM_BLE, peerId, context);
+    } else if (event.code == UwbBle::EVENT_DATA_EXPIRED && event.length >= 4) {
+      const uint16_t peerId = static_cast<uint16_t>(event.payload[0]) |
+                              (static_cast<uint16_t>(event.payload[1]) << 8);
+      const uint16_t messageId = static_cast<uint16_t>(event.payload[2]) |
+                                 (static_cast<uint16_t>(event.payload[3]) << 8);
+      rememberError(1, ERROR_SUBSYSTEM_BLE, peerId, messageId);
+    }
     if (opcode) emitEvent(opcode, event.payload, event.length);
   }
 }
@@ -1892,17 +2033,28 @@ void setup() {
   pinMode(PIN_DWM_WAKE, OUTPUT); digitalWrite(PIN_DWM_WAKE, LOW);
   pinMode(PIN_DWM_RST, OUTPUT_OPEN_DRAIN); digitalWrite(PIN_DWM_RST, HIGH); // release reset
   pinMode(PIN_DWM_IRQ, INPUT);
+
+  // Configure RX queues before begin(): both Arduino transports otherwise
+  // default to 256 bytes, smaller than a maximum-length encoded protocol frame.
+  const size_t usbRxSize = Serial.setRxBufferSize(HOST_RX_BUFFER_SIZE);
+  const size_t uartRxSize = PiSerial.setRxBufferSize(HOST_RX_BUFFER_SIZE);
   Serial.begin(USB_CDC_BAUD);
   PiSerial.begin(UART_BAUD, SERIAL_8N1, PIN_PI_RX, PIN_PI_TX);
+  if (usbRxSize != HOST_RX_BUFFER_SIZE || uartRxSize != HOST_RX_BUFFER_SIZE)
+    rememberError(ERR_INTERNAL);
   usbSessionObservedConnected = usbCdcConnected();
   UsbTransport.io = &Serial;
   UsbTransport.name = "USB CDC";
   UartTransport.io = &PiSerial;
   UartTransport.name = "UART1";
   loadConfig();
-  if (!ble.begin(cfg.deviceId) || !ble.configure(bleCfg)) rememberError(ERR_INTERNAL);
+  if (!ble.begin(cfg.deviceId) || !ble.configure(bleCfg)) {
+    rememberError(ERR_INTERNAL, ERROR_SUBSYSTEM_BLE, 0, OP_START_BLE);
+  } else if (bleCfg.autoStart && bleCfg.mode != UwbBle::MODE_IDLE && !ble.start()) {
+    rememberError(ERR_INTERNAL, ERROR_SUBSYSTEM_BLE, 0, OP_START_BLE);
+  }
 
-  if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE);
+  if (!radioInitialize()) rememberError(ERR_RADIO_FAILURE, ERROR_SUBSYSTEM_UWB);
   for (uint8_t i = 0; i < targetCount; ++i) targetDueMs[i] = millis();
   // Start from the persistent boot policy, not from any prior runtime test state.
   if (radioReady && autoStartRanging && role != ROLE_IDLE &&

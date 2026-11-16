@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Host client for the UWB Node binary UART protocol (v1).
+"""Host client for the UWB Node V2.1 UART protocol (frame version 1).
 
 Install: python3 -m pip install pyserial
 Example: python3 pi_client.py --port /dev/serial0 ping
@@ -25,21 +25,32 @@ TYPE_REQUEST, TYPE_RESPONSE, TYPE_EVENT = 1, 2, 3
 MAX_PAYLOAD = 500
 
 OPS = {
+    # Common commands, diagnostics, subscriptions, and time sync (0x01–0x0B).
     "ping": 0x01, "get-info": 0x02, "status": 0x03, "stats": 0x04,
-    "clear-stats": 0x05, "last-error": 0x06, "get-config": 0x10, "get-saved-config": 0x17,
-    "set-config": 0x11, "save-config": 0x12, "reset-config": 0x13,
-    "apply-save-config": 0x18,
-    "time-sync": 0x14, "get-ant-delays": 0x15, "set-ant-delays": 0x16,
-    "set-role": 0x20, "set-targets": 0x21, "get-targets": 0x22,
-    "set-schedule": 0x23, "get-schedule": 0x24, "start": 0x25,
+    "clear-stats": 0x05, "last-error": 0x06, "diagnostics": 0x07,
+    "trace": 0x08, "subscribe": 0x09, "unsubscribe": 0x0A, "time-sync": 0x0B,
+
+    # Configuration and antenna calibration (0x10–0x17).
+    "get-config": 0x10, "set-config": 0x11, "reset-config": 0x12,
+    "get-saved-config": 0x13, "apply-save-config": 0x14,
+    "get-ant-delays": 0x15, "set-ant-delays": 0x16, "save-ant-delays": 0x17,
+
+    # UWB control and ranging operations (0x20–0x2A).
+    "set-role": 0x20, "get-targets": 0x21, "set-targets": 0x22,
+    "get-schedule": 0x23, "set-schedule": 0x24, "start": 0x25,
     "stop": 0x26, "range-once": 0x27, "cancel": 0x28,
-    "get-last": 0x30, "get-history": 0x31, "subscribe": 0x32,
-    "unsubscribe": 0x33, "clear-history": 0x34, "diagnostics": 0x35,
-    "uwb-sleep": 0x40, "uwb-wake": 0x41, "system-sleep": 0x42,
-    "reboot": 0x43,
-    "set-peers": 0x50, "get-peers": 0x51, "start-ble": 0x52,
-    "stop-ble": 0x53, "ble-connect": 0x54, "ble-disconnect": 0x55,
-    "peer-status": 0x56, "send-to-peer": 0x57, "get-received-data": 0x58,
+    "uwb-sleep": 0x29, "uwb-wake": 0x2A,
+
+    # UWB measurements and history (0x30–0x31).
+    "get-last": 0x30, "get-history": 0x31,
+
+    # System power and restart (0x40–0x41).
+    "system-sleep": 0x40, "reboot": 0x41,
+
+    # BLE peer management and messaging (0x50–0x56).
+    "get-peers": 0x50, "set-peers": 0x51, "start-ble": 0x52,
+    "stop-ble": 0x53, "peer-status": 0x54,
+    "send-to-peer": 0x55, "get-received-data": 0x56,
 }
 EVENT_NAMES = {0x80: "RANGE_RESULT", 0x81: "RANGE_FAILED", 0x82: "STATE_CHANGED",
                0x83: "ERROR", 0x84: "HISTORY_OVERRUN", 0x85: "DEVICE_READY",
@@ -52,7 +63,10 @@ ERROR_NAMES = {0: "OK", 1: "BAD_ARGUMENT", 2: "UNKNOWN_COMMAND", 3: "BAD_STATE",
                8: "RATE_UNACHIEVABLE", 9: "INTERNAL", 10: "NOT_FOUND"}
 ROLE_NAMES = {0: "idle", 1: "initiator", 2: "responder"}
 BLE_MODE_NAMES = {0: "idle", 1: "hub", 2: "peripheral"}
-BLE_PEER_STATE_NAMES = {0: "unknown", 1: "configured", 2: "found", 3: "connected"}
+BLE_PEER_STATE_NAMES = {
+    0: "unknown", 1: "configured", 2: "found", 3: "connected",
+    4: "connecting", 5: "handshaking", 6: "backoff",
+}
 RECORD_SIZE = 28
 
 
@@ -159,19 +173,22 @@ def encode_ble_config(args: argparse.Namespace) -> bytes:
         raise ValueError("BLE scan interval must be 10..10240 ms")
     if not 10 <= args.ble_scan_window_ms <= args.ble_scan_interval_ms:
         raise ValueError("BLE scan window must be 10 ms..scan interval")
-    if not 100 <= args.ble_reconnect_interval_ms <= 60000:
-        raise ValueError("BLE reconnect interval must be 100..60000 ms")
+    if not 100 <= args.ble_retry_interval_ms <= 60000:
+        raise ValueError("BLE retry interval must be 100..60000 ms")
     if not 100 <= args.ble_connection_timeout_ms <= 30000:
         raise ValueError("BLE connection timeout must be 100..30000 ms")
     if not 0 <= args.ble_retries <= 5:
         raise ValueError("BLE retries must be 0..5")
     if not 100 <= args.ble_rx_message_timeout_ms <= 2000:
         raise ValueError("BLE RX message timeout must be 100..2000 ms")
+    ble_auto_start = bool(getattr(args, "ble_auto_start", False))
+    if ble_auto_start and mode == 0:
+        raise ValueError("BLE auto-start requires HUB or PERIPHERAL mode")
     fixed = struct.pack(
         "<BHHHBHHBHB",
         mode, args.ble_advertising_interval_ms, args.ble_scan_interval_ms,
-        args.ble_scan_window_ms, int(args.ble_reconnect),
-        args.ble_reconnect_interval_ms, args.ble_connection_timeout_ms,
+        args.ble_scan_window_ms, int(ble_auto_start),
+        args.ble_retry_interval_ms, args.ble_connection_timeout_ms,
         args.ble_retries, args.ble_rx_message_timeout_ms, len(peers))
     return fixed + (struct.pack("<" + "H" * len(peers), *peers) if peers else b"")
 
@@ -179,16 +196,16 @@ def encode_ble_config(args: argparse.Namespace) -> bytes:
 def decode_ble_config(payload: bytes) -> dict:
     if len(payload) < 16:
         return {}
-    mode, adv, scan_i, scan_w, reconnect, reconnect_i, conn_timeout, retries, rx_timeout, count = struct.unpack_from(
+    mode, adv, scan_i, scan_w, auto_start, retry_i, conn_timeout, retries, rx_timeout, count = struct.unpack_from(
         "<BHHH BHH BHB", payload)
     if count > 8 or len(payload) != 16 + count * 2:
         raise ValueError("invalid BLE config extension length")
     peers = list(struct.unpack_from("<" + "H" * count, payload, 16)) if count else []
-    if mode not in BLE_MODE_NAMES or reconnect not in (0, 1):
-        raise ValueError("invalid BLE mode or reconnect flag")
+    if mode not in BLE_MODE_NAMES or auto_start not in (0, 1):
+        raise ValueError("invalid BLE mode or auto-start flag")
     if not 20 <= adv <= 10240 or not 10 <= scan_i <= 10240 or not 10 <= scan_w <= scan_i:
         raise ValueError("invalid BLE advertising or scan interval")
-    if not 100 <= reconnect_i <= 60000 or not 100 <= conn_timeout <= 30000:
+    if not 100 <= retry_i <= 60000 or not 100 <= conn_timeout <= 30000:
         raise ValueError("invalid BLE connection timing")
     if not 0 <= retries <= 5 or not 100 <= rx_timeout <= 2000:
         raise ValueError("invalid BLE retry or receive timeout setting")
@@ -196,8 +213,8 @@ def decode_ble_config(payload: bytes) -> dict:
         raise ValueError("invalid BLE peer list")
     return {"ble_mode": BLE_MODE_NAMES.get(mode, mode), "ble_advertising_interval_ms": adv,
             "ble_scan_interval_ms": scan_i, "ble_scan_window_ms": scan_w,
-            "ble_reconnect_enabled": bool(reconnect), "ble_reconnect_interval_ms": reconnect_i,
-            "ble_connection_timeout_ms": conn_timeout, "ble_max_retries": retries,
+            "ble_auto_start": bool(auto_start), "ble_retry_interval_ms": retry_i, "ble_connection_timeout_ms": conn_timeout,
+            "ble_max_retries": retries,
             "ble_rx_message_timeout_ms": rx_timeout, "ble_peers": peers}
 
 
@@ -340,9 +357,9 @@ def parse_args():
     ap.add_argument("--timeout", type=float, default=1.5)
     sub = ap.add_subparsers(dest="command", required=True)
     for name in ("ping", "get-info", "status", "stats", "clear-stats", "last-error", "get-config",
-                 "get-saved-config", "save-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
-                 "stop", "clear-history", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
-                 "get-peers", "start-ble", "stop-ble"):
+                 "get-saved-config", "reset-config", "get-ant-delays", "save-ant-delays", "get-targets", "get-schedule", "start",
+                 "stop", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
+                 "get-peers", "start-ble", "stop-ble", "trace"):
         sub.add_parser(name)
     p = sub.add_parser("set-role"); p.add_argument("role", choices=ROLE_NAMES.values())
     p = sub.add_parser("set-targets"); p.add_argument("ids", nargs="+", type=int)
@@ -361,8 +378,10 @@ def parse_args():
     p.add_argument("--ble-advertising-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-window-ms", type=int, default=80)
-    p.add_argument("--ble-reconnect", action="store_true")
-    p.add_argument("--ble-reconnect-interval-ms", type=int, default=1000)
+    p.add_argument("--ble-auto-start", action="store_true",
+                   help="automatically start the configured BLE role after boot")
+    p.add_argument("--ble-retry-interval-ms", type=int, default=1000,
+                   help="delay between automatic connection attempts (100..60000 ms)")
     p.add_argument("--ble-connection-timeout-ms", type=int, default=5000)
     p.add_argument("--ble-retries", type=int, default=1)
     p.add_argument("--ble-rx-message-timeout-ms", type=int, default=1000)
@@ -376,12 +395,15 @@ def parse_args():
     p.add_argument("--ble-mode", choices=BLE_MODE_NAMES.values(), default="idle")
     p.add_argument("--ble-advertising-interval-ms", type=int, default=160)
     p.add_argument("--ble-scan-interval-ms", type=int, default=160); p.add_argument("--ble-scan-window-ms", type=int, default=80)
-    p.add_argument("--ble-reconnect", action="store_true"); p.add_argument("--ble-reconnect-interval-ms", type=int, default=1000)
-    p.add_argument("--ble-connection-timeout-ms", type=int, default=5000); p.add_argument("--ble-retries", type=int, default=1)
+    p.add_argument("--ble-auto-start", action="store_true",
+                   help="automatically start the configured BLE role after boot")
+    p.add_argument("--ble-retry-interval-ms", type=int, default=1000,
+                   help="delay between automatic connection attempts (100..60000 ms)")
+    p.add_argument("--ble-connection-timeout-ms", type=int, default=5000)
+    p.add_argument("--ble-retries", type=int, default=1,
+                   help="additional message-delivery attempts (0..5)")
     p.add_argument("--ble-rx-message-timeout-ms", type=int, default=1000); p.add_argument("--ble-peers", type=int, nargs="*", default=[])
     p = sub.add_parser("set-peers"); p.add_argument("ids", nargs="*", type=int)
-    p = sub.add_parser("ble-connect"); p.add_argument("peer_id", type=int)
-    p = sub.add_parser("ble-disconnect"); p.add_argument("peer_id", type=int)
     p = sub.add_parser("peer-status"); p.add_argument("peer_id", type=int)
     p = sub.add_parser("send-to-peer"); p.add_argument("peer_id", type=int); p.add_argument("data"); p.add_argument("--hex", action="store_true", help="interpret data as hexadecimal bytes")
     p = sub.add_parser("get-received-data"); p.add_argument("peer_id", type=int); p.add_argument("message_id", type=int)
@@ -389,6 +411,56 @@ def parse_args():
 
 
 def record_response(op: int, payload: bytes) -> object:
+    if op == 0x08:
+        if not payload:
+            raise ValueError("trace payload is empty")
+        count = payload[0]
+        if count > 48:
+            raise ValueError("trace payload contains too many records")
+        source_names = {0: "uwb_radio", 1: "uwb_tx_start", 2: "ble_lifecycle"}
+        expected_sizes = {0: 28, 1: 44, 2: 13}
+        records = []
+        offset = 1
+        for _ in range(count):
+            if offset + 6 > len(payload):
+                raise ValueError("trace record header is truncated")
+            source = payload[offset]
+            sequence = struct.unpack_from("<I", payload, offset + 1)[0]
+            record_size = payload[offset + 5]
+            offset += 6
+            if source not in expected_sizes or record_size != expected_sizes[source]:
+                raise ValueError("trace record type or size is invalid")
+            if offset + record_size > len(payload):
+                raise ValueError("trace record data is truncated")
+            data = payload[offset:offset + record_size]
+            offset += record_size
+            if source == 0:
+                (uptime, before, after, delayed_time, peer, job, event, state,
+                 function, radio_seq, delayed, retries, rc, reserved) = struct.unpack("<IIIIHHBBBBBBBB", data)
+                fields = {"uptime_ms": uptime, "status_before": before, "status_after": after,
+                          "delayed_time_reg": delayed_time, "peer_id": peer, "job_id": job,
+                          "event": event, "radio_state": state, "function": function,
+                          "radio_seq": radio_seq, "delayed": bool(delayed), "retries_used": retries,
+                          "driver_return_code": rc, "reserved": reserved}
+            elif source == 1:
+                values = struct.unpack("<IIIIIIIIHHBBBBBBBB", data)
+                fields = {"uptime_ms": values[0], "status_before": values[1], "status_after": values[2],
+                          "sys_state_before": values[3], "sys_state_after": values[4],
+                          "sys_time_before": values[5], "delayed_time_reg": values[6],
+                          "scheduled_tx_timestamp_low": values[7], "peer_id": values[8],
+                          "job_id": values[9], "event": values[10], "radio_state": values[11],
+                          "function": values[12], "radio_seq": values[13], "delayed": bool(values[14]),
+                          "retries_used": values[15], "driver_return_code": values[16],
+                          "failure_hint": values[17]}
+            else:
+                uptime, code, peer, reason, stage, detail, active_links, state_flags = struct.unpack("<IBHBBhBB", data)
+                fields = {"uptime_ms": uptime, "code": code, "peer_id": peer, "reason": reason,
+                          "stage": stage, "detail": detail, "active_links": active_links,
+                          "state_flags": state_flags}
+            records.append({"source": source_names[source], "sequence": sequence, **fields})
+        if offset != len(payload):
+            raise ValueError("trace payload has trailing bytes")
+        return {"count": count, "records": records}
     if op == 0x01:
         return {"pong": payload == b"PONG"}
     if op == 0x02 and len(payload) >= 12:
@@ -405,10 +477,10 @@ def record_response(op: int, payload: bytes) -> object:
                   "ranges_failed": struct.unpack_from("<I", payload, 14)[0]}
         if len(payload) >= 27:
             result.update(ble_mode=BLE_MODE_NAMES.get(payload[18], payload[18]),
-                          ble_enabled=bool(payload[19]), ble_connected=bool(payload[20]),
-                          ble_connected_peer_id=struct.unpack_from("<H", payload, 21)[0],
+                          ble_enabled=bool(payload[19]), ble_any_peer_connected=bool(payload[20]),
+                          ble_representative_peer_id=struct.unpack_from("<H", payload, 21)[0],
                           ble_advertising=bool(payload[23]), ble_scanning=bool(payload[24]),
-                          ble_mtu=struct.unpack_from("<H", payload, 25)[0])
+                          ble_representative_peer_mtu=struct.unpack_from("<H", payload, 25)[0])
         return result
     if op == 0x10 and len(payload) >= 16:
         dev, pan = struct.unpack_from("<HH", payload); chan = payload[4]; tx, rx = struct.unpack_from("<HH", payload, 5)
@@ -418,7 +490,7 @@ def record_response(op: int, payload: bytes) -> object:
         if len(payload) > 16:
             result.update(decode_ble_config(payload[16:]))
         return result
-    if op == 0x17 and len(payload) >= 19:
+    if op == 0x13 and len(payload) >= 19:
         count = payload[17]
         base = 19 + count * 2
         if count > 16 or len(payload) < base:
@@ -435,24 +507,26 @@ def record_response(op: int, payload: bytes) -> object:
         if len(payload) > base:
             result.update(decode_ble_config(payload[base:]))
         return result
-    if op == 0x50 and len(payload) == 0:
+    if op == 0x51 and len(payload) == 0:
         return {"ok": True}
-    if op == 0x51 and payload:
+    if op == 0x50 and payload:
         count = payload[0]
         if len(payload) != 1 + count * 2:
             return {"parse_error": "peer list length mismatch"}
         return {"peers": list(struct.unpack_from("<" + "H" * count, payload, 1)) if count else []}
-    if op == 0x54 and len(payload) == 0:
-        return {"connection_request_accepted": True}
-    if op == 0x56 and len(payload) == 10:
-        return {"state": BLE_PEER_STATE_NAMES.get(payload[0], payload[0]),
-                "mode": BLE_MODE_NAMES.get(payload[1], payload[1]), "enabled": bool(payload[2]),
-                "advertising": bool(payload[3]), "scanning": bool(payload[4]),
-                "connected": bool(payload[5]), "peer_id": struct.unpack_from("<H", payload, 6)[0],
-                "mtu": struct.unpack_from("<H", payload, 8)[0]}
-    if op == 0x57 and len(payload) == 2:
+    if op == 0x54 and len(payload) in (10, 14):
+        result = {"state": BLE_PEER_STATE_NAMES.get(payload[0], payload[0]),
+                  "mode": BLE_MODE_NAMES.get(payload[1], payload[1]), "enabled": bool(payload[2]),
+                  "advertising": bool(payload[3]), "scanning": bool(payload[4]),
+                  "connected": bool(payload[5]), "peer_id": struct.unpack_from("<H", payload, 6)[0],
+                  "mtu": struct.unpack_from("<H", payload, 8)[0]}
+        if len(payload) == 14:
+            (result["last_failure_reason"], result["last_failure_stage"],
+             result["last_failure_detail"]) = struct.unpack_from("<BBh", payload, 10)
+        return result
+    if op == 0x55 and len(payload) == 2:
         return {"message_id": struct.unpack("<H", payload)[0], "accepted_for_transmission": True}
-    if op == 0x58 and len(payload) >= 4:
+    if op == 0x56 and len(payload) >= 4:
         message_id, length = struct.unpack_from("<HH", payload)
         data = payload[4:]
         if len(data) != length:
@@ -462,11 +536,11 @@ def record_response(op: int, payload: bytes) -> object:
         except UnicodeDecodeError:
             text = None
         return {"message_id": message_id, "length": length, "data_hex": data.hex(), "data_utf8": text}
-    if op in (0x15, 0x16) and len(payload) == 4:
+    if op in (0x15, 0x16, 0x17) and len(payload) == 4:
         return {"tx_antenna_delay": struct.unpack_from("<H", payload)[0], "rx_antenna_delay": struct.unpack_from("<H", payload, 2)[0]}
-    if op == 0x22 and payload:
+    if op == 0x21 and payload:
         cnt = payload[0]; return {"targets": list(struct.unpack_from("<" + "H" * cnt, payload, 1)) if cnt else []}
-    if op == 0x24 and len(payload) == 18:
+    if op == 0x23 and len(payload) == 18:
         period, timeout = struct.unpack_from("<IH", payload); estimated, avg = struct.unpack_from("<II", payload, 10)
         return {"requested_period_ms": period, "timeout_ms": timeout, "retries": payload[6],
                 "target_count": payload[7], "queued_jobs": payload[8], "transaction_active": bool(payload[9]),
@@ -483,13 +557,13 @@ def record_response(op: int, payload: bytes) -> object:
         records = []
         for i in range(count): records.append(decode_record(payload[start + i * RECORD_SIZE:start + (i + 1) * RECORD_SIZE]))
         return {**meta, "records": records}
-    if op == 0x32 or op == 0x33:
+    if op == 0x09 or op == 0x0A:
         return {"subscription_mask": struct.unpack("<H", payload)[0] if len(payload) >= 2 else None}
-    if op == 0x40:
+    if op == 0x29:
         return {"sleep_kind": "IDLE_RC standby (not DWM3000 deep sleep)" if payload and payload[0] == 1 else "unknown"}
-    if op == 0x41:
+    if op == 0x2A:
         return {"already_awake": bool(payload and payload[0] == 1)}
-    if op == 0x42 and len(payload) == 4:
+    if op == 0x40 and len(payload) == 4:
         return {"sleep_ms": struct.unpack("<I", payload)[0]}
     if len(payload) == 0:
         return {"ok": True}
@@ -593,7 +667,7 @@ def main():
             if len(a.ids) > 8 or any(x < 1 or x > 65534 for x in a.ids) or len(set(a.ids)) != len(a.ids):
                 raise ValueError("BLE peer IDs must be unique integers 1..65534 (max 8)")
             payload = bytes([len(a.ids)]) + (struct.pack("<" + "H" * len(a.ids), *a.ids) if a.ids else b"")
-        elif a.command in ("ble-connect", "ble-disconnect", "peer-status"):
+        elif a.command == "peer-status":
             if not 1 <= a.peer_id <= 65534:
                 raise ValueError("peer ID must be in 1..65534")
             payload = struct.pack("<H", a.peer_id)

@@ -3,6 +3,13 @@ use std::io::{Read, Write};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter};
 
+const OP_SET_CONFIG: u8 = 0x11;
+const OP_RESET_CONFIG: u8 = 0x12;
+const OP_APPLY_SAVE_CONFIG: u8 = 0x14;
+const OP_UWB_WAKE: u8 = 0x2A;
+const OP_SYSTEM_SLEEP: u8 = 0x40;
+const OP_REBOOT: u8 = 0x41;
+
 pub const ERRORS: [&str; 11] = [
     "OK",
     "BAD_ARGUMENT",
@@ -152,7 +159,8 @@ pub fn command(
 ) -> Result<Reply, String> {
     let packet = frame(1, seq, opcode, 0, payload);
     let timeout = match opcode {
-        0x11 | 0x13 | 0x18 | 0x41 => Duration::from_secs(5),
+        OP_SET_CONFIG | OP_RESET_CONFIG | OP_APPLY_SAVE_CONFIG | OP_UWB_WAKE |
+        OP_SYSTEM_SLEEP | OP_REBOOT => Duration::from_secs(5),
         _ => Duration::from_millis(1800),
     };
 

@@ -2,18 +2,80 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue';
 import { invoke } from '@tauri-apps/api/core';
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
-import { Activity, Antenna, ArrowDownToLine, ArrowUpFromLine, BadgeCheck, Bluetooth, Cable, ChartNoAxesCombined, ChevronDown, CircleAlert, CircleHelp, Clock3, Cpu, Database, Download, Gauge, History, Inbox, LayoutDashboard, Link2, ListChecks, Plug, Power, RefreshCw, RotateCcw, Save, Search, Send, Settings2, ShieldCheck, Terminal, Trash2, Unplug, Waves, Zap } from 'lucide-vue-next';
+import {
+    Activity,
+    Antenna,
+    ArrowDownToLine,
+    ArrowUpFromLine,
+    BadgeCheck,
+    Bluetooth,
+    Cable,
+    ChartNoAxesCombined,
+    CircleAlert,
+    CircleHelp,
+    Clock3,
+    Cpu,
+    Database,
+    Download,
+    History,
+    Inbox,
+    LayoutDashboard,
+    Link2,
+    Plug,
+    Power,
+    RefreshCw,
+    RotateCcw,
+    Save,
+    Send,
+    Settings2,
+    ShieldCheck,
+    Terminal,
+    Trash2,
+    Unplug,
+    Waves,
+    Zap,
+} from 'lucide-vue-next';
+
+const OP = {
+    // Common commands, diagnostics, subscriptions, and time sync.
+    PING: 0x01, GET_INFO: 0x02, GET_STATUS: 0x03, GET_STATISTICS: 0x04,
+    CLEAR_STATISTICS: 0x05, GET_LAST_ERROR: 0x06, GET_DIAGNOSTICS: 0x07,
+    GET_TRACE: 0x08, SUBSCRIBE: 0x09, UNSUBSCRIBE: 0x0A, TIME_SYNC: 0x0B,
+
+    // Configuration and antenna calibration.
+    GET_CONFIG: 0x10, SET_CONFIG: 0x11, RESET_CONFIG: 0x12,
+    GET_SAVED_CONFIG: 0x13, APPLY_SAVE_CONFIG: 0x14,
+    GET_ANTENNA_DELAYS: 0x15, SET_ANTENNA_DELAYS: 0x16, SAVE_ANTENNA_DELAYS: 0x17,
+
+    // UWB control and ranging.
+    SET_ROLE: 0x20, GET_TARGETS: 0x21, SET_TARGETS: 0x22,
+    GET_UWB_SCHEDULE: 0x23, SET_UWB_SCHEDULE: 0x24,
+    START_RANGING: 0x25, STOP_RANGING: 0x26, RANGE_ONCE: 0x27,
+    CANCEL_OPERATION: 0x28, UWB_SLEEP: 0x29, UWB_WAKE: 0x2A,
+
+    // UWB measurements and history.
+    GET_LAST_RANGE: 0x30, GET_HISTORY: 0x31,
+
+    // System power and restart.
+    SYSTEM_SLEEP: 0x40, REBOOT: 0x41,
+
+    // BLE peer management and messaging.
+    GET_PEERS: 0x50, SET_PEERS: 0x51, START_BLE: 0x52,
+    STOP_BLE: 0x53, GET_PEER_STATUS: 0x54, SEND_TO_PEER: 0x55,
+    GET_RECEIVED_DATA: 0x56
+} as const;
 
 type Port = { name: string; description: string };
 type FrameEvent = { seq: number; opcode: number; payload: number[] };
 type BleConfig = {
     mode: number; advertisingIntervalMs: number; scanIntervalMs: number; scanWindowMs: number;
-    reconnectEnabled: boolean; reconnectIntervalMs: number; connectionTimeoutMs: number;
-    maxRetries: number; rxMessageTimeoutMs: number; peers: number[];
+    retryIntervalMs: number; connectionTimeoutMs: number;
+    maxRetries: number; rxMessageTimeoutMs: number; autoStart: boolean; peers: number[];
 };
 type BlePeerStatus = {
     peerId: number; state: number; mode: number; enabled: boolean; advertising: boolean;
     scanning: boolean; connected: boolean; mtu: number;
+    lastFailureReason: number; lastFailureStage: number; lastFailureDetail: number;
 };
 type BleMessage = {
     peerId: number; messageId: number; length: number; time: number;
@@ -21,7 +83,7 @@ type BleMessage = {
 };
 const defaultBleConfig = (): BleConfig => ({
     mode: 0, advertisingIntervalMs: 160, scanIntervalMs: 160, scanWindowMs: 80,
-    reconnectEnabled: false, reconnectIntervalMs: 1000, connectionTimeoutMs: 5000,
+    autoStart: false, retryIntervalMs: 1000, connectionTimeoutMs: 5000,
     maxRetries: 1, rxMessageTimeoutMs: 1000, peers: []
 });
 const bleDraft = reactive<BleConfig>(defaultBleConfig());
@@ -41,19 +103,43 @@ const ble = reactive({
 });
 const blePeersInput = ref('');
 const blePeerTokens = computed(() => blePeersInput.value.split(',').filter(token => token.trim().length > 0));
+const bleVisiblePeerIds = computed(() => [...new Set([
+    ...ble.runtimeConfig.peers,
+    ...ble.discoveredPeers,
+    ...ble.peerStatuses.map(peer => peer.peerId),
+    ...(ble.runtime.connectedPeerId ? [ble.runtime.connectedPeerId] : [])
+])].sort((a, b) => a - b));
+const bleConnectedCount = computed(() => ble.peerStatuses.filter(peer => peer.connected).length);
 const bleMessagePeerId = ref('');
 const bleMessageText = ref('');
 const bleMessageByteLength = computed(() => new TextEncoder().encode(bleMessageText.value).length);
 const retrievingBleMessages = new Set<string>();
-const connected = ref(false), connecting = ref(false), ports = ref<Port[]>([]), selectedPort = ref(''), active = ref('overview'), busy = ref(false), savingConfig = ref(false), savingStep = ref(''), lastRefresh = ref('—'), error = ref(''), notice = ref(''), events = ref<string[]>([]), measurements = ref<any[]>([]), eventCount = ref(0);
+const connected = ref(false),
+    connecting = ref(false),
+    ports = ref<Port[]>([]),
+    selectedPort = ref(''),
+    active = ref('overview'),
+    busy = ref(false),
+    savingConfig = ref(false),
+    savingStep = ref(''),
+    lastRefresh = ref('—'),
+    error = ref(''),
+    notice = ref(''),
+    events = ref<string[]>([]),
+    measurements = ref<any[]>([]),
+    eventCount = ref(0);
 
 type CalJobResult = { target: number; status: number; mm: number | null };
+type BleDiagnosticRecord = {
+    uptimeMs: number; code: number; peerId: number; reason: number; stage: number;
+    detail: number; activeLinks: number; stateFlags: number;
+};
 const CAL_WINDOW_SIZE = 100;
 const DEFAULT_ANTENNA_DELAY = 16385;
 // One DW3000 device-time unit converted to one-way propagation distance.
 const DW3000_TICK_METERS = 299792458 / (499.2e6 * 128);
 const calibration = reactive({
-    phase: 'idle' as 'idle'|'starting'|'live'|'saving'|'resetting'|'error',
+    phase: 'idle' as 'idle' | 'starting' | 'live' | 'saving' | 'resetting' | 'error',
     active: false,
     processing: false,
     operationBusy: false,
@@ -90,92 +176,157 @@ watch(() => calibration.requestedDelay, value => {
 let calibrationLoopPromise: Promise<void> | null = null;
 const calibrationWaiters = new Map<number, { resolve: (v: CalJobResult) => void; reject: (e: Error) => void; timer: number }>();
 const calibrationJobResults = new Map<number, CalJobResult>();
-let poller: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
-let commandQueue: Promise<void> = Promise.resolve();
-const device = reactive<any>({ info: null, status: null, stats: null,
+let poller: number | undefined, eventDrainTimer: number | undefined, unlisten: UnlistenFn | undefined, polling = false, missingPortChecks = 0, losingConnection = false;
+let lastBleRefreshAt = 0;
+let lastTraceRefreshAt = 0;
+let commandInFlight = false;
+let eventDrainBusy = false;
+const priorityCommandQueue: Array<() => Promise<void>> = [];
+const normalCommandQueue: Array<() => Promise<void>> = [];
+
+function runNextDeviceCommand() {
+    if (commandInFlight) return;
+    const next = priorityCommandQueue.shift() ?? normalCommandQueue.shift();
+    if (!next) return;
+    commandInFlight = true;
+    void next();
+}
+function queueDeviceCommand<T>(operation: () => Promise<T>, priority = false): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+        const run = async (): Promise<void> => {
+            try {
+                resolve(await operation());
+            } catch (e) {
+                reject(e);
+            } finally {
+                commandInFlight = false;
+                runNextDeviceCommand();
+            }
+        };
+        (priority ? priorityCommandQueue : normalCommandQueue).push(run);
+        runNextDeviceCommand();
+    });
+}
+const device = reactive<any>({
+    info: null, status: null, stats: null,
     // config/savedTargets always describe NVS; runtimeConfig/schedule/targets describe RAM.
     config: { deviceId: 1, panId: 0xDECA, channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, autoStart: false },
-    savedTargets: [] as number[], runtimeConfig: null, schedule: null, targets: [] as number[], diagnostics: null, lastError: null });
+    savedTargets: [] as number[], runtimeConfig: null, schedule: null, targets: [] as number[], diagnostics: null, lastError: null
+});
 const draft = reactive({ deviceId: 1, panId: 'DECA', channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, targets: '', autoStart: false });
-type RadioTrace = { uptimeMs:number; statusBefore:number; statusAfter:number; delayedTimeReg:number; peer:number; jobId:number; event:number; radioState:number; func:number; radioSeq:number; delayed:boolean; retriesUsed:number; rc:number; reserved:number };
-type RadioTraceDetail = { uptimeMs:number; statusBefore:number; statusAfter:number; sysStateBefore:number; sysStateAfter:number; sysTimeBefore:number; delayedTimeReg:number; scheduledTxTimestampLow:number; peer:number; jobId:number; event:number; state:number; func:number; radioSeq:number; delayed:boolean; retriesUsed:number; rc:number; failureHint:number };
-const radioTrace = ref<RadioTrace[]>([]);
-const traceSupported = ref<boolean | null>(null);
-const radioTraceDetail = ref<RadioTraceDetail[]>([]);
-const traceDetailSupported = ref<boolean | null>(null);
-const traceDetailFetchedAt = ref('');
-const traceDetailError = ref('');
-const traceDetailBusy = ref(false);
+type UnifiedTraceRecord = { sequence: number; source: number; uptimeMs: number; text: string };
+const traceRecords = ref<UnifiedTraceRecord[]>([]);
 const traceFetchedAt = ref('');
 const traceError = ref('');
 const traceBusy = ref(false);
-const traceEventName = (n:number) => ({1:'dwt_starttx() failed',2:'dwt_rxenable() failed',3:'TXFRS completion timeout',4:'DW3000 RX error bits'} as Record<number,string>)[n] ?? `Unknown event ${n}`;
-const radioFunctionName = (n:number) => ({0xe0:'POLL',0xe1:'RESP',0xe2:'FINAL',0xe3:'REPORT'} as Record<number,string>)[n] ?? hex(n,2);
-const radioStateName = (n:number) => ({0:'READY',1:'RX_LISTEN',2:'WAIT_RESP',3:'WAIT_FINAL'} as Record<number,string>)[n] ?? `State ${n}`;
-function decodeRadioTrace(p:number[]) {
-  if (!p.length) throw new Error('GET_RADIO_TRACE returned an empty payload.');
-  const count = p[0];
-  if (count > 8 || p.length !== 1 + count * 28) throw new Error(`Invalid radio trace payload: count=${count}, bytes=${p.length}. Expected ${1 + count * 28}.`);
-  return Array.from({length:count},(_,i) => {
-    const o=1+i*28;
-    return { uptimeMs:get32(p,o), statusBefore:get32(p,o+4), statusAfter:get32(p,o+8), delayedTimeReg:get32(p,o+12), peer:get16(p,o+16), jobId:get16(p,o+18), event:p[o+20], radioState:p[o+21], func:p[o+22], radioSeq:p[o+23], delayed:p[o+24]!==0, retriesUsed:p[o+25], rc:p[o+26], reserved:p[o+27] } as RadioTrace;
-  });
+const traceEventName = (n: number) => ({ 1: 'dwt_starttx() failed', 2: 'dwt_rxenable() failed', 3: 'TXFRS completion timeout', 4: 'DW3000 RX error bits' } as Record<number, string>)[n] ?? `Unknown event ${n}`;
+const radioFunctionName = (n: number) => ({ 0xe0: 'POLL', 0xe1: 'RESP', 0xe2: 'FINAL', 0xe3: 'REPORT' } as Record<number, string>)[n] ?? hex(n, 2);
+const radioStateName = (n: number) => ({ 0: 'READY', 1: 'RX_LISTEN', 2: 'WAIT_RESP', 3: 'WAIT_FINAL' } as Record<number, string>)[n] ?? `State ${n}`;
+function decodeTrace(payload: number[]): UnifiedTraceRecord[] {
+    if (!payload.length) throw new Error('GET_TRACE returned an empty payload.');
+    const count = payload[0];
+    if (count > 48) throw new Error(`GET_TRACE returned too many records: ${count}.`);
+    const sizes: Record<number, number> = { 0: 28, 1: 44, 2: 13 };
+    const records: UnifiedTraceRecord[] = [];
+    let offset = 1;
+    for (let i = 0; i < count; i++) {
+        if (offset + 6 > payload.length) throw new Error('GET_TRACE record header is truncated.');
+        const source = payload[offset], sequence = get32(payload, offset + 1), size = payload[offset + 5];
+        offset += 6;
+        if (sizes[source] !== size || offset + size > payload.length) throw new Error(`GET_TRACE record ${i} has invalid type, size, or data length.`);
+        const data = payload.slice(offset, offset + size); offset += size;
+        const uptimeMs = get32(data, 0);
+        let text = '';
+        if (source === 0) {
+            text = `${(uptimeMs / 1000).toFixed(1)}s · UWB radio · ${traceEventName(data[20])} · ${radioFunctionName(data[22])} · ${radioStateName(data[21])} · peer ${get16(data, 16)} · job ${get16(data, 18)} · SYS_STATUS ${hex(get32(data, 4), 8)} → ${hex(get32(data, 8), 8)} · rc ${hex(data[26], 2)}`;
+        } else if (source === 1) {
+            text = `${(uptimeMs / 1000).toFixed(1)}s · UWB TX detail · ${radioFunctionName(data[38])} · peer ${get16(data, 32)} · job ${get16(data, 34)} · ${failureHintName(data[43])} · SYS_STATUS ${hex(get32(data, 4), 8)} → ${hex(get32(data, 8), 8)} · SYS_STATE ${hex(get32(data, 12), 8)} → ${hex(get32(data, 16), 8)}`;
+        } else {
+            const rawDetail = get16(data, 9);
+            const record: BleDiagnosticRecord = { uptimeMs, code: data[4], peerId: get16(data, 5), reason: data[7], stage: data[8], detail: rawDetail >= 0x8000 ? rawDetail - 0x10000 : rawDetail, activeLinks: data[11], stateFlags: data[12] };
+            text = `${(uptimeMs / 1000).toFixed(1)}s · BLE · ${bleDiagnosticLine(record)}`;
+        }
+        records.push({ source, sequence, uptimeMs, text });
+    }
+    if (offset !== payload.length) throw new Error('GET_TRACE payload contains trailing bytes.');
+    return records;
 }
-async function loadRadioTrace() {
-  traceBusy.value=true; traceError.value='';
-  try {
-    const p=await cmd(0x36);
-    radioTrace.value=decodeRadioTrace(p); traceSupported.value=true; traceFetchedAt.value=new Date().toLocaleString();
-    log(`GET_RADIO_TRACE · ${radioTrace.value.length} record(s)`);
-    if (!radioTrace.value.length) notice.value='Radio trace read successfully; no failure records are retained.';
-  } catch(e:any) {
-    const message=String(e); traceError.value=message;
-    if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceSupported.value=false;
-    log(`GET_RADIO_TRACE failed · ${message}`);
-  } finally { traceBusy.value=false; }
+async function refreshTrace(silent = false) {
+    if (!connected.value || traceBusy.value) return;
+    traceBusy.value = true;
+    try {
+        traceRecords.value = decodeTrace(await cmd(OP.GET_TRACE));
+        traceFetchedAt.value = new Date().toLocaleString();
+        traceError.value = '';
+        log(`GET_TRACE · ${traceRecords.value.length} record(s)`);
+    } catch (e: any) {
+        traceError.value = String(e);
+        if (!silent) error.value = `Could not read device trace: ${String(e)}`;
+    } finally { traceBusy.value = false; }
 }
-function decodeRadioTraceDetail(p:number[]) {
-  if (!p.length) throw new Error('GET_RADIO_TRACE_DETAIL returned an empty payload.');
-  const count=p[0];
-  if (count>8 || p.length!==1+count*44) throw new Error(`Invalid detailed trace payload: count=${count}, bytes=${p.length}. Expected ${1+count*44}.`);
-  return Array.from({length:count},(_,i)=>{
-    const o=1+i*44;
-    return {
-      uptimeMs:get32(p,o), statusBefore:get32(p,o+4), statusAfter:get32(p,o+8),
-      sysStateBefore:get32(p,o+12), sysStateAfter:get32(p,o+16), sysTimeBefore:get32(p,o+20),
-      delayedTimeReg:get32(p,o+24), scheduledTxTimestampLow:get32(p,o+28),
-      peer:get16(p,o+32), jobId:get16(p,o+34), event:p[o+36], state:p[o+37],
-      func:p[o+38], radioSeq:p[o+39], delayed:p[o+40]!==0, retriesUsed:p[o+41],
-      rc:p[o+42], failureHint:p[o+43]
-    } as RadioTraceDetail;
-  });
-}
-async function loadRadioTraceDetail() {
-  traceDetailBusy.value=true; traceDetailError.value='';
-  try {
-    const p=await cmd(0x37);
-    radioTraceDetail.value=decodeRadioTraceDetail(p);
-    traceDetailSupported.value=true;
-    traceDetailFetchedAt.value=new Date().toLocaleString();
-    log(`GET_RADIO_TRACE_DETAIL · ${radioTraceDetail.value.length} record(s)`);
-    if (!radioTraceDetail.value.length) notice.value='Detailed TX trace read successfully; no failed TX-start records are retained.';
-  } catch(e:any) {
-    const message=String(e); traceDetailError.value=message;
-    if (/UNKNOWN_COMMAND|UNKNOWN_COMMAND \(2|0x02/i.test(message)) traceDetailSupported.value=false;
-    log(`GET_RADIO_TRACE_DETAIL failed · ${message}`);
-  } finally { traceDetailBusy.value=false; }
-}
-const failureHintName=(n:number)=>({0:'Unknown / inconclusive',1:'HPDWARN observed after call',2:'TXERR state observed after call'} as Record<number,string>)[n] ?? `Unknown hint ${n}`;
+const failureHintName = (n: number) => ({ 0: 'Unknown / inconclusive', 1: 'HPDWARN observed after call', 2: 'TXERR state observed after call' } as Record<number, string>)[n] ?? `Unknown hint ${n}`;
 function buildDebugReport() {
-  return { reportFormat:'D3KM device debug report', reportVersion:3, protocolSpecVersion:'1.4', capturedAt:new Date().toISOString(), port:selectedPort.value, appProtocolVersion:1, device:{ info:device.info, status:device.status, savedConfig:device.config, savedTargets:device.savedTargets, runtimeConfig:device.runtimeConfig, runtimeSchedule:device.schedule, runtimeTargets:device.targets, stats:device.stats, diagnostics:device.diagnostics, lastError:device.lastError }, bluetooth:{ supported:ble.supported, runtime:{ ...ble.runtime }, runtimeConfig:cloneBleConfig(ble.runtimeConfig), savedConfig:cloneBleConfig(ble.savedConfig), peerStatuses:ble.peerStatuses.map(item => ({ ...item })), discoveredPeers:[...ble.discoveredPeers], receivedCount:ble.inbox.length, sentCount:ble.outgoing.length, incomingMessageMetadata:ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })), outgoingMessageMetadata:ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error })) }, radioTrace:{ supported:traceSupported.value, fetchedAt:traceFetchedAt.value, records:radioTrace.value }, radioTraceDetail:{ supported:traceDetailSupported.value, fetchedAt:traceDetailFetchedAt.value, records:radioTraceDetail.value }, antennaCalibration:{ phase:calibration.phase, referenceId:calibration.referenceId, requestedDelay:calibration.requestedDelay, appliedTx:calibration.appliedTx, appliedRx:calibration.appliedRx, savedTx:calibration.savedTx, savedRx:calibration.savedRx, averageMm:calibration.averageMm, latestMm:calibration.latestMm, windowSize:CAL_WINDOW_SIZE, validSamples:calibration.validSamples, failedSamples:calibration.failedSamples, isSaved:calibration.isSaved }, recentEvents:events.value.slice(0,40), recentMeasurements:measurements.value.slice(0,20) };
+    return {
+        reportFormat: 'D3KM device debug report',
+        reportVersion: 3,
+        protocolSpecVersion: '2.3',
+        capturedAt: new Date().toISOString(),
+        port: selectedPort.value,
+        appProtocolVersion: 1,
+        device: {
+            info: device.info,
+            status: device.status,
+            savedConfig: device.config,
+            savedTargets: device.savedTargets,
+            runtimeConfig: device.runtimeConfig,
+            runtimeSchedule: device.schedule,
+            runtimeTargets: device.targets,
+            stats: device.stats,
+            diagnostics: device.diagnostics,
+            lastError: device.lastError
+        },
+        bluetooth: {
+            supported: ble.supported,
+            runtime: { ...ble.runtime },
+            runtimeConfig: cloneBleConfig(ble.runtimeConfig),
+            savedConfig: cloneBleConfig(ble.savedConfig),
+            peerStatuses: ble.peerStatuses.map(item => ({ ...item })),
+            discoveredPeers: [...ble.discoveredPeers],
+            receivedCount: ble.inbox.length,
+            sentCount: ble.outgoing.length,
+            incomingMessageMetadata: ble.inbox.map(({ peerId, messageId, length, time, state }) => ({ peerId, messageId, length, time, state })),
+            outgoingMessageMetadata: ble.outgoing.map(({ peerId, messageId, length, time, state, error }) => ({ peerId, messageId, length, time, state, error }))
+        },
+        trace: {
+            fetchedAt: traceFetchedAt.value,
+            records: traceRecords.value
+        },
+        antennaCalibration: {
+            phase: calibration.phase,
+            referenceId: calibration.referenceId,
+            requestedDelay: calibration.requestedDelay,
+            appliedTx: calibration.appliedTx,
+            appliedRx: calibration.appliedRx,
+            savedTx: calibration.savedTx,
+            savedRx: calibration.savedRx,
+            averageMm: calibration.averageMm,
+            latestMm: calibration.latestMm,
+            windowSize: CAL_WINDOW_SIZE,
+            validSamples: calibration.validSamples,
+            failedSamples: calibration.failedSamples,
+            isSaved: calibration.isSaved
+        },
+        recentEvents: events.value.slice(0, 40),
+        recentMeasurements: measurements.value.slice(0, 20),
+    };
 }
 async function copyDebugReport() {
-  try { await navigator.clipboard.writeText(JSON.stringify(buildDebugReport(),null,2)); notice.value='Debug report copied to clipboard'; log('Debug report copied'); }
-  catch(e:any) { error.value=`Could not copy report: ${String(e)}`; }
+    try { await navigator.clipboard.writeText(JSON.stringify(buildDebugReport(), null, 2)); notice.value = 'Debug report copied to clipboard'; log('Debug report copied'); }
+    catch (e: any) { error.value = `Could not copy report: ${String(e)}`; }
 }
 function downloadDebugReport() {
-  const blob=new Blob([JSON.stringify(buildDebugReport(),null,2)],{type:'application/json'});
-  const url=URL.createObjectURL(blob); const a=document.createElement('a'); a.href=url; a.download=`d3km-debug-node-${device.info?.id ?? 'unknown'}-${new Date().toISOString().replace(/[:.]/g,'-')}.json`; a.click(); URL.revokeObjectURL(url);
+    const blob = new Blob([JSON.stringify(buildDebugReport(), null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = `d3km-debug-node-${device.info?.id ?? 'unknown'}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`; a.click(); URL.revokeObjectURL(url);
 }
 
 const roleName = computed(() => ['Idle', 'Initiator', 'Responder'][device.status?.role ?? 0] ?? 'Unknown');
@@ -194,8 +345,9 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
     }
     const config: BleConfig = {
         mode: p[offset], advertisingIntervalMs: get16(p, offset + 1), scanIntervalMs: get16(p, offset + 3),
-        scanWindowMs: get16(p, offset + 5), reconnectEnabled: p[offset + 7] === 1,
-        reconnectIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
+        scanWindowMs: get16(p, offset + 5),
+        autoStart: p[offset + 7] === 1,
+        retryIntervalMs: get16(p, offset + 8), connectionTimeoutMs: get16(p, offset + 10),
         maxRetries: p[offset + 12], rxMessageTimeoutMs: get16(p, offset + 13),
         peers: Array.from({ length: peerCount }, (_, i) => get16(p, offset + 16 + i * 2))
     };
@@ -203,7 +355,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
         config.advertisingIntervalMs < 20 || config.advertisingIntervalMs > 10240 ||
         config.scanIntervalMs < 10 || config.scanIntervalMs > 10240 ||
         config.scanWindowMs < 10 || config.scanWindowMs > config.scanIntervalMs ||
-        config.reconnectIntervalMs < 100 || config.reconnectIntervalMs > 60000 ||
+        config.retryIntervalMs < 100 || config.retryIntervalMs > 60000 ||
         config.connectionTimeoutMs < 100 || config.connectionTimeoutMs > 30000 ||
         config.rxMessageTimeoutMs < 100 || config.rxMessageTimeoutMs > 2000) {
         throw new Error('Device returned BLE settings outside the supported protocol limits.');
@@ -216,7 +368,7 @@ function decodeBleConfigExtension(p: number[], offset: number): BleConfig {
 function encodeBleConfigExtension(c: BleConfig) {
     return [
         c.mode, ...u16(c.advertisingIntervalMs), ...u16(c.scanIntervalMs), ...u16(c.scanWindowMs),
-        c.reconnectEnabled ? 1 : 0, ...u16(c.reconnectIntervalMs), ...u16(c.connectionTimeoutMs),
+        c.autoStart ? 1 : 0, ...u16(c.retryIntervalMs), ...u16(c.connectionTimeoutMs),
         c.maxRetries, ...u16(c.rxMessageTimeoutMs), c.peers.length, ...c.peers.flatMap(u16)
     ];
 }
@@ -227,21 +379,24 @@ function decodeSavedConfig(p: number[]) {
     if (p.length < 19) throw new Error(`GET_SAVED_CONFIG payload too short: ${p.length} bytes.`);
     const count = p[17];
     const baseLength = 19 + count * 2;
-    if (count > 16 || p.length < baseLength) throw new Error(`Invalid GET_SAVED_CONFIG payload: target count ${count}, length ${p.length}.`);
-    const bleConfigAvailable = p.length > baseLength;
-    const bleConfig = bleConfigAvailable ? decodeBleConfigExtension(p, baseLength) : defaultBleConfig();
+    if (count > 16 || p.length < baseLength + 16) {
+        throw new Error(`Invalid GET_SAVED_CONFIG payload: target count ${count}, length ${p.length}; complete BLE configuration is required.`);
+    }
+    const bleConfig = decodeBleConfigExtension(p, baseLength);
     return {
         deviceId: get16(p, 0), panId: get16(p, 2), channel: p[4], tx: get16(p, 5), rx: get16(p, 7),
         period: get32(p, 9), timeout: get16(p, 13), retries: p[15], role: p[16],
         targets: Array.from({ length: count }, (_, i) => get16(p, 18 + i * 2)),
-        autoStart: p[18 + count * 2] === 1, bleConfig, bleConfigAvailable
+        autoStart: p[18 + count * 2] === 1, bleConfig, bleConfigAvailable: true
     };
 }
 function readString(p: number[]) { return String.fromCharCode(...p) }
-async function cmd(op: number, payload: number[] = []) {
+async function cmd(op: number, payload: number[] = [], priority = false) {
     if (!connected.value) throw new Error('Connect a device first');
-    const task = commandQueue.then(() => invoke<{ payload: number[]; events: FrameEvent[] }>('send_command', { opcode: op, payload }));
-    commandQueue = task.then(() => undefined, () => undefined);
+    const task = queueDeviceCommand(
+        () => invoke<{ payload: number[]; events: FrameEvent[] }>('send_command', { opcode: op, payload }),
+        priority
+    );
     try {
         return (await task).payload;
     } catch (e: any) {
@@ -264,10 +419,14 @@ function applyBleStatusPayload(p: number[]) {
     if (ble.runtime.connected && ble.runtime.connectedPeerId) bleMessagePeerId.value = String(ble.runtime.connectedPeerId);
 }
 function decodeBlePeerStatus(p: number[]): BlePeerStatus {
-    if (p.length !== 10) throw new Error(`GET_PEER_STATUS returned ${p.length} bytes; expected 10.`);
+    if (p.length !== 10 && p.length !== 14) throw new Error(`GET_PEER_STATUS returned ${p.length} bytes; expected 10 or 14.`);
+    const rawFailureDetail = p.length >= 14 ? get16(p, 12) : 0;
     return {
         peerId: get16(p, 6), state: p[0], mode: p[1], enabled: p[2] === 1,
-        advertising: p[3] === 1, scanning: p[4] === 1, connected: p[5] === 1, mtu: get16(p, 8)
+        advertising: p[3] === 1, scanning: p[4] === 1, connected: p[5] === 1, mtu: get16(p, 8),
+        lastFailureReason: p.length >= 14 ? p[10] : 0,
+        lastFailureStage: p.length >= 14 ? p[11] : 0,
+        lastFailureDetail: rawFailureDetail >= 0x8000 ? rawFailureDetail - 0x10000 : rawFailureDetail
     };
 }
 function updateBlePeerStatus(status: BlePeerStatus) {
@@ -281,7 +440,7 @@ function getBlePeerStatus(peerId: number): BlePeerStatus | undefined {
 async function refreshBlePeerStatus(peerId: number, silent = false) {
     if (!connected.value || !ble.supported || !Number.isInteger(peerId) || peerId < 1 || peerId > 65534) return null;
     try {
-        const payload = await cmd(0x56, u16(peerId));
+        const payload = await cmd(OP.GET_PEER_STATUS, u16(peerId));
         const status = decodeBlePeerStatus(payload);
         updateBlePeerStatus(status);
         return status;
@@ -294,15 +453,16 @@ async function refreshBluetooth() {
     if (!connected.value || !ble.supported) return;
     ble.loading = true;
     try {
-        const [statusPayload, peersPayload] = await Promise.all([cmd(0x03), cmd(0x51)]);
+        const [statusPayload, peersPayload] = await Promise.all([cmd(OP.GET_STATUS), cmd(OP.GET_PEERS)]);
         applyBleStatusPayload(statusPayload);
         if (!peersPayload.length || peersPayload[0] > 8 || peersPayload.length !== 1 + peersPayload[0] * 2) {
             throw new Error('GET_PEERS returned an invalid peer-list payload.');
         }
         const peers = Array.from({ length: peersPayload[0] }, (_, i) => get16(peersPayload, 1 + i * 2));
         ble.runtimeConfig.peers = peers;
-        ble.peerStatuses = [];
         const ids = [...new Set([...peers, ...ble.discoveredPeers, ...(ble.runtime.connectedPeerId ? [ble.runtime.connectedPeerId] : [])])];
+        // Keep the last known statuses visible while the per-peer reads complete.
+        ble.peerStatuses = ble.peerStatuses.filter(peer => ids.includes(peer.peerId));
         for (const id of ids) await refreshBlePeerStatus(id, true);
         log(`Bluetooth status refreshed · ${peers.length} configured peer(s)`);
     } catch (e: any) {
@@ -333,10 +493,11 @@ function parseBlePeerIds(input: string): number[] {
 }
 function validateBleConfig(c: BleConfig) {
     if (!Number.isInteger(c.mode) || c.mode < 0 || c.mode > 2) throw new Error('Select a valid Bluetooth mode.');
+    if (c.autoStart && c.mode === 0) throw new Error('Bluetooth auto-start requires HUB or PERIPHERAL mode.');
     if (!Number.isInteger(c.advertisingIntervalMs) || c.advertisingIntervalMs < 20 || c.advertisingIntervalMs > 10240) throw new Error('Bluetooth advertising interval must be 20–10240 ms.');
     if (!Number.isInteger(c.scanIntervalMs) || c.scanIntervalMs < 10 || c.scanIntervalMs > 10240) throw new Error('Bluetooth scan interval must be 10–10240 ms.');
     if (!Number.isInteger(c.scanWindowMs) || c.scanWindowMs < 10 || c.scanWindowMs > c.scanIntervalMs) throw new Error('Bluetooth scan window must be 10 ms or greater and cannot exceed the scan interval.');
-    if (!Number.isInteger(c.reconnectIntervalMs) || c.reconnectIntervalMs < 100 || c.reconnectIntervalMs > 60000) throw new Error('Bluetooth reconnect interval must be 100–60000 ms.');
+    if (!Number.isInteger(c.retryIntervalMs) || c.retryIntervalMs < 100 || c.retryIntervalMs > 60000) throw new Error('Bluetooth retry interval must be 100–60000 ms.');
     if (!Number.isInteger(c.connectionTimeoutMs) || c.connectionTimeoutMs < 100 || c.connectionTimeoutMs > 30000) throw new Error('Bluetooth connection timeout must be 100–30000 ms.');
     if (!Number.isInteger(c.maxRetries) || c.maxRetries < 0 || c.maxRetries > 5) throw new Error('Bluetooth retries must be 0–5.');
     if (!Number.isInteger(c.rxMessageTimeoutMs) || c.rxMessageTimeoutMs < 100 || c.rxMessageTimeoutMs > 2000) throw new Error('Bluetooth receive timeout must be 100–2000 ms.');
@@ -349,9 +510,11 @@ async function startBle() {
     if (ble.runtimeConfig.mode === 0) { error.value = 'Set Bluetooth mode to HUB or PERIPHERAL in Configuration before starting BLE.'; return; }
     ble.action = 'start';
     try {
-        await cmd(0x52);
+        await cmd(OP.START_BLE);
         await refreshStatus();
-        notice.value = ble.runtimeConfig.mode === 1 ? 'Bluetooth started; scanning for configured peers.' : 'Bluetooth advertising started.';
+        notice.value = ble.runtimeConfig.mode === 1
+            ? (ble.runtimeConfig.peers.length ? 'Bluetooth enabled; automatically discovering and connecting to allowed peers.' : 'Bluetooth enabled in open mode; automatically discovering peers.')
+            : 'Bluetooth enabled; advertising and accepting permitted peers.';
         log(`Bluetooth started · ${bleModeName(ble.runtimeConfig.mode)}`);
     } catch (e: any) { error.value = String(e); }
     finally { ble.action = ''; }
@@ -360,51 +523,29 @@ async function stopBle() {
     if (!ble.supported) return;
     ble.action = 'stop';
     try {
-        await cmd(0x53);
+        await cmd(OP.STOP_BLE);
         await refreshStatus();
-        notice.value = 'Bluetooth stopped.';
-        log('Bluetooth stopped');
+        notice.value = 'Bluetooth disabled for the current boot. The saved auto-start preference is unchanged.';
+        log('Bluetooth disabled · boot auto-start preference unchanged');
     } catch (e: any) { error.value = String(e); }
     finally { ble.action = ''; }
 }
-async function scanBlePeers() {
-    if (ble.runtimeConfig.mode !== 1) { error.value = 'Peer discovery is available in HUB / Central mode. Peripheral mode advertises for a HUB to find.'; return; }
-    if (!ble.runtime.enabled) await startBle();
-    else { await refreshStatus(); notice.value = 'Scanning for configured Bluetooth peers.'; }
-}
-async function connectBlePeer(peerId: number) {
-    if (!ble.runtime.enabled || ble.runtimeConfig.mode !== 1) { error.value = 'Start Bluetooth in HUB / Central mode before connecting to a peer.'; return; }
-    if (!ble.runtimeConfig.peers.includes(peerId)) { error.value = `Peer ${peerId} is not in the configured peer list. Add it in Configuration first.`; return; }
-    ble.action = `connect:${peerId}`;
-    try {
-        await cmd(0x54, u16(peerId));
-        notice.value = `Connection requested for peer ${peerId}. Waiting for the BLE connection event.`;
-        log(`Bluetooth connection requested · peer ${peerId}`);
-    } catch (e: any) { error.value = String(e); }
-    finally { ble.action = ''; }
-}
-async function disconnectBlePeer(peerId = ble.runtime.connectedPeerId) {
-    if (!peerId) return;
-    ble.action = `disconnect:${peerId}`;
-    try {
-        await cmd(0x55, u16(peerId));
-        await refreshStatus();
-        notice.value = `Disconnection requested for peer ${peerId}.`;
-        log(`Bluetooth disconnection requested · peer ${peerId}`);
-    } catch (e: any) { error.value = String(e); }
-    finally { ble.action = ''; }
+async function toggleBle() {
+    if (ble.action) return;
+    if (ble.runtime.enabled) await stopBle();
+    else await startBle();
 }
 async function sendBleMessage() {
     if (!ble.supported || ble.sending) return;
     const peerId = Number(bleMessagePeerId.value || ble.runtime.connectedPeerId);
     if (!Number.isInteger(peerId) || peerId < 1 || peerId > 65534) { error.value = 'Enter a valid Bluetooth peer ID.'; return; }
-    if (!ble.runtime.connected || ble.runtime.connectedPeerId !== peerId) { error.value = `Bluetooth is not connected to peer ${peerId}.`; return; }
+    if (!getBlePeerStatus(peerId)?.connected) { error.value = `Bluetooth is not connected to peer ${peerId}.`; return; }
     const bytes = Array.from(new TextEncoder().encode(bleMessageText.value));
     if (!bytes.length) { error.value = 'Enter a message to send.'; return; }
     if (bytes.length > 496) { error.value = `Message is ${bytes.length} bytes; the maximum is 496 bytes.`; return; }
     ble.sending = true;
     try {
-        const response = await cmd(0x57, [...u16(peerId), ...u16(bytes.length), ...bytes]);
+        const response = await cmd(OP.SEND_TO_PEER, [...u16(peerId), ...u16(bytes.length), ...bytes]);
         if (response.length !== 2) throw new Error(`SEND_TO_PEER returned ${response.length} bytes; expected a 2-byte message ID.`);
         const messageId = get16(response);
         ble.outgoing.unshift({ peerId, messageId, length: bytes.length, time: Date.now(), state: 'Accepted · awaiting remote retrieval', text: bleMessageText.value, hex: formatHexBytes(bytes) });
@@ -424,10 +565,223 @@ function clearBleMessages() {
     ble.outgoing = [];
 }
 function blePeerStateName(state: number) {
-    return ({ 0: 'Unknown', 1: 'Configured', 2: 'Discovered', 3: 'Connected' } as Record<number, string>)[state] ?? `State ${state}`;
+    return ({
+        0: 'Unknown', 1: 'Configured', 2: 'Discovered', 3: 'Connected',
+        4: 'Connecting', 5: 'Handshaking', 6: 'Retry pending'
+    } as Record<number, string>)[state] ?? `State ${state}`;
 }
 function bleModeName(mode: number) {
     return ({ 0: 'Idle', 1: 'HUB / Central', 2: 'Peripheral' } as Record<number, string>)[mode] ?? `Mode ${mode}`;
+}
+function bleConnectionStageName(stage: number) {
+    return ({
+        1: 'Stopping scan', 2: 'Allocating client', 3: 'Starting GAP connection',
+        4: 'GAP connection result', 5: 'Finding GATT service',
+        6: 'Validating GATT characteristics', 7: 'Checking BLE protocol version',
+        8: 'Checking peer identity', 9: 'Writing local identity',
+        10: 'Subscribing to notifications', 11: 'Peripheral identity validation',
+        12: 'Peripheral handshake timeout'
+    } as Record<number, string>)[stage] ?? `Connection stage ${stage}`;
+}
+function nimbleStatusName(status: number) {
+    return ({
+        0x0008: 'Operation disabled at compile time',
+        0x000d: 'Operation timed out (NimBLE host)',
+        0x0208: 'Connection timeout (HCI)',
+        0x020d: 'Connection rejected due to limited resources (HCI)',
+        0x023e: 'Connection failed to be established (HCI)'
+    } as Record<number, string>)[status] ?? 'Unmapped NimBLE status';
+}
+function bleConnectionDetailText(stage: number, detail: number) {
+    if (detail === -1 || (detail === 0 && [5, 6, 9, 10, 12].includes(stage))) return 'detail unavailable';
+    const hexDetail = `0x${(detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')}`;
+    if ([3, 4].includes(stage)) return `NimBLE status ${hexDetail} · ${nimbleStatusName(detail & 0xffff)}`;
+    if (stage === 8) return `reported peer ID ${hexDetail}`;
+    if (stage === 11) return `validation code ${detail}`;
+    return `detail ${hexDetail}`;
+}
+function bleDiagnosticCodeName(code: number) {
+    return ({
+        1: 'BLE stack initialized', 2: 'BLE stack initialization failed',
+        3: 'BLE role started', 4: 'BLE role start failed', 5: 'BLE stopped',
+        6: 'Central scan started', 7: 'Central scan start failed',
+        8: 'Central scan stop failed', 9: 'Peer discovered',
+        10: 'Central peer/client slot allocation failed', 11: 'Central connect attempt',
+        12: 'Connection failure', 13: 'Central GAP connected',
+        14: 'Central GATT handshake step', 15: 'Central handshake complete',
+        16: 'Peripheral accepted GAP connection', 17: 'Peripheral rejected incoming GAP connection',
+        18: 'Peripheral link slot allocation failed', 19: 'Peripheral accepted peer identity',
+        20: 'Peripheral rejected peer identity', 21: 'Peripheral handshake timeout',
+        22: 'Peer disconnected', 23: 'Advertising restart failed',
+        24: 'Central scan restart failed', 25: 'GAP connection callback',
+        26: 'BLE event queue full', 27: 'BLE receive queue full',
+        28: 'NimBLE connection capacity', 29: 'GAP lifecycle event',
+        30: 'Peripheral onConnect callback entered',
+        31: 'Peripheral connection admission decision',
+        32: 'Peripheral peer identity write',
+        33: 'Peripheral peer identity decision',
+        34: 'Central connect() return value',
+        35: 'GAP connection handle lookup',
+        36: 'Peripheral disconnect callback',
+        37: 'Raw GAP connection handle',
+        38: 'Central configured connection timeout',
+        39: 'Peripheral advertising configuration',
+        40: 'BLE address detail'
+    } as Record<number, string>)[code] ?? `BLE diagnostic ${code}`;
+}
+function bleDiagnosticStageText(record: BleDiagnosticRecord) {
+    if (record.code === 2 && record.stage) {
+        return ({
+            1: 'NimBLE init', 2: 'Set ATT MTU', 3: 'Register GAP callback',
+            4: 'Create GATT server', 5: 'Create GATT service',
+            6: 'Create GATT characteristics', 7: 'Start GATT server',
+            8: 'Get Central scanner'
+        } as Record<number, string>)[record.stage] ?? `init step ${record.stage}`;
+    }
+    if (record.code === 4 && record.stage) {
+        const subsystem = record.reason === 2 ? 'advertising' : record.reason === 3 ? 'Central scan' : 'BLE role';
+        const step = record.stage === 1 ? 'object unavailable' : 'start call failed';
+        return `${subsystem}: ${step}`;
+    }
+    if (record.code === 38) return 'configured Central GAP timeout';
+    if (record.code === 39) {
+        return ({ 1: 'connectable advertising mode', 2: 'connection whitelist filter', 3: 'advertising interval' } as Record<number, string>)[record.stage] ?? `advertising setting ${record.stage}`;
+    }
+    if (record.code === 40) {
+        return ({ 0: 'address type', 1: 'address bytes 0–1', 2: 'address bytes 2–3', 3: 'address bytes 4–5' } as Record<number, string>)[record.stage] ?? `address part ${record.stage}`;
+    }
+    if ([8, 10, 12, 14, 20, 21, 25].includes(record.code) && record.stage) {
+        return bleConnectionStageName(record.stage);
+    }
+    if (record.code === 28 && record.stage) {
+        return ({
+            1: 'NimBLE C++ client pool',
+            2: 'NimBLE host alias',
+            3: 'ESP-IDF legacy setting',
+            4: 'Effective Mynewt host setting'
+        } as Record<number, string>)[record.stage] ?? `capacity source ${record.stage}`;
+    }
+    if (record.code === 29) {
+        return ({
+            0: 'CONNECT', 1: 'DISCONNECT', 3: 'CONN_UPDATE',
+            6: 'TERM_FAILURE', 8: 'DISC_COMPLETE', 9: 'ADV_COMPLETE',
+            10: 'ENC_CHANGE', 14: 'SUBSCRIBE', 15: 'MTU',
+            38: 'LINK_ESTAB'
+        } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`;
+    }
+    if (record.code === 35) {
+        return record.reason === 0 ? 'after CONNECT' :
+            record.reason === 38 ? 'after LINK_ESTAB' : `after GAP event ${record.reason}`;
+    }
+    if (record.code === 37) {
+        return ({
+            0: 'CONNECT', 1: 'DISCONNECT', 38: 'LINK_ESTAB'
+        } as Record<number, string>)[record.reason] ?? `GAP event ${record.reason}`;
+    }
+    if (record.code === 32) {
+        return ({ 0: 'write accepted', 1: 'invalid payload length', 2: 'no matching connection handle' } as Record<number, string>)[record.reason] ?? `write result ${record.reason}`;
+    }
+    return record.stage ? `stage ${record.stage}` : '';
+}
+function bleDiagnosticLine(record: BleDiagnosticRecord) {
+    const mode = (record.stateFlags >> 3) & 0x03;
+    const state = [
+        bleModeName(mode),
+        record.stateFlags & 1 ? 'enabled' : 'disabled',
+        record.stateFlags & 2 ? 'advertising' : '',
+        record.stateFlags & 4 ? 'scanning' : ''
+    ].filter(Boolean).join(', ');
+    const detail = record.code === 38
+        ? `${record.detail} ms`
+        : record.code === 39 && record.stage === 1
+            ? (record.detail === 0 ? 'set successfully' : 'set failed')
+            : record.code === 39 && record.stage === 2
+                ? 'disabled'
+                : record.code === 39 && record.stage === 3
+                    ? `${record.detail} units (${(record.detail * 0.625).toFixed(1)} ms)`
+                    : record.code === 40 && record.stage === 0
+                        ? (record.detail === 0 ? 'Public (0)' : record.detail === 1 ? 'Random (1)' : `type ${record.detail}`)
+                        : record.code === 40
+                            ? (() => {
+                                const value = record.detail & 0xffff;
+                                const low = (value & 0xff).toString(16).toUpperCase().padStart(2, '0');
+                                const high = ((value >> 8) & 0xff).toString(16).toUpperCase().padStart(2, '0');
+                                return `${low}:${high}`;
+                            })()
+                            : [3, 4].includes(record.stage)
+                                ? bleConnectionDetailText(record.stage, record.detail)
+                                : record.detail < 0 ? String(record.detail)
+                                    : `0x${(record.detail & 0xffff).toString(16).toUpperCase().padStart(4, '0')} (${record.detail})`;
+    const connectionReason = ({
+        1: 'local setup', 3: 'identity rejected',
+        5: 'GATT/handshake failure', 6: 'GAP failure'
+    } as Record<number, string>)[record.reason];
+    const peripheralRejectReason = ({
+        1: 'BLE disabled', 2: 'wrong BLE role', 3: 'eight-link limit reached'
+    } as Record<number, string>)[record.reason];
+    const startFailureSubsystem = ({
+        1: 'invalid or idle mode', 2: 'advertising', 3: 'Central scan'
+    } as Record<number, string>)[record.reason];
+    const reason = record.code === 12 || record.code === 25 ? (connectionReason ?? '') :
+        record.code === 17 ? (peripheralRejectReason ?? '') :
+            record.code === 4 ? (startFailureSubsystem ?? '') :
+                record.code === 26 ? `dropped event 0x${record.reason.toString(16).toUpperCase().padStart(2, '0')}` :
+                    record.code === 28 ? `application link limit ${record.reason}` :
+                        record.code === 29 ? '' :
+                            record.code === 30 ? `connection handle ${record.detail}` :
+                                record.code === 31 ? ({
+                                    0: record.stage === 1 ? 'application accepted incoming connection' : 'link slot allocated',
+                                    1: 'rejected: BLE disabled', 2: 'rejected: not in Peripheral mode',
+                                    3: 'rejected: application link limit reached',
+                                    4: 'rejected: no free application link slot'
+                                } as Record<number, string>)[record.reason] ?? `admission reason ${record.reason}` :
+                                    record.code === 32 ? '' :
+                                        record.code === 33 ? ({
+                                            0: 'peer identity accepted', 1: 'rejected: BLE disabled',
+                                            2: 'rejected: not a Peripheral link', 3: 'rejected: handshake timed out',
+                                            4: 'rejected: peer is not allow-listed', 5: 'rejected: duplicate peer identity'
+                                        } as Record<number, string>)[record.reason] ?? `identity decision ${record.reason}` :
+                                            record.code === 34 ? (record.reason ? 'connect() started' : 'connect() rejected synchronously') :
+                                                record.code === 35 ? (record.detail === 0 ? 'connection handle lookup succeeded' :
+                                                    `connection handle lookup failed: ${record.detail}`) :
+                                                    record.code === 36 ? `disconnect reason ${record.reason}, handle ${record.detail < 0 ? 'none' : record.detail}` :
+                                                        record.code === 37 ? `handle ${record.detail < 0 ? 'none' : record.detail}` :
+                                                            record.code === 39 && record.stage === 1 ? 'undirected connectable' :
+                                                                record.code === 40 ? ({
+                                                                    0: 'local device address', 1: 'advertiser address observed by scan',
+                                                                    2: 'address used by Central connect()'
+                                                                } as Record<number, string>)[record.reason] ?? `address source ${record.reason}` :
+                                                                    record.reason ? `reason ${record.reason}` : '';
+    const capacityDetail = record.code === 28
+        ? record.detail < 0 ? 'capacity macro unavailable' :
+            record.stage === 1 ? `NimBLE C++ client pool ${record.detail}` :
+                record.stage === 2 ? `NimBLE host alias ${record.detail}` :
+                    record.stage === 3 ? `ESP-IDF legacy setting ${record.detail}` :
+                        record.stage === 4 ? `effective host slots ${record.detail}` : `capacity ${record.detail}`
+        : '';
+    return [
+        `${(record.uptimeMs / 1000).toFixed(1)}s`,
+        bleDiagnosticCodeName(record.code),
+        record.peerId ? `peer ${record.peerId}` : 'peer unknown',
+        bleDiagnosticStageText(record),
+        reason,
+        capacityDetail || (record.detail || [25, 39, 40].includes(record.code) ? detail : ''),
+        `${record.activeLinks}/8 links`,
+        state
+    ].filter(Boolean).join(' · ');
+}
+async function refreshDiagnostics() {
+    await refreshAll();
+    await refreshTrace();
+}
+function bleConnectionFailureText(status?: BlePeerStatus) {
+    if (!status?.lastFailureReason) return '';
+    const reason = ({
+        1: 'Local connection setup failed', 3: 'Peer identity rejected',
+        5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
+    } as Record<number, string>)[status.lastFailureReason] ?? `Failure ${status.lastFailureReason}`;
+    const detail = bleConnectionDetailText(status.lastFailureStage, status.lastFailureDetail);
+    return `${reason} · ${bleConnectionStageName(status.lastFailureStage)} · ${detail}`;
 }
 function bleErrorName(code: number, direction = 0) {
     const names: Record<number, string> = {
@@ -491,19 +845,41 @@ function handleEvent(e: FrameEvent) {
     }
     if (e.opcode === 136 && p.length >= 2) {
         const peerId = get16(p);
+        if (!ble.discoveredPeers.includes(peerId)) ble.discoveredPeers.push(peerId);
         Object.assign(ble.runtime, { connected: true, connectedPeerId: peerId, enabled: true });
-        bleMessagePeerId.value = String(peerId);
+        if (!bleMessagePeerId.value) bleMessagePeerId.value = String(peerId);
         log(`BLE connected · peer ${peerId}`);
         void refreshBlePeerStatus(peerId);
+        void refreshStatus();
     }
     if (e.opcode === 137 && p.length >= 3) {
         const peerId = get16(p);
-        Object.assign(ble.runtime, { connected: false, connectedPeerId: 0, mtu: 23 });
         log(`BLE disconnected · peer ${peerId} · reason ${p[2]}`);
         void refreshBlePeerStatus(peerId);
+        void refreshStatus();
     }
     if (e.opcode === 138 && p.length >= 3) {
-        log(`BLE connection failed · peer ${get16(p)} · reason ${p[2]}`);
+        const peerId = get16(p);
+        const peripheralIncomingFailure = peerId === 0 && ble.runtimeConfig.mode === 2 && p[2] === 6;
+        const reason = peripheralIncomingFailure
+            ? 'Incoming Peripheral connection rejected'
+            : ({
+                1: 'Local setup failed', 3: 'Peer identity rejected',
+                5: 'GATT or identity handshake failed', 6: 'GAP connection failed'
+            } as Record<number, string>)[p[2]] ?? `Failure ${p[2]}`;
+        if (p.length >= 6) {
+            const detailRaw = get16(p, 4);
+            const detail = detailRaw >= 0x8000 ? detailRaw - 0x10000 : detailRaw;
+            const stage = bleConnectionStageName(p[3]);
+            const detailText = bleConnectionDetailText(p[3], detail);
+            log(`BLE connection failed · ${peerId ? `peer ${peerId}` : 'incoming link'} · ${reason} · ${stage} · ${detailText}`);
+        } else {
+            log(`BLE connection failed · peer ${peerId || 'unknown'} · ${reason}`);
+        }
+        if (peerId) void refreshBlePeerStatus(peerId);
+        else if (ble.runtimeConfig.mode === 2) {
+            for (const id of ble.runtimeConfig.peers) void refreshBlePeerStatus(id, true);
+        }
     }
     if (e.opcode === 139 && p.length >= 6) {
         const peerId = get16(p), messageId = get16(p, 2), length = get16(p, 4);
@@ -537,15 +913,19 @@ async function retrieveBleMessage(peerId: number, messageId: number, announcedLe
     if (retrievingBleMessages.has(key)) return;
     retrievingBleMessages.add(key);
     try {
-        const p = await cmd(0x58, [...u16(peerId), ...u16(messageId)]);
+        // Message fetches have a short firmware consumption deadline. Run
+        // them ahead of queued UI refreshes and other not-yet-started commands.
+        const p = await cmd(OP.GET_RECEIVED_DATA, [...u16(peerId), ...u16(messageId)], true);
         if (p.length < 4) throw new Error(`GET_RECEIVED_DATA returned only ${p.length} bytes.`);
         const returnedId = get16(p, 0), length = get16(p, 2);
         if (returnedId !== messageId || length !== p.length - 4 || length !== announcedLength) {
             throw new Error(`Received BLE message length/ID mismatch (event ${messageId}/${announcedLength}, response ${returnedId}/${length}).`);
         }
         const bytes = p.slice(4);
-        ble.inbox.unshift({ peerId, messageId, length, time: Date.now(), state: 'Retrieved',
-            text: new TextDecoder('utf-8').decode(new Uint8Array(bytes)), hex: formatHexBytes(bytes) });
+        ble.inbox.unshift({
+            peerId, messageId, length, time: Date.now(), state: 'Retrieved',
+            text: new TextDecoder('utf-8').decode(new Uint8Array(bytes)), hex: formatHexBytes(bytes)
+        });
         ble.inbox = ble.inbox.slice(0, 40);
         log(`BLE message retrieved · peer ${peerId} · message ${messageId} · ${length} bytes`);
     } catch (e: any) {
@@ -590,14 +970,9 @@ function clearDeviceSession() {
     events.value = [];
     eventCount.value = 0;
     Object.assign(draft, { deviceId: 1, panId: 'DECA', channel: 5, tx: 16385, rx: 16385, period: 100, timeout: 120, retries: 1, role: 0, targets: '', autoStart: false });
-    radioTrace.value = [];
-    traceSupported.value = null;
+    traceRecords.value = [];
     traceFetchedAt.value = '';
     traceError.value = '';
-    radioTraceDetail.value = [];
-    traceDetailSupported.value = null;
-    traceDetailFetchedAt.value = '';
-    traceDetailError.value = '';
 }
 async function handleUsbLoss(message = 'USB connection lost. Reconnect the device to continue.') {
     if (losingConnection || !connected.value) return;
@@ -618,7 +993,7 @@ async function endAntennaCalibrationSession() {
     if (!calibration.active) return;
     await pauseLiveCalibrationLoop();
     if (connected.value && calibration.originalRole !== 1) {
-        await cmd(0x20, [calibration.originalRole]);
+        await cmd(OP.SET_ROLE, [calibration.originalRole]);
         await refreshStatus();
     }
     calibration.active = false;
@@ -668,18 +1043,15 @@ async function connectDevice() {
         await invoke('connect', { portName: selectedPort.value });
         connected.value = true;
         missingPortChecks = 0;
-        radioTrace.value = [];
-        traceSupported.value = null;
+        traceRecords.value = [];
         traceFetchedAt.value = '';
         traceError.value = '';
-        radioTraceDetail.value = [];
-        traceDetailSupported.value = null;
-        traceDetailFetchedAt.value = '';
-        traceDetailError.value = '';
+        lastTraceRefreshAt = 0;
         log(`USB connected · ${selectedPort.value}`);
-        await cmd(0x01);
+        await cmd(OP.PING);
         await refreshAll();
-        await cmd(0x32, u16(0x7fff));
+        await cmd(OP.SUBSCRIBE, u16(0x7fff));
+
         notice.value = 'Device connected';
     } catch (e: any) {
         error.value = String(e);
@@ -723,7 +1095,7 @@ function syncDraft() {
     });
 }
 async function refreshStatus() {
-    const p = await cmd(0x03);
+    const p = await cmd(OP.GET_STATUS);
     device.status = {
         role: p[0], ranging: p[1] === 1, radio_ready: p[2] === 1, standby: p[3] === 1,
         target_count: p[4], clock: p[5] === 1, uptime: get32(p, 6), ok: get32(p, 10), failed: get32(p, 14)
@@ -736,12 +1108,13 @@ async function refreshAll() {
         // GET_STATUS is live runtime state. GET_CONFIG is live RAM settings.
         // GET_SAVED_CONFIG is the independent NVS snapshot shown in Configuration.
         const [i, s, runtime, savedPayload, st, t, sc, d, le] = await Promise.all([
-            cmd(0x02), cmd(0x03), cmd(0x10), cmd(0x17), cmd(0x04), cmd(0x22), cmd(0x24), cmd(0x35), cmd(0x06)
+            cmd(OP.GET_INFO), cmd(OP.GET_STATUS), cmd(OP.GET_CONFIG), cmd(OP.GET_SAVED_CONFIG), cmd(OP.GET_STATISTICS), cmd(OP.GET_TARGETS), cmd(OP.GET_UWB_SCHEDULE), cmd(OP.GET_DIAGNOSTICS), cmd(OP.GET_LAST_ERROR)
         ]);
+        if (i.length !== 21) throw new Error(`GET_INFO returned ${i.length} bytes; expected 21.`);
         const saved = decodeSavedConfig(savedPayload);
         applyBleStatusPayload(s);
-        const runtimeBleConfig = runtime.length >= 32 ? decodeBleConfigExtension(runtime, 16) : defaultBleConfig();
-        ble.supported = ble.supported && runtime.length >= 32 && saved.bleConfigAvailable;
+        const runtimeBleConfig = decodeBleConfigExtension(runtime, 16);
+        ble.supported = i[12] === 1 && s.length >= 27 && runtime.length >= 32 && saved.bleConfigAvailable;
         Object.assign(ble.runtimeConfig, cloneBleConfig(runtimeBleConfig));
         Object.assign(ble.savedConfig, cloneBleConfig(saved.bleConfig));
         Object.assign(bleDraft, cloneBleConfig(saved.bleConfig));
@@ -750,7 +1123,10 @@ async function refreshAll() {
         ble.discoveredPeers = [];
         device.info = {
             version: `${i[0]}.${i[1]}.${i[2]}`, protocol: i[3], id: get16(i, 4),
-            maxTargets: i[6], history: get16(i, 7), radio: i[9], maxPayload: get16(i, 10)
+            maxTargets: i[6], history: get16(i, 7), radio: i[9], maxPayload: get16(i, 10),
+            bleSupported: i[12] === 1, bleModeMask: i[13], maxBlePeers: i[14],
+            maxBleConnections: i[15], maxBleMessageLength: get16(i, 16),
+            maxBleMtu: get16(i, 18), bleProtocolVersion: i[20]
         };
         device.status = {
             role: s[0], ranging: s[1] === 1, radio_ready: s[2] === 1, standby: s[3] === 1,
@@ -767,10 +1143,15 @@ async function refreshAll() {
             retries: saved.retries, role: saved.role, autoStart: saved.autoStart
         };
         device.savedTargets = [...saved.targets];
+        if (st.length !== 68) throw new Error(`GET_STATISTICS returned ${st.length} bytes; expected 68.`);
         device.stats = {
             ok: get32(st), failed: get32(st, 4), rx: get32(st, 8), tx: get32(st, 12),
             timeouts: get32(st, 16), protocol: get32(st, 20), overflows: get32(st, 24),
-            overwrites: get32(st, 28), malformed: get32(st, 32), duplicates: get32(st, 36)
+            overwrites: get32(st, 28), malformed: get32(st, 32), duplicates: get32(st, 36),
+            bleMessagesSent: get32(st, 40), bleMessagesReceived: get32(st, 44),
+            bleTxErrors: get32(st, 48), bleRxErrors: get32(st, 52),
+            bleConnectionFailures: get32(st, 56), bleRxQueueOverflows: get32(st, 60),
+            bleEventQueueOverflows: get32(st, 64)
         };
         // These commands intentionally describe current RAM state for the Ranging test page.
         device.targets = Array.from({ length: t[0] }, (_, j) => get16(t, 1 + j * 2));
@@ -778,11 +1159,19 @@ async function refreshAll() {
             period: get32(sc), timeout: get16(sc, 4), retries: sc[6], targetCount: sc[7],
             queued: sc[8], active: sc[9] === 1, effective: get32(sc, 10), average: get32(sc, 14)
         };
+        if (d.length !== 29) throw new Error(`GET_DIAGNOSTICS returned ${d.length} bytes; expected 29.`);
         device.diagnostics = {
             radio: get32(d), live: get32(d, 4), malformed: get32(d, 8), rx: get32(d, 12),
-            tx: get32(d, 16), state: d[20], standby: d[21] === 1
+            tx: get32(d, 16), state: d[20], standby: d[21] === 1,
+            bleMode: d[22], bleEnabled: d[23] === 1, bleAdvertising: d[24] === 1,
+            bleScanning: d[25] === 1, bleActiveLinks: d[26],
+            bleRxQueueDepth: d[27], bleEventQueueDepth: d[28]
         };
-        device.lastError = { code: le[0], time: get64(le, 1).toString() };
+        if (le.length !== 16) throw new Error(`GET_LAST_ERROR returned ${le.length} bytes; expected 16.`);
+        device.lastError = {
+            subsystem: le[0], code: le[1], time: get64(le, 2).toString(),
+            peerId: get16(le, 10), context: get32(le, 12)
+        };
         syncDraft();
         lastRefresh.value = new Date().toLocaleTimeString();
     } finally {
@@ -812,12 +1201,9 @@ async function saveSettings() {
             throw new Error('Auto-start requires an Initiator with at least one target, or a Responder role.');
         }
         if (device.status?.ranging) throw new Error('Stop the RAM ranging test before saving configuration.');
-        if (ble.supported) {
-            bleDraft.peers = parseBlePeerIds(blePeersInput.value);
-            validateBleConfig(bleDraft);
-            if (ble.runtime.connected) throw new Error('Disconnect the Bluetooth peer before saving configuration.');
-        }
-        const restartBleAfterSave = ble.supported && ble.runtime.enabled && !ble.runtime.connected && bleDraft.mode !== 0;
+        if (!ble.supported) throw new Error('This firmware did not report the required BLE capability and complete configuration.');
+        bleDraft.peers = parseBlePeerIds(blePeersInput.value);
+        validateBleConfig(bleDraft);
         savingConfig.value = true;
 
         // One explicit snapshot, including the BLE extension, is applied to runtime RAM and NVS.
@@ -826,16 +1212,16 @@ async function saveSettings() {
             ...u16(draft.deviceId), ...u16(pan), draft.channel, ...u16(draft.tx), ...u16(draft.rx),
             ...u32(draft.period), ...u16(draft.timeout), draft.retries, draft.role,
             targets.length, ...targets.flatMap(u16), draft.autoStart ? 1 : 0,
-            ...(ble.supported ? encodeBleConfigExtension(bleDraft) : [])
+            ...encodeBleConfigExtension(bleDraft)
         ];
         savingStep.value = 'Applying configuration and committing this exact snapshot to NVS…';
         try {
-            await cmd(0x18, payload);
+            await cmd(OP.APPLY_SAVE_CONFIG, payload);
         } catch (applyError: any) {
             // If the ACK was lost after commit, require both persistent and runtime
             // readback to match. NVS alone is insufficient if the command was BUSY.
             const [savedPayload, runtime, status, runtimeTargetsPayload] = await Promise.all([
-                cmd(0x17), cmd(0x10), cmd(0x03), cmd(0x22)
+                cmd(OP.GET_SAVED_CONFIG), cmd(OP.GET_CONFIG), cmd(OP.GET_STATUS), cmd(OP.GET_TARGETS)
             ]);
             const readback = decodeSavedConfig(savedPayload);
             const runtimeTargets = Array.from({ length: runtimeTargetsPayload[0] }, (_, i) => get16(runtimeTargetsPayload, 1 + i * 2));
@@ -844,9 +1230,9 @@ async function saveSettings() {
                 readback.period === draft.period && readback.timeout === draft.timeout &&
                 readback.retries === draft.retries && readback.role === draft.role &&
                 readback.autoStart === draft.autoStart && JSON.stringify(readback.targets) === JSON.stringify(targets) &&
-                (!ble.supported || (readback.bleConfigAvailable && JSON.stringify(readback.bleConfig) === JSON.stringify(bleDraft)));
-            const runtimeBleMatches = !ble.supported || (runtime.length >= 32 &&
-                JSON.stringify(decodeBleConfigExtension(runtime, 16)) === JSON.stringify(bleDraft));
+                (readback.bleConfigAvailable && JSON.stringify(readback.bleConfig) === JSON.stringify(bleDraft));
+            const runtimeBleMatches = runtime.length >= 32 &&
+                JSON.stringify(decodeBleConfigExtension(runtime, 16)) === JSON.stringify(bleDraft);
             const runtimeMatches = get16(runtime, 0) === draft.deviceId && get16(runtime, 2) === pan &&
                 runtime[4] === draft.channel && get16(runtime, 5) === draft.tx && get16(runtime, 7) === draft.rx &&
                 get32(runtime, 9) === draft.period && get16(runtime, 13) === draft.timeout &&
@@ -857,12 +1243,8 @@ async function saveSettings() {
         }
 
         await refreshAll();
-        if (restartBleAfterSave && ble.supported && ble.runtimeConfig.mode !== 0) {
-            await cmd(0x52);
-            await refreshStatus();
-        }
         notice.value = device.status?.radio_ready
-            ? `Configuration applied to RAM and saved to NVS${restartBleAfterSave ? '; Bluetooth restarted with the updated settings' : ''}.`
+            ? 'Configuration applied to RAM and saved to NVS. The firmware manages any required BLE restart and reconnection automatically.'
             : 'Configuration was saved to NVS and loaded into RAM, but the radio is not ready. Check diagnostics.';
         log(`Configuration saved · UWB ${['Idle', 'Initiator', 'Responder'][draft.role]} · BLE ${bleModeName(ble.savedConfig.mode)}`);
     } catch (e: any) {
@@ -878,7 +1260,7 @@ async function pumpCalibrationEvents(jobId: number) {
     // serial stream draining while a one-shot ranging transaction is active.
     while (calibrationWaiters.has(jobId) && connected.value) {
         try {
-            await cmd(0x03);
+            await cmd(OP.GET_STATUS);
         } catch (e: any) {
             const waiter = calibrationWaiters.get(jobId);
             if (waiter) {
@@ -910,8 +1292,8 @@ async function applyCalibrationDelay(tx: number, rx = tx) {
     if (![tx, rx].every(value => Number.isInteger(value) && value >= 0 && value <= 65535)) {
         throw new Error('Antenna delays must be uint16 values (0–65535).');
     }
-    await cmd(0x16, [...u16(tx), ...u16(rx)]);
-    const readback = await cmd(0x15);
+    await cmd(OP.SET_ANTENNA_DELAYS, [...u16(tx), ...u16(rx)]);
+    const readback = await cmd(OP.GET_ANTENNA_DELAYS);
     if (get16(readback, 0) !== tx || get16(readback, 2) !== rx) {
         throw new Error('Runtime antenna-delay readback does not match the requested values.');
     }
@@ -960,7 +1342,7 @@ async function runLiveCalibrationLoop() {
 
             let response: number[];
             try {
-                response = await cmd(0x27, u16(Number(calibration.referenceId)));
+                response = await cmd(OP.RANGE_ONCE, u16(Number(calibration.referenceId)));
             } catch (e: any) {
                 if (calibration.stopRequested || !connected.value) break;
                 registerFailure(String(e));
@@ -980,7 +1362,7 @@ async function runLiveCalibrationLoop() {
                 result = await waitForCalibrationJob(jobId);
             } catch (e: any) {
                 calibration.activeJobId = 0;
-                try { await cmd(0x28, u16(jobId)); } catch { /* It may already have completed. */ }
+                try { await cmd(OP.CANCEL_OPERATION, u16(jobId)); } catch { /* It may already have completed. */ }
                 if (calibration.stopRequested || !connected.value) break;
                 registerFailure(String(e));
                 await retryPause();
@@ -1042,16 +1424,16 @@ async function beginAntennaCalibration() {
         calibration.error = 'Stop continuous ranging before starting antenna calibration.'; calibration.phase = 'error'; return;
     }
     try {
-        const status = await cmd(0x03);
+        const status = await cmd(OP.GET_STATUS);
         if (status[1] === 1) throw new Error('Stop continuous ranging before starting antenna calibration.');
         if (status[2] !== 1 || status[3] === 1) throw new Error('The connected radio must be ready and awake.');
-        const schedule = await cmd(0x24);
+        const schedule = await cmd(OP.GET_UWB_SCHEDULE);
         if (schedule[8] !== 0 || schedule[9] !== 0) throw new Error('Wait for active and queued range transactions to finish.');
-        const subscription = await cmd(0x32, u16(0x0003));
+        const subscription = await cmd(OP.SUBSCRIBE, u16(0x0003));
         if (subscription.length < 2 || (get16(subscription, 0) & 0x0003) !== 0x0003) {
             throw new Error('Could not subscribe to range result and failure events on this USB connection.');
         }
-        const [antenna, savedPayload] = await Promise.all([cmd(0x15), cmd(0x17)]);
+        const [antenna, savedPayload] = await Promise.all([cmd(OP.GET_ANTENNA_DELAYS), cmd(OP.GET_SAVED_CONFIG)]);
         calibration.originalRole = status[0];
         const saved = decodeSavedConfig(savedPayload);
         calibration.savedTx = saved.tx;
@@ -1062,7 +1444,7 @@ async function beginAntennaCalibration() {
         calibration.delayPending = false;
         calibration.isSaved = calibration.appliedTx === saved.tx && calibration.appliedRx === saved.rx;
         clearCalibrationAverage();
-        if (status[0] !== 1) { await cmd(0x20, [1]); await refreshStatus(); }
+        if (status[0] !== 1) { await cmd(OP.SET_ROLE, [1]); await refreshStatus(); }
         calibration.active = true;
         calibration.phase = 'live';
         calibration.error = '';
@@ -1115,11 +1497,11 @@ async function saveAntennaCalibration() {
         if (calibration.delayPending || calibration.requestedDelay !== calibration.appliedTx || calibration.requestedDelay !== calibration.appliedRx) {
             await applyCalibrationDelay(calibration.requestedDelay, calibration.requestedDelay);
         }
-        const savedPair = await cmd(0x19);
+        const savedPair = await cmd(OP.SAVE_ANTENNA_DELAYS);
         if (savedPair.length !== 4 || get16(savedPair, 0) !== calibration.requestedDelay || get16(savedPair, 2) !== calibration.requestedDelay) {
             throw new Error('The firmware did not confirm the requested antenna delays were saved to NVS.');
         }
-        const verify = decodeSavedConfig(await cmd(0x17));
+        const verify = decodeSavedConfig(await cmd(OP.GET_SAVED_CONFIG));
         if (verify.tx !== calibration.requestedDelay || verify.rx !== calibration.requestedDelay) {
             throw new Error('NVS readback does not match the selected TX/RX antenna delay.');
         }
@@ -1151,7 +1533,7 @@ async function resetAntennaCalibration() {
     calibration.error = '';
     try {
         await pauseLiveCalibrationLoop();
-        const saved = decodeSavedConfig(await cmd(0x17));
+        const saved = decodeSavedConfig(await cmd(OP.GET_SAVED_CONFIG));
         await applyCalibrationDelay(saved.tx, saved.rx);
         calibration.savedTx = saved.tx;
         calibration.savedRx = saved.rx;
@@ -1180,7 +1562,7 @@ async function resetAntennaCalibration() {
 async function resetConfig() {
     if (!confirm('Reset saved UWB and Bluetooth configuration, peer lists, targets and roles to compiled defaults? Bluetooth will stop and the UWB radio will reinitialize.')) return;
     try {
-        await cmd(0x13);
+        await cmd(OP.RESET_CONFIG);
         await refreshAll();
         notice.value = 'Device restored to compiled defaults';
         log('Configuration reset');
@@ -1191,7 +1573,7 @@ async function resetConfig() {
 async function setRole(role: number) {
     try {
         // This is a runtime-only test control. Never issue SAVE_CONFIG here.
-        await cmd(0x20, [role]);
+        await cmd(OP.SET_ROLE, [role]);
         await refreshStatus();
         notice.value = `Runtime role changed to ${['Idle', 'Initiator', 'Responder'][role]}. NVS configuration was not changed.`;
         log(`Temporary RAM role set · ${roleName.value}`);
@@ -1199,40 +1581,67 @@ async function setRole(role: number) {
         error.value = String(e);
     }
 }
-async function startRange() { try { await cmd(0x25); await refreshStatus(); notice.value = 'Ranging started'; } catch (e: any) { error.value = String(e) } }
-async function stopRange() { try { await cmd(0x26); await refreshStatus(); notice.value = 'Ranging stopped and queued one-shots cleared'; } catch (e: any) { error.value = String(e) } }
-async function rangeOnce() { try { const target = Number(oneShotTarget.value); if (!Number.isInteger(target) || target < 1 || target > 65534) throw new Error('Enter a valid target ID.'); const p = await cmd(0x27, u16(target)); notice.value = `One-shot job ${get16(p)} queued for target ${target}`; log(`RANGE_ONCE queued · target ${target} · job ${get16(p)}`) } catch (e: any) { error.value = String(e) } }
+async function startRange() { try { await cmd(OP.START_RANGING); await refreshStatus(); notice.value = 'Ranging started'; } catch (e: any) { error.value = String(e) } }
+async function stopRange() { try { await cmd(OP.STOP_RANGING); await refreshStatus(); notice.value = 'Ranging stopped and queued one-shots cleared'; } catch (e: any) { error.value = String(e) } }
+async function rangeOnce() { try { const target = Number(oneShotTarget.value); if (!Number.isInteger(target) || target < 1 || target > 65534) throw new Error('Enter a valid target ID.'); const p = await cmd(OP.RANGE_ONCE, u16(target)); notice.value = `One-shot job ${get16(p)} queued for target ${target}`; log(`RANGE_ONCE queued · target ${target} · job ${get16(p)}`) } catch (e: any) { error.value = String(e) } }
 const oneShotTarget = ref('2'), cancelJobId = ref('1'), advancedOutput = ref('No advanced command run yet.');
-async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let page = 0; page < 16; page++) { const p = await cmd(0x31, [...u32(cursor), ...u16(17), ...u16(0xffff)]); const count = p[13]; cursor = get32(p, 8); for (let j = 0; j < count; j++)rows.push(decodeMeasurement(p.slice(14 + j * 28, 14 + (j + 1) * 28))); if (count < 17 || cursor === 0) break; } measurements.value = rows.reverse().slice(-256); notice.value = `Loaded ${measurements.value.length} retained measurements`; } catch (e: any) { error.value = String(e) } }
+async function loadHistory() { try { let cursor = 0, rows: any[] = []; for (let page = 0; page < 16; page++) { const p = await cmd(OP.GET_HISTORY, [...u32(cursor), ...u16(17), ...u16(0xffff)]); const count = p[13]; cursor = get32(p, 8); for (let j = 0; j < count; j++)rows.push(decodeMeasurement(p.slice(14 + j * 28, 14 + (j + 1) * 28))); if (count < 17 || cursor === 0) break; } measurements.value = rows.reverse().slice(-256); notice.value = `Loaded ${measurements.value.length} retained measurements`; } catch (e: any) { error.value = String(e) } }
 async function quick(op: number, label: string) { try { const p = await cmd(op); notice.value = label; log(label); return p } catch (e: any) { error.value = String(e); return null } }
 async function pingNode() { const p = await quick(1, 'PING completed'); if (p) advancedOutput.value = `PING response: ${readString(p)}` }
-async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(0x14, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
-async function readLast() { try { const p = await cmd(0x30, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
-async function cancelJob() { try { await cmd(0x28, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
-async function subscribeAll() { try { const p = await cmd(0x32, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
-async function unsubscribeAll() { try { const p = await cmd(0x33, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
-async function readAntenna() { try { const p = await cmd(0x15); advancedOutput.value = `TX antenna delay: ${get16(p)} · RX antenna delay: ${get16(p, 2)}`; } catch (e: any) { error.value = String(e) } }
+async function syncClock() { try { const us = BigInt(Date.now()) * 1000n; const p = await cmd(OP.TIME_SYNC, Array.from({ length: 8 }, (_, i) => Number((us >> BigInt(8 * i)) & 255n))); advancedOutput.value = `TIME_SYNC · ESP monotonic: ${get64(p).toString()} µs · epoch offset: ${BigInt.asIntN(64, get64(p, 8)).toString()} µs`; notice.value = 'Device clock synchronized'; } catch (e: any) { error.value = String(e) } }
+async function readLastRange() { try { const p = await cmd(OP.GET_LAST_RANGE, [0xff, 0xff]); const count = p[0]; const rows = Array.from({ length: count }, (_, i) => decodeMeasurement(p.slice(1 + i * 28, 1 + (i + 1) * 28))); measurements.value = rows; advancedOutput.value = `GET_LAST_RANGE returned ${count} newest retained measurement(s), one per target.`; navigate('history'); } catch (e: any) { error.value = String(e) } }
+async function cancelJob() { try { await cmd(OP.CANCEL_OPERATION, u16(Number(cancelJobId.value))); advancedOutput.value = `Cancel request sent for job ${cancelJobId.value}.`; notice.value = 'Operation cancellation acknowledged'; } catch (e: any) { error.value = String(e) } }
+async function subscribeAll() { try { const p = await cmd(OP.SUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Subscribed to all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
+async function unsubscribeAll() { try { const p = await cmd(OP.UNSUBSCRIBE, u16(0x7fff)); advancedOutput.value = `Active event subscription mask: ${hex(get16(p))}`; notice.value = 'Unsubscribed from all UWB and BLE event types'; } catch (e: any) { error.value = String(e) } }
+async function readAntenna() { try { const p = await cmd(OP.GET_ANTENNA_DELAYS); advancedOutput.value = `TX antenna delay: ${get16(p)} · RX antenna delay: ${get16(p, 2)}`; } catch (e: any) { error.value = String(e) } }
 async function clearStats() { if (confirm('Clear all device diagnostic counters?')) { await quick(5, 'Statistics counters cleared'); await refreshAll() } }
 async function clearHistory() { if (confirm('Clear retained measurement history?')) { await quick(0x34, 'Measurement history cleared'); measurements.value = [] } }
 async function sleepRadio() { await quick(0x40, 'Radio entered IDLE_RC standby (not deep sleep)'); await refreshStatus() }
 async function wakeRadio() { await quick(0x41, 'Radio wake command completed'); await refreshStatus() }
 async function reboot() { if (confirm('Reboot the ESP32 node? The USB connection will be interrupted.')) { await quick(0x43, 'Reboot command sent'); setTimeout(() => { void handleUsbLoss('Device rebooted. Reconnect when it appears on USB.'); }, 1000); } }
-async function systemSleep() { const sec = Number(prompt('Timer wake duration in seconds (1–604800):', '60')); if (!Number.isInteger(sec) || sec < 1 || sec > 604800) return; try { await cmd(0x42, u32(sec * 1000)); await handleUsbLoss('Device entered deep sleep. Reconnect after timer wake.'); } catch (e: any) { error.value = String(e) } }
+async function systemSleep() { const sec = Number(prompt('Timer wake duration in seconds (1–604800):', '60')); if (!Number.isInteger(sec) || sec < 1 || sec > 604800) return; try { await cmd(OP.SYSTEM_SLEEP, u32(sec * 1000)); await handleUsbLoss('Device entered deep sleep. Reconnect after timer wake.'); } catch (e: any) { error.value = String(e) } }
 function fmtDuration(ms: number) { const s = Math.floor(ms / 1000); return `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m ${s % 60}s` }
 function statusText(s: number) { return ['Valid', 'Timeout', 'Invalid', 'Cancelled', 'Radio error'][s] ?? 'Unknown' }
 function fmtRange(mm: number | null) { return mm === null || mm < 0 ? '—' : `${(mm / 1000).toFixed(3)} m` }
 watch(connected, (isConnected) => {
     if (!isConnected) active.value = 'overview';
 });
+async function drainDeviceEvents() {
+    // The Tauri serial reader only runs while a command is waiting for its
+    // response. Keep a lightweight GET_STATUS read active while BLE is enabled
+    // so unsolicited BLE_DATA_RECEIVED events reach the UI well before the
+    // firmware's receive-consumption deadline. Any command already in flight
+    // is itself reading the port, so do not queue a redundant poll behind it.
+    if (!connected.value || !ble.supported || !ble.runtime.enabled || eventDrainBusy ||
+        polling || commandInFlight || priorityCommandQueue.length || normalCommandQueue.length) return;
+    eventDrainBusy = true;
+    try {
+        await cmd(OP.GET_STATUS);
+    } catch (e: any) {
+        if (isUsbDisconnectError(e)) void handleUsbLoss('USB connection lost. Reconnect the device to continue.');
+    } finally {
+        eventDrainBusy = false;
+    }
+}
+
 onMounted(async () => {
     await refreshPorts();
     unlisten = await listen<FrameEvent>('uwb-event', e => handleEvent(e.payload));
+    eventDrainTimer = window.setInterval(() => { void drainDeviceEvents(); }, 50);
     poller = window.setInterval(async () => {
         await refreshPorts();
         if (connected.value && !polling && !savingConfig.value && !calibration.active && !calibration.processing && !calibration.activeJobId) {
             polling = true;
             try {
                 await refreshStatus();
+                if (active.value === 'diagnostics' && Date.now() - lastTraceRefreshAt >= 1200) {
+                    lastTraceRefreshAt = Date.now();
+                    await refreshTrace(true);
+                }
+                if (active.value === 'bluetooth' && ble.supported && Date.now() - lastBleRefreshAt >= 4000) {
+                    lastBleRefreshAt = Date.now();
+                    await refreshBluetooth();
+                }
             } catch (e: any) {
                 if (isUsbDisconnectError(e)) {
                     await handleUsbLoss('USB connection lost. Reconnect the device to continue.');
@@ -1245,6 +1654,7 @@ onMounted(async () => {
 });
 onUnmounted(() => {
     if (poller) clearInterval(poller);
+    if (eventDrainTimer) clearInterval(eventDrainTimer);
     unlisten?.();
 });
 </script>
@@ -1274,22 +1684,26 @@ onUnmounted(() => {
                 <button :class="{ selected: active === 'overview' }" @click="navigate('overview')">
                     <LayoutDashboard />Overview
                 </button>
-                <button :class="{ selected: active === 'configuration' }" :disabled="!connected" @click="navigate('configuration')">
+                <button :class="{ selected: active === 'configuration' }" :disabled="!connected"
+                    @click="navigate('configuration')">
                     <Settings2 />Configuration<span v-if="dirty" class="dirty-dot" />
                 </button>
-                <button :class="{ selected: active === 'calibration' }" :disabled="!connected" @click="navigate('calibration')">
+                <button :class="{ selected: active === 'calibration' }" :disabled="!connected"
+                    @click="navigate('calibration')">
                     <Antenna />Antenna calibration
                 </button>
                 <button :class="{ selected: active === 'ranging' }" :disabled="!connected" @click="navigate('ranging')">
                     <Waves />Ranging test
                 </button>
-                <button :class="{ selected: active === 'bluetooth' }" :disabled="!connected || !ble.supported" @click="navigate('bluetooth')">
+                <button :class="{ selected: active === 'bluetooth' }" :disabled="!connected || !ble.supported"
+                    @click="navigate('bluetooth')">
                     <Bluetooth />Bluetooth<span v-if="ble.runtime.connected" class="nav-live-dot" />
                 </button>
                 <button :class="{ selected: active === 'history' }" :disabled="!connected" @click="navigate('history')">
                     <History />Measurements
                 </button>
-                <button :class="{ selected: active === 'diagnostics' }" :disabled="!connected" @click="navigate('diagnostics')">
+                <button :class="{ selected: active === 'diagnostics' }" :disabled="!connected"
+                    @click="navigate('diagnostics')">
                     <Activity />Diagnostics
                 </button>
                 <button :class="{ selected: active === 'system' }" :disabled="!connected" @click="navigate('system')">
@@ -1307,14 +1721,18 @@ onUnmounted(() => {
             <header class="topbar">
                 <div class="breadcrumb">D3KM <span>/</span>
                     {{ ({
-                        overview: 'Overview', configuration: 'Configuration', calibration: 'Antenna calibration', ranging: 'Ranging test', bluetooth: 'Bluetooth messaging', history:'Measurements',diagnostics:'Diagnostics',system:'Device controls'} as any)[active]}}
+                        overview: 'Overview', configuration: 'Configuration', calibration: 'Antenna calibration', ranging:
+                            'Ranging test', bluetooth: 'Bluetooth messaging',
+                        history: 'Measurements', diagnostics: 'Diagnostics', system: 'Device controls'
+                    } as any)[active] }}
                 </div>
                 <div class="top-actions">
                     <div class="connection-pill" :class="{ connected }"><span class="dot"
                             :class="{ online: connected }" />{{ connected ? 'USB connected' : 'Not connected' }}</div>
                     <button class="icon-button" title="Refresh ports" @click="refreshPorts">
                         <RefreshCw :size="16" />
-                    </button><button v-if="connected" class="button secondary small" :disabled="calibration.operationBusy" @click="disconnectDevice">
+                    </button><button v-if="connected" class="button secondary small"
+                        :disabled="calibration.operationBusy" @click="disconnectDevice">
                         <Unplug :size="15" /> Disconnect
                     </button>
                 </div>
@@ -1365,17 +1783,18 @@ onUnmounted(() => {
                                     <ShieldCheck />
                                 </div>
                                 <div class="metric-value" :class="device.status?.radio_ready ? 'good' : 'bad'">{{ health
-                                    }}
+                                }}
                                 </div>
                                 <div class="metric-foot">{{ device.status?.radio_ready ? 'DWM3000 radio initialized' :
-                                    'Check radio diagnostics'}}</div>
+                                    'Check radio diagnostics' }}</div>
                             </div>
                             <div class="metric-card">
                                 <div class="metric-top"><span>ACTIVE ROLE</span>
                                     <Antenna />
                                 </div>
                                 <div class="metric-value">{{ roleName }}</div>
-                                <div class="metric-foot">{{ device.status?.ranging ? 'Ranging enabled' : 'Ranging stopped' }}
+                                <div class="metric-foot">{{
+                                    device.status?.ranging ? 'Ranging enabled' : 'Ranging stopped' }}
                                 </div>
                             </div>
                             <div class="metric-card">
@@ -1410,6 +1829,14 @@ onUnmounted(() => {
                                     <div><span>Maximum targets</span><b>{{ device.info?.maxTargets }}</b></div>
                                     <div><span>History capacity</span><b>{{ device.info?.history }} records</b></div>
                                     <div><span>Maximum payload</span><b>{{ device.info?.maxPayload }} bytes</b></div>
+                                    <div><span>BLE capability</span><b>{{ device.info?.bleSupported ? 'Available' :
+                                        'Unavailable' }}</b></div>
+                                    <div><span>BLE peer limit</span><b>{{ device.info?.maxBlePeers ?? '—' }}</b></div>
+                                    <div><span>BLE connection limit</span><b>{{ device.info?.maxBleConnections ?? '—'
+                                            }}</b></div>
+                                    <div><span>BLE message limit</span><b>{{ device.info?.maxBleMessageLength ?? '—' }}
+                                            bytes</b></div>
+                                    <div><span>BLE maximum MTU</span><b>{{ device.info?.maxBleMtu ?? '—' }}</b></div>
                                 </div>
                             </div>
                             <div class="panel">
@@ -1418,25 +1845,35 @@ onUnmounted(() => {
                                         <h3>Radio readiness</h3>
                                         <p>Live state reported by the node</p>
                                     </div><span class="tag" :class="device.status?.radio_ready ? 'good' : 'bad'">{{
-                                        device.status?.radio_ready ? 'READY' : 'NOT READY'}}</span>
+                                        device.status?.radio_ready ? 'READY' : 'NOT READY' }}</span>
                                 </div>
                                 <div class="readiness">
                                     <div class="readiness-icon" :class="{ good: device.status?.radio_ready }">
                                         <Antenna :size="26" />
                                     </div>
                                     <div><b>{{ device.status?.standby ? 'IDLE_RC standby' : device.status?.radio_ready ?
-                                        'Radio initialized':'Radio unavailable'}}</b>
-                                        <p>{{ device.status?.standby ? 'Radio is in IDLE_RC standby; this is not true DWM3000 deep sleep.':device.status?.radio_ready?'Radio is initialized and available for ranging.':'Radio initialization failed or is unavailable.'}}
-                                        </p>
+                                        'Radio initialized' : 'Radio unavailable' }}</b>
+                                        <p>{{
+                                            device.status?.standby ?
+                                                'Radio is in IDLE_RC standby; this is not true DWM3000 deep sleep.' :
+                                                device.status?.radio_ready ?
+                                                    'Radio is initialized and available for ranging.' :
+                                                    'Radio initialization failed or is unavailable.'
+                                        }}</p>
                                     </div>
                                 </div>
                                 <div class="detail-list compact">
                                     <div><span>Clock synchronized</span><b>{{ device.status?.clock ? 'Yes' : 'No' }}</b>
                                     </div>
-                                    <div><span>Configured UWB targets</span><b>{{ device.status?.target_count ?? 0 }}</b>
+                                    <div><span>Configured UWB targets</span><b>{{ device.status?.target_count ?? 0
+                                            }}</b>
                                     </div>
-                                    <div><span>Bluetooth mode</span><b>{{ ble.supported ? bleModeName(ble.runtime.mode) : 'Not supported' }}</b></div>
-                                    <div><span>Bluetooth link</span><b>{{ !ble.supported ? '—' : ble.runtime.connected ? `Peer ${ble.runtime.connectedPeerId}` : ble.runtime.enabled ? (ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Scanning' : 'Enabled') : 'Stopped' }}</b></div>
+                                    <div><span>Bluetooth mode</span><b>{{ ble.supported ? bleModeName(ble.runtime.mode)
+                                        : 'Not supported' }}</b></div>
+                                    <div><span>Bluetooth links</span><b>{{ !ble.supported ? '—' : bleConnectedCount ?
+                                        `${bleConnectedCount} active peer link(s)` : ble.runtime.enabled ?
+                                            (ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ?
+                                                'Discovering peers' : 'Enabled') : 'Disabled' }}</b></div>
                                     <div><span>Last refresh</span><b>{{ lastRefresh }}</b></div>
                                 </div>
                             </div>
@@ -1466,7 +1903,7 @@ onUnmounted(() => {
                                             <td>{{ m.target }}</td>
                                             <td>{{ fmtRange(m.mm < 0 ? null : m.mm) }}</td>
                                             <td><span class="tag" :class="m.status === 0 ? 'good' : 'bad'">{{
-                                                    statusText(m.status) }}</span>
+                                                statusText(m.status) }}</span>
                                             </td>
                                         </tr>
                                     </tbody>
@@ -1484,31 +1921,60 @@ onUnmounted(() => {
                             <h1>Antenna delay calibration</h1>
                             <p>Adjust the antenna delay while watching a live, smoothed range measurement.</p>
                         </div>
-                        <span class="tag" :class="calibration.connectionUnstable ? 'warning' : calibration.phase === 'live' ? 'good' : calibration.phase === 'error' ? 'bad' : 'neutral'">
-                            {{ calibration.connectionUnstable ? 'CONNECTION UNSTABLE' : calibration.phase === 'live' ? 'LIVE FEEDBACK' : calibration.phase === 'starting' ? 'STARTING' : calibration.phase === 'saving' ? 'SAVING' : calibration.phase === 'resetting' ? 'RESETTING' : calibration.phase === 'error' ? 'CHECK CONNECTION' : 'NOT STARTED' }}
+                        <span class="tag"
+                            :class="calibration.connectionUnstable ? 'warning' : calibration.phase === 'live' ? 'good' : calibration.phase === 'error' ? 'bad' : 'neutral'">
+                            {{
+                                calibration.connectionUnstable ?
+                                    'CONNECTION UNSTABLE' :
+                                    calibration.phase === 'live' ?
+                                        'LIVE FEEDBACK' :
+                                        calibration.phase === 'starting' ?
+                                            'STARTING' :
+                                            calibration.phase === 'saving' ?
+                                                'SAVING' :
+                                                calibration.phase === 'resetting' ?
+                                                    'RESETTING' :
+                                                    calibration.phase === 'error'
+                                                        ?
+                                                        'CHECK CONNECTION' :
+                                                        'NOT STARTED'
+                            }}
                         </span>
                     </div>
 
                     <div class="panel calibration-explainer">
                         <b>Position the modules at the physical separation you intend to use.</b>
-                        <p>No reference distance needs to be entered. The display reports the measured distance; adjust the delay until the live average agrees with the actual distance between the antenna reference points.</p>
+                        <p>No reference distance needs to be entered. The display reports the measured distance; adjust
+                            the delay until
+                            the live average agrees with the actual distance between the antenna reference points.</p>
                     </div>
 
                     <div v-if="!calibration.active" class="panel calibration-setup">
                         <div class="panel-heading">
                             <div>
                                 <h3>Ranging setup</h3>
-                                <p>The connected module initiates repeated one-shot measurements to a separate responder.</p>
+                                <p>The connected module initiates repeated one-shot measurements to a separate
+                                    responder.</p>
                             </div>
                             <Antenna :size="17" />
                         </div>
                         <label class="calibration-peer-field">Active responder ID
-                            <input type="number" min="1" max="65534" v-model="calibration.referenceId" :disabled="calibration.phase === 'starting'" />
-                            <small>Short address of the other UWB module. Its radio must be active in Responder mode on the same PAN ID and channel. This module ID is {{ device.info?.id ?? '—' }}.</small>
+                            <input type="number" min="1" max="65534" v-model="calibration.referenceId"
+                                :disabled="calibration.phase === 'starting'" />
+                            <small>Short address of the other UWB module. Its radio must be active in Responder mode on
+                                the same PAN ID
+                                and channel. This module ID is {{ device.info?.id ?? '—' }}.</small>
                         </label>
                         <div class="calibration-actions">
-                            <button class="button primary" :title="device.status?.ranging ? 'Stop ranging to start live calibration' : ''" :disabled="!connected || !device.status?.radio_ready || device.status?.standby || device.status?.ranging || calibration.phase === 'starting'" @click="beginAntennaCalibration">
-                                <Antenna :size="15" /> {{ calibration.phase === 'starting' ? 'Starting…' : 'Start live calibration' }}
+                            <button class="button primary"
+                                :title="device.status?.ranging ? 'Stop ranging to start live calibration' : ''"
+                                :disabled="!connected || !device.status?.radio_ready || device.status?.standby || device.status?.ranging || calibration.phase === 'starting'"
+                                @click="beginAntennaCalibration">
+                                <Antenna :size="15" /> {{
+                                    calibration.phase === 'starting' ?
+                                        'Starting…' :
+                                        'Start live calibration'
+                                }}
                             </button>
                         </div>
                     </div>
@@ -1518,19 +1984,24 @@ onUnmounted(() => {
                             <div class="panel calibration-reading">
                                 <div class="calibration-card-top">
                                     <span>SMOOTHED DISTANCE</span>
-                                    <span class="live-indicator" :class="{ paused: !calibration.processing }"><i></i> {{ calibration.processing ? 'LIVE' : 'PAUSED' }}</span>
+                                    <span class="live-indicator" :class="{ paused: !calibration.processing }"><i></i> {{
+                                        calibration.processing ? 'LIVE' : 'PAUSED' }}</span>
                                 </div>
                                 <div class="calibration-reading-value">
-                                    <strong>{{ calibration.averageMm === null ? '—' : (calibration.averageMm / 1000).toFixed(3) }}</strong>
+                                    <strong>{{ calibration.averageMm === null ? '—' : (calibration.averageMm /
+                                        1000).toFixed(3) }}</strong>
                                     <span>m</span>
                                 </div>
                                 <div class="calibration-reading-foot">
                                     <span>Rolling average · last {{ CAL_WINDOW_SIZE }} valid samples</span>
                                     <b>{{ calibration.windowValues.length }} / {{ CAL_WINDOW_SIZE }}</b>
                                 </div>
-                                <div class="calibration-window-track"><span :style="{ width: `${calibration.windowValues.length / CAL_WINDOW_SIZE * 100}%` }"></span></div>
+                                <div class="calibration-window-track"><span
+                                        :style="{ width: `${calibration.windowValues.length / CAL_WINDOW_SIZE * 100}%` }"></span>
+                                </div>
                                 <div class="calibration-reading-meta">
-                                    <div><span>Latest sample</span><b>{{ calibration.latestMm === null ? '—' : `${(calibration.latestMm / 1000).toFixed(3)} m` }}</b></div>
+                                    <div><span>Latest sample</span><b>{{ calibration.latestMm === null ? '—' :
+                                        `${(calibration.latestMm / 1000).toFixed(3)} m` }}</b></div>
                                     <div><span>Valid ranges received</span><b>{{ calibration.validSamples }}</b></div>
                                     <div><span>Failed attempts</span><b>{{ calibration.failedSamples }}</b></div>
                                 </div>
@@ -1545,21 +2016,31 @@ onUnmounted(() => {
                                     <Settings2 :size="17" />
                                 </div>
                                 <div class="calibration-delay-value">
-                                    <input class="calibration-delay-number" type="number" min="0" max="65535" step="1" v-model="calibrationDelayInput" @change="commitCalibrationDelayInput" @keydown.enter.prevent="commitCalibrationDelayInput" :disabled="calibration.operationBusy" aria-label="Antenna delay in ticks" />
+                                    <input class="calibration-delay-number" type="number" min="0" max="65535" step="1"
+                                        v-model="calibrationDelayInput" @change="commitCalibrationDelayInput"
+                                        @keydown.enter.prevent="commitCalibrationDelayInput"
+                                        :disabled="calibration.operationBusy" aria-label="Antenna delay in ticks" />
                                     <span>ticks</span>
                                 </div>
-                                <input class="calibration-delay-slider" type="range" min="0" max="65535" step="1" :value="calibration.requestedDelay" @input="setCalibrationDelay" :disabled="calibration.operationBusy" aria-label="TX and RX antenna delay" />
+                                <input class="calibration-delay-slider" type="range" min="0" max="65535" step="1"
+                                    :value="calibration.requestedDelay" @input="setCalibrationDelay"
+                                    :disabled="calibration.operationBusy" aria-label="TX and RX antenna delay" />
                                 <div class="calibration-slider-labels"><span>0</span><span>65,535</span></div>
                                 <div class="calibration-delay-offset">
                                     <div>
                                         <span>Nominal range shift vs. default (16,385)</span>
-                                        <b>{{ calibrationRangeShiftMeters >= 0 ? '+' : '−' }}{{ Math.abs(calibrationRangeShiftMeters).toFixed(3) }} m</b>
+                                        <b>{{ calibrationRangeShiftMeters >= 0 ? '+' : '−' }}{{
+                                            Math.abs(calibrationRangeShiftMeters).toFixed(3) }} m</b>
                                     </div>
-                                    <small>{{ (calibration.requestedDelay - DEFAULT_ANTENNA_DELAY) > 0 ? '+' : '' }}{{ calibration.requestedDelay - DEFAULT_ANTENNA_DELAY }} ticks · 4.692 mm per tick · positive means the reported range increases</small>
+                                    <small>{{ (calibration.requestedDelay - DEFAULT_ANTENNA_DELAY) > 0 ? '+' : '' }}{{
+                                        calibration.requestedDelay - DEFAULT_ANTENNA_DELAY }} ticks · 4.692 mm per tick
+                                        · positive means the reported range increases</small>
                                 </div>
                                 <div class="calibration-delay-details">
-                                    <div><span>Applied to device</span><b>{{ calibration.appliedTx.toLocaleString() }} / {{ calibration.appliedRx.toLocaleString() }}</b></div>
-                                    <div><span>Saved in NVS</span><b>{{ calibration.savedTx.toLocaleString() }} / {{ calibration.savedRx.toLocaleString() }}</b></div>
+                                    <div><span>Applied to device</span><b>{{ calibration.appliedTx.toLocaleString() }} /
+                                            {{ calibration.appliedRx.toLocaleString() }}</b></div>
+                                    <div><span>Saved in NVS</span><b>{{ calibration.savedTx.toLocaleString() }} / {{
+                                        calibration.savedRx.toLocaleString() }}</b></div>
                                 </div>
                                 <div class="calibration-pending" v-if="calibration.delayPending">
                                     New delay will be applied after the current range completes.
@@ -1567,30 +2048,50 @@ onUnmounted(() => {
                                 <div class="calibration-saved" v-else-if="calibration.isSaved">
                                     <BadgeCheck :size="14" /> Current delay matches the saved NVS values.
                                 </div>
-                                <div class="calibration-unsaved" v-else>Current delay is active in RAM but has not been saved.</div>
+                                <div class="calibration-unsaved" v-else>Current delay is active in RAM but has not been
+                                    saved.</div>
                             </div>
                         </div>
 
                         <div class="panel calibration-actions-panel">
                             <div class="calibration-actions-copy">
-                                <b>{{ calibration.isSaved ? 'Antenna delays saved' : 'Unsaved antenna-delay adjustment' }}</b>
-                                <p>{{ calibration.message || 'Move the slider and use the live distance reading as feedback.' }}</p>
+                                <b>{{ calibration.isSaved ? 'Antenna delays saved' : 'Unsaved antenna-delay adjustment'
+                                    }}</b>
+                                <p>{{
+                                    calibration.message ||
+                                    'Move the slider and use the live distance reading as feedback.'
+                                    }}</p>
                             </div>
                             <div class="calibration-actions">
-                                <button class="button primary" :disabled="calibration.operationBusy || !connected" @click="saveAntennaCalibration">
-                                    <Save :size="15" /> {{ calibration.operationBusy && calibration.phase === 'saving' ? 'Saving…' : 'Save' }}
+                                <button class="button primary" :disabled="calibration.operationBusy || !connected"
+                                    @click="saveAntennaCalibration">
+                                    <Save :size="15" /> {{ calibration.operationBusy && calibration.phase === 'saving' ?
+                                        'Saving…' : 'Save' }}
                                 </button>
-                                <button class="button secondary" :disabled="calibration.operationBusy || !connected" @click="resetAntennaCalibration">
-                                    <RotateCcw :size="15" /> {{ calibration.operationBusy && calibration.phase === 'resetting' ? 'Resetting…' : 'Reset' }}
+                                <button class="button secondary" :disabled="calibration.operationBusy || !connected"
+                                    @click="resetAntennaCalibration">
+                                    <RotateCcw :size="15" /> {{ calibration.operationBusy && calibration.phase ===
+                                        'resetting' ? 'Resetting…' : 'Reset' }}
                                 </button>
                             </div>
                         </div>
-                        <div v-if="calibration.connectionUnstable" class="alert warning calibration-alert" role="status" aria-live="polite"><CircleAlert :size="16"/><span>{{ calibration.connectionWarning }}</span></div>
-                        <div v-if="calibration.error" class="alert error calibration-alert" role="alert"><CircleAlert :size="16"/><span>{{ calibration.error }}</span></div>
+                        <div v-if="calibration.connectionUnstable" class="alert warning calibration-alert" role="status"
+                            aria-live="polite">
+                            <CircleAlert :size="16" /><span>{{ calibration.connectionWarning }}</span>
+                        </div>
+                        <div v-if="calibration.error" class="alert error calibration-alert" role="alert">
+                            <CircleAlert :size="16" /><span>{{ calibration.error }}</span>
+                        </div>
                     </template>
 
                     <div class="hint-block">
-                        <CircleHelp :size="17"/><span>The moving average uses up to {{ CAL_WINDOW_SIZE }} successful range measurements. Failed ranges are ignored. Slider changes are applied between measurements. Save writes only the current TX/RX antenna delays to NVS; Reset reloads those two values from NVS. Other saved device settings are not changed.</span>
+                        <CircleHelp :size="17" /><span>The moving average uses up to {{ CAL_WINDOW_SIZE }} successful
+                            range
+                            measurements. Failed ranges are ignored. Slider changes are applied between measurements.
+                            Save writes only
+                            the current TX/RX antenna delays to NVS; Reset reloads those two values from NVS. Other
+                            saved device
+                            settings are not changed.</span>
                     </div>
                 </section>
 
@@ -1599,235 +2100,303 @@ onUnmounted(() => {
                         <div>
                             <div class="eyebrow">DEVICE SETTINGS</div>
                             <h1>Configuration</h1>
-                            <p>Configure shared node identity, UWB ranging and Bluetooth transport. Settings are saved together.</p>
+                            <p>Configure shared node identity, UWB ranging and Bluetooth transport. Settings are saved
+                                together.</p>
                         </div>
                         <div class="heading-actions">
                             <span v-if="dirty" class="unsaved"><span class="dirty-dot" /> Unsaved edits</span>
                             <button class="button secondary" :disabled="!connected || savingConfig" @click="refreshAll">
                                 <RefreshCw :size="15" /> Reload
                             </button>
-                            <button class="button primary" :title="device.status?.ranging ? 'Stop ranging before saving configuration' : ble.runtime.connected ? 'Disconnect Bluetooth before saving configuration' : ''" :disabled="!connected || !dirty || savingConfig || device.status?.ranging || ble.runtime.connected" @click="saveSettings">
-                                <Save :size="15" :class="{ spinning: savingConfig }" /> {{ savingConfig ? 'Saving…' : 'Save configuration' }}
+                            <button class="button primary"
+                                :title="device.status?.ranging ? 'Stop ranging before saving configuration' : ble.runtime.connected ? 'Disconnect Bluetooth before saving configuration' : ''"
+                                :disabled="!connected || !dirty || savingConfig || device.status?.ranging || ble.runtime.connected"
+                                @click="saveSettings">
+                                <Save :size="15" :class="{ spinning: savingConfig }" /> {{
+                                    savingConfig ?
+                                        'Saving…' :
+                                        'Save configuration'
+                                }}
                             </button>
                         </div>
                     </div>
                     <fieldset class="config-fields" :disabled="savingConfig">
-                    <div class="config-sections">
-                        <!-- Shared node identity: protocol-independent addressing. -->
-                        <div class="panel form-panel config-section-panel config-identity-section">
-                            <div class="form-title config-section-title">
-                                <div class="form-icon"><Cpu /></div>
-                                <div>
-                                    <h3>Node identity</h3>
-                                    <p>Shared device identity used by UWB and Bluetooth</p>
-                                </div>
-                            </div>
-                            <div class="config-identity-fields">
-                                <label>Device ID <span class="field-help">1–65534</span>
-                                    <input type="number" min="1" max="65534" v-model.number="draft.deviceId" />
-                                    <small>Short address identifying this node. Used by UWB target addressing and BLE peer identity; it must not match a remote peer.</small>
-                                </label>
-                            </div>
-                        </div>
-
-                        <!-- UWB settings grouped by network, radio, schedule and target list. -->
-                        <div class="panel form-panel config-section-panel">
-                            <div class="form-title config-section-title">
-                                <div class="form-icon"><Waves /></div>
-                                <div>
-                                    <h3>UWB ranging</h3>
-                                    <p>DWM3000 network, radio calibration and ranging behavior</p>
-                                </div>
-                            </div>
-                            <div class="config-subsection-grid">
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>Network and role</h4>
-                                        <p>UWB network addressing and saved boot behavior</p>
+                        <div class="config-sections">
+                            <!-- Shared node identity: protocol-independent addressing. -->
+                            <div class="panel form-panel config-section-panel config-identity-section">
+                                <div class="form-title config-section-title">
+                                    <div class="form-icon">
+                                        <Cpu />
                                     </div>
-                                    <div class="field-grid">
-                                        <label>UWB ranging role
-                                            <select v-model.number="draft.role">
-                                                <option :value="0">Idle</option>
-                                                <option :value="1">Initiator / Sender</option>
-                                                <option :value="2">Responder / Receiver</option>
-                                            </select>
-                                            <small>Saved boot role. Current live RAM role: {{ roleName }}. Ranging test changes are temporary.</small>
-                                        </label>
-                                        <label>PAN ID <span class="field-help">HEX · 16-bit</span>
-                                            <div class="input-prefix"><span>0x</span><input maxlength="4" v-model="draft.panId"
-                                                @input="draft.panId = draft.panId.replace(/[^0-9a-f]/gi, '').slice(0, 4).toUpperCase()" /></div>
-                                            <small>UWB network identifier. Must match compatible ranging peers.</small>
-                                        </label>
+                                    <div>
+                                        <h3>Node identity</h3>
+                                        <p>Shared device identity used by UWB and Bluetooth</p>
                                     </div>
-                                    <label class="full-field auto-start-field">
-                                        <span class="auto-start-title"><input type="checkbox" v-model="draft.autoStart" /> Automatically start ranging after boot</span>
-                                        <small>On boot, an Initiator starts its saved target schedule; a Responder starts listening.</small>
+                                </div>
+                                <div class="config-identity-fields">
+                                    <label>Device ID <span class="field-help">1–65534</span>
+                                        <input type="number" min="1" max="65534" v-model.number="draft.deviceId" />
+                                        <small>Short address identifying this node. Used by UWB target addressing and
+                                            BLE peer identity;
+                                            it must not match a remote peer.</small>
                                     </label>
                                 </div>
-
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>Radio parameters</h4>
-                                        <p>UWB PHY channel and antenna-delay calibration</p>
-                                    </div>
-                                    <label>UWB channel</label>
-                                    <div class="choice-row">
-                                        <button :class="{ chosen: draft.channel === 5 }" @click="draft.channel = 5"><b>Channel 5</b><span>6.5 GHz</span></button>
-                                        <button :class="{ chosen: draft.channel === 9 }" @click="draft.channel = 9"><b>Channel 9</b><span>8.0 GHz</span></button>
-                                    </div>
-                                    <div class="field-grid">
-                                        <label>TX antenna delay <span class="field-help">ticks · uint16</span>
-                                            <input type="number" min="0" max="65535" v-model.number="draft.tx" />
-                                            <small>Default firmware value: 16385</small>
-                                        </label>
-                                        <label>RX antenna delay <span class="field-help">ticks · uint16</span>
-                                            <input type="number" min="0" max="65535" v-model.number="draft.rx" />
-                                            <small>Default firmware value: 16385</small>
-                                        </label>
-                                    </div>
-                                </div>
-
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>Ranging schedule</h4>
-                                        <p>Periodic measurement timing and retry policy</p>
-                                    </div>
-                                    <div class="field-grid">
-                                        <label>Target period <span class="field-help">20–60000 ms</span>
-                                            <input type="number" min="20" max="60000" v-model.number="draft.period" />
-                                            <small>Requested period for each target.</small>
-                                        </label>
-                                        <label>Transaction timeout <span class="field-help">50–5000 ms</span>
-                                            <input type="number" min="50" max="5000" v-model.number="draft.timeout" />
-                                            <small>Maximum wait for a ranging transaction.</small>
-                                        </label>
-                                        <label>UWB transaction retries <span class="field-help">0–5</span>
-                                            <input type="number" min="0" max="5" v-model.number="draft.retries" />
-                                            <small>Additional initiator attempts after a failed transaction.</small>
-                                        </label>
-                                        <div class="schedule-preview">
-                                            <span>Saved requested period</span><b>{{ draft.period }} ms / target</b>
-                                            <small>Loaded from NVS; live test scheduling may temporarily differ.</small>
-                                        </div>
-                                    </div>
-                                </div>
-
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>UWB target list</h4>
-                                        <p>Short-address destinations or responder allow-list · maximum 16 IDs</p>
-                                    </div>
-                                    <label>Target IDs <span class="field-help">comma separated</span>
-                                        <input v-model="draft.targets" placeholder="e.g. 2, 3, 12" />
-                                        <small>Initiator: destinations to range. Responder: permitted initiator IDs. An empty responder list accepts any compatible peer.</small>
-                                    </label>
-                                    <div class="target-chips">
-                                        <span v-for="id in draft.targets.split(',').filter(x => x.trim())" :key="id">{{ id.trim() }}</span>
-                                        <span v-if="!draft.targets.trim()" class="muted-chip">No targets configured</span>
-                                    </div>
-                                </div>
                             </div>
-                        </div>
 
-                        <!-- Bluetooth is a peer transport, separate from UWB ranging. -->
-                        <div class="panel form-panel config-section-panel config-ble-section">
-                            <div class="form-title config-section-title">
-                                <div class="form-icon"><Bluetooth /></div>
-                                <div>
-                                    <h3>Bluetooth transport</h3>
-                                    <p>BLE discovery, connection management and reliable message delivery</p>
-                                </div>
-                            </div>
-                            <div v-if="ble.supported" class="config-subsection-grid ble-config-grid">
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>BLE role and discovery</h4>
-                                        <p>Select how this node participates in Bluetooth connections</p>
+                            <!-- UWB settings grouped by network, radio, schedule and target list. -->
+                            <div class="panel form-panel config-section-panel">
+                                <div class="form-title config-section-title">
+                                    <div class="form-icon">
+                                        <Waves />
                                     </div>
-                                    <div class="field-grid">
-                                        <label>BLE operating role
-                                            <select v-model.number="bleDraft.mode">
-                                                <option :value="0">Idle · disabled</option>
-                                                <option :value="1">HUB · Central / scans and connects</option>
-                                                <option :value="2">PERIPHERAL · advertises and accepts a connection</option>
-                                            </select>
-                                            <small>HUB initiates connections. PERIPHERAL advertises as UWB-XXXX using this node's Device ID.</small>
-                                        </label>
-                                        <label>Scan window <span class="field-help">10 ms to scan interval</span>
-                                            <input type="number" min="10" :max="bleDraft.scanIntervalMs" step="1" v-model.number="bleDraft.scanWindowMs" />
-                                            <small>Must not exceed the scan interval.</small>
-                                        </label>
-                                        <label>Advertising interval <span class="field-help">20–10240 ms</span>
-                                            <input type="number" min="20" max="10240" step="1" v-model.number="bleDraft.advertisingIntervalMs" />
-                                            <small>Used in PERIPHERAL mode.</small>
-                                        </label>
-                                        <label>Scan interval <span class="field-help">10–10240 ms</span>
-                                            <input type="number" min="10" max="10240" step="1" v-model.number="bleDraft.scanIntervalMs" />
-                                            <small>Used in HUB mode.</small>
-                                        </label>
+                                    <div>
+                                        <h3>UWB ranging</h3>
+                                        <p>DWM3000 network, radio calibration and ranging behavior</p>
                                     </div>
                                 </div>
-
-                                <div class="config-subsection">
-                                    <div class="config-subheading">
-                                        <h4>Connection and message delivery</h4>
-                                        <p>Retry, timeout and reconnection behavior</p>
-                                    </div>
-                                    <label class="full-field auto-start-field">
-                                        <span class="auto-start-title"><input type="checkbox" v-model="bleDraft.reconnectEnabled" /> Automatically reconnect to configured peers</span>
-                                        <small>Applies to HUB mode. The host can still explicitly connect or disconnect from the Bluetooth page.</small>
-                                    </label>
-                                    <div class="field-grid">
-                                        <label>Reconnect interval <span class="field-help">100–60000 ms</span>
-                                            <input type="number" min="100" max="60000" step="1" v-model.number="bleDraft.reconnectIntervalMs" />
-                                            <small>Delay between reconnect attempts when enabled.</small>
-                                        </label>
-                                        <label>Connection timeout <span class="field-help">100–30000 ms</span>
-                                            <input type="number" min="100" max="30000" step="1" v-model.number="bleDraft.connectionTimeoutMs" />
-                                            <small>Maximum time allowed for a connection attempt.</small>
-                                        </label>
-                                        <label>BLE message retries <span class="field-help">0–5 additional attempts</span>
-                                            <input type="number" min="0" max="5" step="1" v-model.number="bleDraft.maxRetries" />
-                                            <small>Applied to fragment and final-result delivery.</small>
-                                        </label>
-                                        <label>Receive-consumption timeout <span class="field-help">100–2000 ms</span>
-                                            <input type="number" min="100" max="2000" step="1" v-model.number="bleDraft.rxMessageTimeoutMs" />
-                                            <small>Unread complete messages expire after this interval.</small>
-                                        </label>
-                                    </div>
-                                </div>
-
-                                <div class="config-subsection config-subsection-wide">
-                                    <div class="peer-config-heading">
+                                <div class="config-subsection-grid">
+                                    <div class="config-subsection">
                                         <div class="config-subheading">
-                                            <h4>BLE peer list</h4>
-                                            <p>HUB discovery and connection allow-list · maximum 8 unique 16-bit IDs</p>
+                                            <h4>Network and role</h4>
+                                            <p>UWB network addressing and saved boot behavior</p>
                                         </div>
-                                        <span class="tag neutral">{{ blePeerTokens.length }} / 8</span>
+                                        <div class="field-grid">
+                                            <label>UWB ranging role
+                                                <select v-model.number="draft.role">
+                                                    <option :value="0">Idle</option>
+                                                    <option :value="1">Initiator / Sender</option>
+                                                    <option :value="2">Responder / Receiver</option>
+                                                </select>
+                                                <small>Saved boot role. Current live RAM role: {{ roleName }}. Ranging
+                                                    test changes are
+                                                    temporary.</small>
+                                            </label>
+                                            <label>PAN ID <span class="field-help">HEX · 16-bit</span>
+                                                <div class="input-prefix"><span>0x</span><input maxlength="4"
+                                                        v-model="draft.panId"
+                                                        @input="draft.panId = draft.panId.replace(/[^0-9a-f]/gi, '').slice(0, 4).toUpperCase()" />
+                                                </div>
+                                                <small>UWB network identifier. Must match compatible ranging
+                                                    peers.</small>
+                                            </label>
+                                        </div>
+                                        <label class="full-field auto-start-field">
+                                            <span class="auto-start-title"><input type="checkbox"
+                                                    v-model="draft.autoStart" />
+                                                Automatically start ranging after boot</span>
+                                            <small>On boot, an Initiator starts its saved target schedule; a Responder
+                                                starts
+                                                listening.</small>
+                                        </label>
                                     </div>
-                                    <label>Peer IDs <span class="field-help">comma separated</span>
-                                        <input v-model="blePeersInput" placeholder="e.g. 2, 3, 12" />
-                                        <small>Enter remote nodes by Device ID. Only configured peers are reported by discovery; edit the list using the same format as UWB Target IDs.</small>
-                                    </label>
-                                    <div class="target-chips">
-                                        <span v-for="id in blePeerTokens" :key="id">{{ id.trim() }}</span>
-                                        <span v-if="!blePeersInput.trim()" class="muted-chip">No peers configured</span>
+
+                                    <div class="config-subsection">
+                                        <div class="config-subheading">
+                                            <h4>Radio parameters</h4>
+                                            <p>UWB PHY channel and antenna-delay calibration</p>
+                                        </div>
+                                        <label>UWB channel</label>
+                                        <div class="choice-row">
+                                            <button :class="{ chosen: draft.channel === 5 }"
+                                                @click="draft.channel = 5"><b>Channel
+                                                    5</b><span>6.5 GHz</span></button>
+                                            <button :class="{ chosen: draft.channel === 9 }"
+                                                @click="draft.channel = 9"><b>Channel
+                                                    9</b><span>8.0 GHz</span></button>
+                                        </div>
+                                        <div class="field-grid">
+                                            <label>TX antenna delay <span class="field-help">ticks · uint16</span>
+                                                <input type="number" min="0" max="65535" v-model.number="draft.tx" />
+                                                <small>Default firmware value: 16385</small>
+                                            </label>
+                                            <label>RX antenna delay <span class="field-help">ticks · uint16</span>
+                                                <input type="number" min="0" max="65535" v-model.number="draft.rx" />
+                                                <small>Default firmware value: 16385</small>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="config-subsection">
+                                        <div class="config-subheading">
+                                            <h4>Ranging schedule</h4>
+                                            <p>Periodic measurement timing and retry policy</p>
+                                        </div>
+                                        <div class="field-grid">
+                                            <label>Target period <span class="field-help">20–60000 ms</span>
+                                                <input type="number" min="20" max="60000"
+                                                    v-model.number="draft.period" />
+                                                <small>Requested period for each target.</small>
+                                            </label>
+                                            <div class="schedule-preview">
+                                                <span>Saved requested period</span><b>{{ draft.period }} ms / target</b>
+                                                <small>Loaded from NVS; live test scheduling may temporarily
+                                                    differ.</small>
+                                            </div>
+                                            <label>UWB transaction retries <span class="field-help">0–5</span>
+                                                <input type="number" min="0" max="5" v-model.number="draft.retries" />
+                                                <small>Additional initiator attempts after a failed transaction.</small>
+                                            </label>
+                                            <label>Transaction timeout <span class="field-help">50–5000 ms</span>
+                                                <input type="number" min="50" max="5000"
+                                                    v-model.number="draft.timeout" />
+                                                <small>Maximum wait for a ranging transaction.</small>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="config-subsection">
+                                        <div class="config-subheading">
+                                            <h4>UWB target list</h4>
+                                            <p>Short-address destinations or responder allow-list · maximum 16 IDs</p>
+                                        </div>
+                                        <label>Target IDs <span class="field-help">comma separated</span>
+                                            <input v-model="draft.targets" placeholder="e.g. 2, 3, 12" />
+                                            <small>Initiator: destinations to range. Responder: permitted initiator IDs.
+                                                An empty
+                                                responder list accepts any compatible peer.</small>
+                                        </label>
+                                        <div class="target-chips">
+                                            <span v-for="id in draft.targets.split(',').filter(x => x.trim())"
+                                                :key="id">{{ id.trim()
+                                                }}</span>
+                                            <span v-if="!draft.targets.trim()" class="muted-chip">No targets
+                                                configured</span>
+                                        </div>
                                     </div>
                                 </div>
                             </div>
-                            <div v-else class="callout warning ble-unavailable-callout">
-                                <Bluetooth :size="17" />
-                                <div><b>Bluetooth configuration unavailable</b><p>The connected firmware does not expose the BLE configuration extension. Flash the BLE-enabled firmware build to manage Bluetooth from this application. Existing UWB settings remain available.</p></div>
+
+                            <!-- Bluetooth is a peer transport, separate from UWB ranging. -->
+                            <div class="panel form-panel config-section-panel config-ble-section">
+                                <div class="form-title config-section-title">
+                                    <div class="form-icon">
+                                        <Bluetooth />
+                                    </div>
+                                    <div>
+                                        <h3>Bluetooth transport</h3>
+                                        <p>BLE discovery, connection management and reliable message delivery</p>
+                                    </div>
+                                </div>
+                                <div v-if="ble.supported" class="config-subsection-grid ble-config-grid">
+                                    <div class="config-subsection">
+                                        <div class="config-subheading">
+                                            <h4>BLE role and discovery</h4>
+                                            <p>Select how this node participates in Bluetooth connections</p>
+                                        </div>
+                                        <div class="field-grid">
+                                            <label>BLE operating role
+                                                <select v-model.number="bleDraft.mode">
+                                                    <option :value="0">Idle · disabled</option>
+                                                    <option :value="1">HUB · Central / scans and connects</option>
+                                                    <option :value="2">PERIPHERAL · advertises and accepts a connection
+                                                    </option>
+                                                </select>
+                                                <small>HUB initiates connections. PERIPHERAL advertises as UWB-XXXX
+                                                    using this node's
+                                                    Device ID.</small>
+                                            </label>
+                                            <label>Scan window <span class="field-help">10 ms to scan interval</span>
+                                                <input type="number" min="10" :max="bleDraft.scanIntervalMs" step="1"
+                                                    v-model.number="bleDraft.scanWindowMs" />
+                                                <small>Must not exceed the scan interval.</small>
+                                            </label>
+                                            <label>Advertising interval <span class="field-help">20–10240 ms</span>
+                                                <input type="number" min="20" max="10240" step="1"
+                                                    v-model.number="bleDraft.advertisingIntervalMs" />
+                                                <small>Used in PERIPHERAL mode.</small>
+                                            </label>
+                                            <label>Scan interval <span class="field-help">10–10240 ms</span>
+                                                <input type="number" min="10" max="10240" step="1"
+                                                    v-model.number="bleDraft.scanIntervalMs" />
+                                                <small>Used in HUB mode.</small>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="config-subsection">
+                                        <div class="config-subheading">
+                                            <h4>Automatic connections and message delivery</h4>
+                                            <p>Connections and recovery are managed by the node while BLE is enabled</p>
+                                        </div>
+                                        <label class="full-field auto-start-field">
+                                            <span class="auto-start-title"><input type="checkbox"
+                                                    v-model="bleDraft.autoStart" />
+                                                Automatically start Bluetooth after boot</span>
+                                            <small>Start the configured BLE role automatically after the next boot. This
+                                                preference is
+                                                independent of the Enable/Disable Bluetooth control and does not change
+                                                the current
+                                                radio state.</small>
+                                        </label>
+                                        <div class="field-grid">
+                                            <label>Reconnect interval <span class="field-help">100–60000 ms</span>
+                                                <input type="number" min="100" max="60000" step="1"
+                                                    v-model.number="bleDraft.retryIntervalMs" />
+                                                <small>Delay before the next automatic connection attempt.</small>
+                                            </label>
+                                            <label>Connection timeout <span class="field-help">100–30000 ms</span>
+                                                <input type="number" min="100" max="30000" step="1"
+                                                    v-model.number="bleDraft.connectionTimeoutMs" />
+                                                <small>Maximum time allowed for a connection attempt.</small>
+                                            </label>
+                                            <label>BLE message retries <span class="field-help">0–5 additional
+                                                    attempts</span>
+                                                <input type="number" min="0" max="5" step="1"
+                                                    v-model.number="bleDraft.maxRetries" />
+                                                <small>Applied to fragment and final-result delivery.</small>
+                                            </label>
+                                            <label>Receive-consumption timeout <span class="field-help">100–2000
+                                                    ms</span>
+                                                <input type="number" min="100" max="2000" step="1"
+                                                    v-model.number="bleDraft.rxMessageTimeoutMs" />
+                                                <small>Time allowed for the desktop app to fetch a complete message. BLE
+                                                    event reads are
+                                                    pumped every 50 ms while enabled.</small>
+                                            </label>
+                                        </div>
+                                    </div>
+
+                                    <div class="config-subsection config-subsection-wide">
+                                        <div class="peer-config-heading">
+                                            <div class="config-subheading">
+                                                <h4>BLE peer list</h4>
+                                                <p>Peer allow-list · maximum 8 unique 16-bit IDs; an empty list means
+                                                    open mode</p>
+                                            </div>
+                                            <span class="tag neutral">{{ blePeerTokens.length }} / 8</span>
+                                        </div>
+                                        <label>Peer IDs <span class="field-help">comma separated</span>
+                                            <input v-model="blePeersInput" placeholder="e.g. 2, 3, 12" />
+                                            <small>HUB mode connects to these IDs. Peripheral mode accepts these IDs.
+                                                Leave the list
+                                                empty to discover or accept any valid peer.</small>
+                                        </label>
+                                        <div class="target-chips">
+                                            <span v-for="id in blePeerTokens" :key="id">{{ id.trim() }}</span>
+                                            <span v-if="!blePeersInput.trim()" class="muted-chip">Open mode · all valid
+                                                peer IDs</span>
+                                        </div>
+                                    </div>
+                                </div>
+                                <div v-else class="callout warning ble-unavailable-callout">
+                                    <Bluetooth :size="17" />
+                                    <div><b>Bluetooth configuration unavailable</b>
+                                        <p>The connected firmware does not expose the BLE configuration extension. Flash
+                                            the BLE-enabled
+                                            firmware build to manage Bluetooth from this application. Existing UWB
+                                            settings remain
+                                            available.</p>
+                                    </div>
+                                </div>
                             </div>
                         </div>
-                    </div>
                     </fieldset>
                     <div class="bottom-actions">
                         <button class="button danger-ghost" :disabled="!connected || savingConfig" @click="resetConfig">
                             <RotateCcw :size="15" /> Reset compiled defaults
                         </button>
-                        <span v-if="device.status?.ranging" class="hint">Stop ranging before saving configuration.</span>
+                        <span v-if="device.status?.ranging" class="hint">Stop ranging before saving
+                            configuration.</span>
                     </div>
                 </section>
 
@@ -1836,76 +2405,232 @@ onUnmounted(() => {
                         <div>
                             <div class="eyebrow">WIRELESS MESSAGING</div>
                             <h1>Bluetooth</h1>
-                            <p>Discover configured UWB nodes, manage the BLE connection and test reliable message delivery.</p>
+                            <p>Configure the peer network, enable autonomous connections and monitor up to eight
+                                simultaneous links.</p>
                         </div>
                         <div class="heading-actions">
-                            <button class="button secondary" :disabled="!connected || !ble.supported || ble.loading" @click="refreshBluetooth"><RefreshCw :size="15" :class="{ spinning: ble.loading }" /> Refresh</button>
-                            <button class="button primary" :disabled="!connected || !ble.supported || ble.runtime.enabled || ble.action !== ''" @click="startBle"><Power :size="15" /> Start BLE</button>
-                            <button class="button danger-ghost" :disabled="!connected || !ble.supported || !ble.runtime.enabled || ble.action !== ''" @click="stopBle"><Power :size="15" /> Stop BLE</button>
+                            <button class="button secondary" :disabled="!connected || !ble.supported || ble.loading"
+                                @click="refreshBluetooth">
+                                <RefreshCw :size="15" :class="{ spinning: ble.loading }" /> Refresh
+                            </button>
+                            <button class="button" :class="ble.runtime.enabled ? 'danger-ghost' : 'primary'"
+                                :disabled="!connected || !ble.supported || ble.action !== ''" @click="toggleBle">
+                                <Power :size="15" /> {{
+                                    ble.action ?
+                                        'Updating…' :
+                                        ble.runtime.enabled ?
+                                            'Disable Bluetooth' :
+                                            'Enable Bluetooth'
+                                }}
+                            </button>
                         </div>
                     </div>
                     <div v-if="!ble.supported" class="callout warning">
-                        <Bluetooth :size="17" /><div><b>BLE is not available on this firmware</b><p>This app requires firmware that reports the BLE extension in GET_STATUS, GET_CONFIG and GET_SAVED_CONFIG. UWB ranging remains usable with older firmware.</p></div>
+                        <Bluetooth :size="17" />
+                        <div><b>BLE is not available on this firmware</b>
+                            <p>This app requires firmware that reports the BLE extension in GET_STATUS, GET_CONFIG and
+                                GET_SAVED_CONFIG.
+                                UWB ranging remains usable with older firmware.</p>
+                        </div>
                     </div>
                     <template v-else>
                         <div class="metric-grid ble-status-grid">
-                            <div class="metric-card"><div class="metric-top"><span>CONFIGURED MODE</span><Bluetooth /></div><div class="metric-value">{{ bleModeName(ble.runtimeConfig.mode) }}</div><div class="metric-foot">Saved mode: {{ bleModeName(ble.savedConfig.mode) }}</div></div>
-                            <div class="metric-card"><div class="metric-top"><span>RADIO STATE</span><Activity /></div><div class="metric-value" :class="ble.runtime.enabled ? 'good' : ''">{{ !ble.runtime.enabled ? 'Stopped' : ble.runtime.advertising ? 'Advertising' : ble.runtime.scanning ? 'Scanning' : 'Enabled' }}</div><div class="metric-foot">{{ ble.runtimeConfig.mode === 1 ? 'HUB / Central' : ble.runtimeConfig.mode === 2 ? 'Peripheral' : 'Mode idle' }}</div></div>
-                            <div class="metric-card"><div class="metric-top"><span>CONNECTION</span><Link2 /></div><div class="metric-value" :class="ble.runtime.connected ? 'good' : ''">{{ ble.runtime.connected ? 'Connected' : 'Disconnected' }}</div><div class="metric-foot">{{ ble.runtime.connected ? `Peer ${ble.runtime.connectedPeerId}` : 'One BLE peer at a time' }}</div></div>
-                            <div class="metric-card"><div class="metric-top"><span>NEGOTIATED MTU</span><Database /></div><div class="metric-value">{{ ble.runtime.mtu }} B</div><div class="metric-foot">Up to 496 application bytes per message</div></div>
+                            <div class="metric-card">
+                                <div class="metric-top"><span>CONFIGURED MODE</span>
+                                    <Bluetooth />
+                                </div>
+                                <div class="metric-value">{{ bleModeName(ble.runtimeConfig.mode) }}</div>
+                                <div class="metric-foot">Saved mode: {{ bleModeName(ble.savedConfig.mode) }}</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-top"><span>RADIO STATE</span>
+                                    <Activity />
+                                </div>
+                                <div class="metric-value" :class="ble.runtime.enabled ? 'good' : ''">{{
+                                    !ble.runtime.enabled ? 'Stopped' : ble.runtime.advertising ? 'Advertising' :
+                                        ble.runtime.scanning ? 'Scanning' : 'Enabled' }}</div>
+                                <div class="metric-foot">{{ ble.runtimeConfig.mode === 1 ? 'HUB / Central' :
+                                    ble.runtimeConfig.mode === 2 ? 'Peripheral' : 'Mode idle' }}</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-top"><span>ACTIVE LINKS</span>
+                                    <Link2 />
+                                </div>
+                                <div class="metric-value" :class="bleConnectedCount ? 'good' : ''">{{ bleConnectedCount
+                                    }} / 8</div>
+                                <div class="metric-foot">{{
+                                    ble.runtime.connected ?
+                                        'Peer connections are maintained automatically' :
+                                        'No active peer links'
+                                }}</div>
+                            </div>
+                            <div class="metric-card">
+                                <div class="metric-top"><span>REPRESENTATIVE MTU</span>
+                                    <Database />
+                                </div>
+                                <div class="metric-value">{{ ble.runtime.mtu }} B</div>
+                                <div class="metric-foot">Each connected peer has its own negotiated MTU</div>
+                            </div>
                         </div>
                         <div class="two-col ble-main-grid">
                             <div class="panel">
-                                <div class="panel-heading"><div><h3>Configured peers</h3><p>Known BLE identities and current connection state</p></div><span class="tag neutral">{{ ble.runtimeConfig.peers.length }} configured</span></div>
-                                <div v-if="ble.runtimeConfig.peers.length" class="table-wrap">
-                                    <table><thead><tr><th>DEVICE ID</th><th>STATE</th><th>MTU</th><th>ACTION</th></tr></thead>
-                                        <tbody><tr v-for="peerId in ble.runtimeConfig.peers" :key="peerId">
-                                            <td><b>{{ peerId }}</b><small class="mono">{{ hex(peerId) }}</small></td>
-                                            <td><span class="tag" :class="getBlePeerStatus(peerId)?.connected ? 'good' : getBlePeerStatus(peerId)?.state === 2 ? 'warning' : 'neutral'">{{ getBlePeerStatus(peerId) ? blePeerStateName((getBlePeerStatus(peerId)?.state ?? 0)) : 'Not checked' }}</span></td>
-                                            <td>{{ getBlePeerStatus(peerId)?.mtu ?? '—' }}</td>
-                                            <td class="ble-peer-actions">
-                                                <button v-if="ble.runtime.connected && ble.runtime.connectedPeerId === peerId" class="button danger-ghost small" :disabled="ble.action !== ''" @click="disconnectBlePeer(peerId)">Disconnect</button>
-                                                <button v-else class="button secondary small" :disabled="ble.runtimeConfig.mode !== 1 || !ble.runtime.enabled || ble.runtime.connected || ble.action !== ''" @click="connectBlePeer(peerId)">Connect</button>
-                                                <button class="icon-button mini" title="Refresh peer status" :disabled="ble.loading" @click="refreshBlePeerStatus(peerId)"><RefreshCw :size="13" /></button>
-                                            </td>
-                                        </tr></tbody>
+                                <div class="panel-heading">
+                                    <div>
+                                        <h3>Peer connections</h3>
+                                        <p>Live state for configured and discovered peer identities</p>
+                                    </div><span class="tag neutral">{{ bleConnectedCount }} / 8 connected</span>
+                                </div>
+                                <div class="state-line"><span>Peer policy</span><b>{{ ble.runtimeConfig.peers.length ?
+                                    'Allow-list' : 'Open mode' }}</b></div>
+                                <div v-if="bleVisiblePeerIds.length" class="table-wrap">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>DEVICE ID</th>
+                                                <th>STATE</th>
+                                                <th>MTU</th>
+                                                <th>LAST CONNECTION FAILURE</th>
+                                                <th></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr v-for="peerId in bleVisiblePeerIds" :key="peerId">
+                                                <td><small class="mono">{{ hex(peerId) }}</small></td>
+                                                <td><span class="tag"
+                                                        :class="getBlePeerStatus(peerId)?.connected ? 'good' : [2, 4, 5, 6].includes(getBlePeerStatus(peerId)?.state ?? 0) ? 'warning' : 'neutral'">{{
+                                                            getBlePeerStatus(peerId) ?
+                                                                blePeerStateName(getBlePeerStatus(peerId)?.state ?? 0) :
+                                                                'Notchecked'
+                                                        }}</span></td>
+                                                <td>{{ getBlePeerStatus(peerId)?.connected ?
+                                                    getBlePeerStatus(peerId)?.mtu : '—' }}</td>
+                                                <td><small v-if="bleConnectionFailureText(getBlePeerStatus(peerId))"
+                                                        class="ble-error-detail">{{
+                                                            bleConnectionFailureText(getBlePeerStatus(peerId))
+                                                        }}</small><span v-else>—</span></td>
+                                                <td class="ble-peer-actions"><button class="icon-button mini"
+                                                        title="Refresh peer status" :disabled="ble.loading"
+                                                        @click="refreshBlePeerStatus(peerId)">
+                                                        <RefreshCw :size="13" />
+                                                    </button></td>
+                                            </tr>
+                                        </tbody>
                                     </table>
                                 </div>
-                                <div v-else class="empty-state">No peers are configured. <button class="text-button" @click="navigate('configuration')">Configure peer IDs <ArrowUpFromLine :size="13" /></button></div>
-                                <div class="panel-inline-actions"><button class="button secondary small" :disabled="ble.runtimeConfig.mode !== 1 || !ble.supported" @click="scanBlePeers"><Search :size="14" /> Scan for configured peers</button><button class="button secondary small" @click="navigate('configuration')">Manage configuration</button></div>
-                                <div v-if="ble.discoveredPeers.length" class="discovered-line"><b>Discovered this session:</b><span v-for="id in ble.discoveredPeers" :key="id" class="tag good">{{ id }}</span></div>
+                                <div v-else class="empty-state">
+                                    <span v-if="ble.runtimeConfig.peers.length">Waiting for configured peers to be
+                                        discovered or connect.</span>
+                                    <span v-else>Open mode is active. Any valid peer can connect; connected peers will
+                                        appear here automatically.</span>
+                                    <button class="text-button" @click="navigate('configuration')">Manage peer policy
+                                        <ArrowUpFromLine :size="13" />
+                                    </button>
+                                </div>
+                                <div class="panel-inline-actions"><button class="button secondary small"
+                                        @click="navigate('configuration')">Manage configuration</button></div>
+                                <div v-if="ble.discoveredPeers.length" class="discovered-line"><b>Observed this
+                                        session:</b><span v-for="id in ble.discoveredPeers" :key="id"
+                                        class="tag good">{{ id }}</span></div>
                             </div>
                             <div class="panel ble-quick-test">
-                                <div class="panel-heading"><div><h3>Message test</h3><p>Send a text payload to the currently connected peer</p></div><Send /></div>
-                                <label>Destination peer ID<input type="number" min="1" max="65534" v-model="bleMessagePeerId" :placeholder="ble.runtime.connected ? String(ble.runtime.connectedPeerId) : 'Connect a peer first'" /></label>
-                                <label>Message payload<textarea v-model="bleMessageText" rows="4" maxlength="496" placeholder="Type a short test message…" /></label>
-                                <div class="ble-compose-meta"><span>{{ bleMessageByteLength }} / 496 bytes (UTF-8)</span><span v-if="ble.runtime.connected" class="tag good">LINK READY</span><span v-else class="tag neutral">NO LINK</span></div>
-                                <div class="panel-inline-actions"><button class="button primary" :disabled="!ble.runtime.connected || ble.sending || bleMessageByteLength === 0 || bleMessageByteLength > 496 || Number(bleMessagePeerId) !== ble.runtime.connectedPeerId" @click="sendBleMessage"><Send :size="14" /> {{ ble.sending ? 'Sending…' : 'Send message' }}</button><button class="button secondary" :disabled="!ble.runtime.connected || ble.sending" @click="sendBleTestMessage">Send test payload</button></div>
-                                <small class="hint">SEND_TO_PEER acceptance only means the local queue accepted the payload. “Delivered” is shown only after the remote host retrieves the complete message.</small>
+                                <div class="panel-heading">
+                                    <div>
+                                        <h3>Message test</h3>
+                                        <p>Send a unicast text payload to a selected connected peer</p>
+                                    </div>
+                                    <Send />
+                                </div>
+                                <label>Destination peer ID<input type="number" min="1" max="65534"
+                                        v-model="bleMessagePeerId"
+                                        :placeholder="bleConnectedCount ? 'Enter a connected peer ID' : 'Waiting for a peer link'" /></label>
+                                <label>Message payload<textarea v-model="bleMessageText" rows="4" maxlength="496"
+                                        placeholder="Type a short test message…" /></label>
+                                <div class="ble-compose-meta"><span>{{ bleMessageByteLength }} / 496 bytes
+                                        (UTF-8)</span><span v-if="getBlePeerStatus(Number(bleMessagePeerId))?.connected"
+                                        class="tag good">PEER LINK READY</span><span v-else class="tag neutral">PEER NOT
+                                        CONNECTED</span></div>
+                                <div class="panel-inline-actions"><button class="button primary"
+                                        :disabled="!getBlePeerStatus(Number(bleMessagePeerId))?.connected || ble.sending || bleMessageByteLength === 0 || bleMessageByteLength > 496"
+                                        @click="sendBleMessage">
+                                        <Send :size="14" /> {{ ble.sending ? 'Sending…' : 'Send message' }}
+                                    </button><button class="button secondary"
+                                        :disabled="!getBlePeerStatus(Number(bleMessagePeerId))?.connected || ble.sending"
+                                        @click="sendBleTestMessage">Send test payload</button></div>
+                                <small class="hint">SEND_TO_PEER acceptance only means the local queue accepted the
+                                    payload. “Delivered” is shown only after the remote host retrieves the complete
+                                    message.</small>
                             </div>
                         </div>
                         <div class="two-col ble-message-grid">
                             <div class="panel">
-                                <div class="panel-heading"><div><h3>Received messages</h3><p>Complete messages retrieved from the firmware receive queue</p></div><div class="panel-heading-actions"><Inbox :size="16" /><span class="tag neutral">{{ ble.inbox.length }}</span></div></div>
+                                <div class="panel-heading">
+                                    <div>
+                                        <h3>Received messages</h3>
+                                        <p>Complete messages retrieved from the firmware receive queue</p>
+                                    </div>
+                                    <div class="panel-heading-actions">
+                                        <Inbox :size="16" /><span class="tag neutral">{{ ble.inbox.length }}</span>
+                                    </div>
+                                </div>
                                 <div v-if="ble.inbox.length" class="ble-message-list">
-                                    <article v-for="message in ble.inbox" :key="`${message.peerId}:${message.messageId}:${message.time}`" class="ble-message-item">
-                                        <div class="ble-message-top"><b>Peer {{ message.peerId }} · Message {{ message.messageId }}</b><span class="tag" :class="message.state === 'Retrieved' ? 'good' : 'warning'">{{ message.state }}</span></div>
-                                        <div class="ble-message-text">{{ message.text || '(No UTF-8 text content)' }}</div>
-                                        <div class="ble-message-meta">{{ message.length }} bytes · {{ new Date(message.time).toLocaleTimeString() }}</div>
+                                    <article v-for="message in ble.inbox"
+                                        :key="`${message.peerId}:${message.messageId}:${message.time}`"
+                                        class="ble-message-item">
+                                        <div class="ble-message-top"><b>Peer {{ message.peerId }} · Message {{
+                                            message.messageId }}</b><span class="tag"
+                                                :class="message.state === 'Retrieved' ? 'good' : 'warning'">{{
+                                                    message.state }}</span></div>
+                                        <div class="ble-message-text">{{ message.text || '(No UTF-8 text content)' }}
+                                        </div>
+                                        <div class="ble-message-meta">{{ message.length }} bytes · {{ new
+                                            Date(message.time).toLocaleTimeString() }}</div>
                                         <code>{{ message.hex || '—' }}</code>
                                     </article>
                                 </div>
-                                <div v-else class="empty-state">Waiting for a BLE_DATA_RECEIVED event. Incoming messages are fetched automatically.</div>
+                                <div v-else class="empty-state">Waiting for a BLE_DATA_RECEIVED event. Incoming messages
+                                    are fetched automatically.</div>
                             </div>
                             <div class="panel">
-                                <div class="panel-heading"><div><h3>Outgoing messages</h3><p>Delivery status returned by the remote application</p></div><span class="tag neutral">{{ ble.outgoing.length }}</span></div>
-                                <div v-if="ble.outgoing.length" class="table-wrap"><table><thead><tr><th>PEER</th><th>MESSAGE</th><th>SIZE</th><th>STATUS</th></tr></thead><tbody>
-                                    <tr v-for="message in ble.outgoing" :key="`${message.peerId}:${message.messageId}`"><td>{{ message.peerId }}</td><td>{{ message.messageId }}</td><td>{{ message.length }} B</td><td><span class="tag" :class="message.state === 'Delivered' ? 'good' : message.state === 'Failed' ? 'bad' : 'warning'">{{ message.state }}</span><small v-if="message.error" class="ble-error-detail">{{ message.error }}</small></td></tr>
-                                </tbody></table></div>
+                                <div class="panel-heading">
+                                    <div>
+                                        <h3>Outgoing messages</h3>
+                                        <p>Delivery status returned by the remote application</p>
+                                    </div><span class="tag neutral">{{ ble.outgoing.length }}</span>
+                                </div>
+                                <div v-if="ble.outgoing.length" class="table-wrap">
+                                    <table>
+                                        <thead>
+                                            <tr>
+                                                <th>PEER</th>
+                                                <th>MESSAGE</th>
+                                                <th>SIZE</th>
+                                                <th>STATUS</th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            <tr v-for="message in ble.outgoing"
+                                                :key="`${message.peerId}:${message.messageId}`">
+                                                <td>{{ message.peerId }}</td>
+                                                <td>{{ message.messageId }}</td>
+                                                <td>{{ message.length }} B</td>
+                                                <td><span class="tag"
+                                                        :class="message.state === 'Delivered' ? 'good' : message.state === 'Failed' ? 'bad' : 'warning'">{{
+                                                            message.state }}</span><small v-if="message.error"
+                                                        class="ble-error-detail">{{ message.error }}</small></td>
+                                            </tr>
+                                        </tbody>
+                                    </table>
+                                </div>
                                 <div v-else class="empty-state">No outgoing BLE messages in this session.</div>
                             </div>
                         </div>
-                        <div class="bottom-actions"><span class="hint">BLE uses the node's Device ID as its peer identity. The USB connection remains the host control channel; BLE carries peer-to-peer application messages.</span><button class="button secondary" @click="clearBleMessages"><Trash2 :size="14" /> Clear message history</button></div>
+                        <div class="bottom-actions"><span class="hint">The boot auto-start preference is configured
+                                separately in Configuration. Runtime Enable/Disable does not change that saved
+                                preference. Connections recover automatically while enabled. Application messages are
+                                unicast to the selected peer ID; no broadcast is performed.</span><button
+                                class="button secondary" @click="clearBleMessages">
+                                <Trash2 :size="14" /> Clear message history
+                            </button></div>
                     </template>
                 </section>
 
@@ -1918,13 +2643,15 @@ onUnmounted(() => {
                             </p>
                         </div><span class="tag" :class="device.status?.ranging ? 'good' : 'neutral'">{{
                             device.status?.ranging ?
-                            'RANGING ACTIVE':'STOPPED'}}</span>
+                                'RANGING ACTIVE' : 'STOPPED' }}</span>
                     </div>
                     <div class="panel">
                         <div class="panel-heading">
                             <div>
                                 <h3>Operating role</h3>
-                                <p>Role changes stop active ranging and cancel queued one-shot jobs. These controls change RAM only; they never write NVS.</p>
+                                <p>Role changes stop active ranging and cancel queued one-shot jobs. These controls
+                                    change RAM only;
+                                    they never write NVS.</p>
                             </div>
                         </div>
                         <div class="role-grid"><button :class="{ chosen: device.status?.role === 0 }"
@@ -2012,7 +2739,7 @@ onUnmounted(() => {
                                         <td>{{ m.target }}</td>
                                         <td>{{ fmtRange(m.mm < 0 ? null : m.mm) }}</td>
                                         <td><span class="tag" :class="m.status === 0 ? 'good' : 'bad'">{{
-                                                statusText(m.status) }}</span>
+                                            statusText(m.status) }}</span>
                                         </td>
                                     </tr>
                                 </tbody>
@@ -2062,7 +2789,7 @@ onUnmounted(() => {
                                         <td class="mono">{{ m.mono ?? '—' }}</td>
                                         <td>{{ fmtRange(m.mm < 0 ? null : m.mm) }}</td>
                                         <td><span class="tag" :class="m.status === 0 ? 'good' : 'bad'">{{
-                                                statusText(m.status) }}</span>
+                                            statusText(m.status) }}</span>
                                         </td>
                                         <td>{{ hex(m.quality ?? 0, 2) }}</td>
                                     </tr>
@@ -2087,8 +2814,9 @@ onUnmounted(() => {
                         <div>
                             <div class="eyebrow">DEVICE HEALTH</div>
                             <h1>Diagnostics</h1>
-                            <p>Inspect the UWB radio, USB protocol and Bluetooth messaging state to identify integration issues.</p>
-                        </div><button class="button primary" :disabled="!connected" @click="refreshAll">
+                            <p>Inspect the UWB radio, USB protocol and Bluetooth messaging state to identify integration
+                                issues.</p>
+                        </div><button class="button primary" :disabled="!connected" @click="refreshDiagnostics">
                             <RefreshCw :size="15" /> Refresh diagnostics
                         </button>
                     </div>
@@ -2137,10 +2865,21 @@ onUnmounted(() => {
                                 <div><span>Duplicate requests</span><b>{{ device.stats?.duplicates ?? '—' }}</b></div>
                                 <div><span>Transaction timeouts</span><b>{{ device.stats?.timeouts ?? '—' }}</b></div>
                                 <div><span>History overwrites</span><b>{{ device.stats?.overwrites ?? '—' }}</b></div>
-                                <div><span>Malformed radio frames</span><b>{{ device.stats?.malformed ?? '—' }}</b></div>
-                                <div><span>BLE events logged</span><b>{{ events.filter(item => /BLE/.test(item)).length }}</b></div>
-                                <div><span>BLE messages received</span><b>{{ ble.inbox.length }}</b></div>
-                                <div><span>BLE messages sent</span><b>{{ ble.outgoing.length }}</b></div>
+                                <div><span>Malformed radio frames</span><b>{{ device.stats?.malformed ?? '—' }}</b>
+                                </div>
+                                <div><span>BLE messages sent</span><b>{{ device.stats?.bleMessagesSent ?? '—' }}</b>
+                                </div>
+                                <div><span>BLE messages received</span><b>{{ device.stats?.bleMessagesReceived ?? '—'
+                                        }}</b></div>
+                                <div><span>BLE TX errors</span><b>{{ device.stats?.bleTxErrors ?? '—' }}</b></div>
+                                <div><span>BLE RX errors</span><b>{{ device.stats?.bleRxErrors ?? '—' }}</b></div>
+                                <div><span>BLE connection failures</span><b>{{ device.stats?.bleConnectionFailures ??
+                                    '—' }}</b></div>
+                                <div><span>BLE RX queue overflows</span><b>{{ device.stats?.bleRxQueueOverflows ?? '—'
+                                        }}</b></div>
+                                <div><span>BLE event queue overflows</span><b>{{ device.stats?.bleEventQueueOverflows ??
+                                    '—' }}</b>
+                                </div>
                             </div>
                         </div>
                         <div class="panel">
@@ -2153,21 +2892,41 @@ onUnmounted(() => {
                             </div>
                             <div class="detail-list">
                                 <div><span>Current radio status</span><b class="mono">{{ hex(device.diagnostics?.radio
-                                        ?? 0, 8) }}</b>
+                                    ?? 0, 8) }}</b>
                                 </div>
                                 <div><span>Live system status</span><b class="mono">{{ hex(device.diagnostics?.live ??
-                                        0, 8) }}</b>
+                                    0, 8) }}</b>
                                 </div>
                                 <div><span>Radio state machine</span><b>{{ device.diagnostics?.state ?? '—' }}</b></div>
                                 <div><span>Standby</span><b>{{ device.diagnostics?.standby ? 'IDLE_RC' : 'No' }}</b>
                                 </div>
-                                <div><span>Last error code</span><b>{{ device.lastError?.code ?? '—' }} ·
-                                        {{ ['OK', 'BAD_ARGUMENT', 'UNKNOWN_COMMAND', 'BAD_STATE', 'BUSY',
-                                            'NOT_SUPPORTED', 'TIMEOUT',
-                                            'RADIO_FAILURE', 'RATE_UNACHIEVABLE', 'INTERNAL',
-                                        'NOT_FOUND'][device.lastError?.code ?? 0]
-                                        }}</b>
+                                <div><span>BLE mode</span><b>{{ ['IDLE', 'HUB',
+                                    'PERIPHERAL'][device.diagnostics?.bleMode ?? 0] ??
+                                        'Unknown' }}</b></div>
+                                <div><span>BLE enabled</span><b>{{ device.diagnostics?.bleEnabled ? 'Yes' : 'No' }}</b>
                                 </div>
+                                <div><span>BLE advertising / scanning</span><b>{{ device.diagnostics?.bleAdvertising ?
+                                    'Advertising' :
+                                    device.diagnostics?.bleScanning ? 'Scanning' : 'Inactive' }}</b></div>
+                                <div><span>BLE active links</span><b>{{ device.diagnostics?.bleActiveLinks ?? '—' }}</b>
+                                </div>
+                                <div><span>BLE RX / event queue depth</span><b>{{ device.diagnostics ?
+                                    `${device.diagnostics.bleRxQueueDepth} /
+                                        ${device.diagnostics.bleEventQueueDepth}` : '—' }}</b>
+                                </div>
+                                <div><span>Last error subsystem</span><b>{{ ['System', 'UWB',
+                                    'BLE'][device.lastError?.subsystem ?? 0]
+                                    ?? 'Unknown' }}</b></div>
+                                <div><span>Last error code</span><b>{{ device.lastError?.code ?? '—' }} ·
+                                        {{ device.lastError?.subsystem === 2 ? hex(device.lastError.code, 2) :
+                                            (['OK', 'BAD_ARGUMENT', 'UNKNOWN_COMMAND', 'BAD_STATE', 'BUSY',
+                                                'NOT_SUPPORTED', 'TIMEOUT', 'RADIO_FAILURE', 'RATE_UNACHIEVABLE', 'INTERNAL',
+                                                'NOT_FOUND'][device.lastError?.code ?? 0] ?? 'Unknown') }}</b>
+                                </div>
+                                <div><span>Last error peer</span><b>{{ device.lastError?.peerId || '—' }}</b></div>
+                                <div><span>Last error context</span><b>{{ device.lastError?.context ?
+                                    hex(device.lastError.context, 8) :
+                                        '—' }}</b></div>
                                 <div><span>Last error monotonic time</span><b>{{ device.lastError?.time ?? '—' }} µs</b>
                                 </div>
                             </div>
@@ -2185,7 +2944,7 @@ onUnmounted(() => {
                                 @click="pingNode">PING</button><button class="button secondary" :disabled="!connected"
                                 @click="syncClock">Synchronize clock</button><button class="button secondary"
                                 :disabled="!connected" @click="readAntenna">Read antenna delays</button><button
-                                class="button secondary" :disabled="!connected" @click="readLast">Get latest per
+                                class="button secondary" :disabled="!connected" @click="readLastRange">Get latest per
                                 target</button><button class="button secondary" :disabled="!connected"
                                 @click="subscribeAll">Subscribe
                                 all events</button><button class="button secondary" :disabled="!connected"
@@ -2199,12 +2958,36 @@ onUnmounted(() => {
                     <div class="panel advanced-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>Recent device events</h3>
-                                <p>Events decoded from the subscribed USB stream</p>
-                            </div><span class="tag neutral">{{ events.length }} logged</span>
+                                <h3>Device trace</h3>
+                                <p>Combined UWB radio, detailed TX-start, and BLE lifecycle records in insertion order
+                                </p>
+                            </div>
+                            <span class="tag neutral">{{ traceBusy ? 'Reading…' : `${traceRecords.length} retained`
+                                }}</span>
+                        </div>
+                        <div v-if="traceError" class="empty-state">Could not read device trace: {{ traceError }}</div>
+                        <div v-else-if="traceRecords.length" class="event-log">
+                            <div v-for="(record, index) in traceRecords" :key="`${record.sequence}-${index}`">{{
+                                record.text }}</div>
+                        </div>
+                        <div v-else class="empty-state">No diagnostic records are currently retained. The trace
+                            refreshes while this tab
+                            is open.</div>
+                        <p class="hint">Records are shown oldest first. The node retains traces in RAM; reading them
+                            does not clear
+                            them, and reboot clears them.</p>
+                    </div>
+                    <div class="panel advanced-panel">
+                        <div class="panel-heading">
+                            <div>
+                                <h3>Recent app and device events</h3>
+                                <p>Includes D3KM status-refresh messages; the device trace above contains node-side
+                                    diagnostic records
+                                </p>
+                            </div><span class="tag neutral">{{ events.length }} messages</span>
                         </div>
                         <div v-if="events.length" class="event-log">
-                            <div v-for="(item, index) in events.slice(0, 10)" :key="index">{{ item }}</div>
+                            <div v-for="(item, index) in events.slice(0, 30)" :key="index">{{ item }}</div>
                         </div>
                         <div v-else class="empty-state">No device events received.</div>
                     </div>
@@ -2220,7 +3003,8 @@ onUnmounted(() => {
                         <div>
                             <div class="eyebrow">POWER & MAINTENANCE</div>
                             <h1>Device controls</h1>
-                            <p>Manage UWB radio standby, Bluetooth availability, device sleep and maintenance actions.</p>
+                            <p>Manage UWB radio standby, Bluetooth availability, device sleep and maintenance actions.
+                            </p>
                         </div>
                     </div>
                     <div class="panel control-row">
@@ -2231,7 +3015,7 @@ onUnmounted(() => {
                             <h3>UWB radio standby</h3>
                             <p>Stops ranging and places the DWM3000 in IDLE_RC standby. This is not true DWM3000 deep
                                 sleep.</p><span class="tag" :class="device.status?.standby ? 'warning' : 'good'">{{
-                                    device.status?.standby ? 'IN STANDBY':'AWAKE'}}</span>
+                                    device.status?.standby ? 'IN STANDBY' : 'AWAKE' }}</span>
                         </div>
                         <div class="control-actions"><button class="button secondary"
                                 :disabled="!connected || device.status?.standby" @click="sleepRadio">Enter
@@ -2245,7 +3029,9 @@ onUnmounted(() => {
                         </div>
                         <div class="control-copy">
                             <h3>ESP32 timed deep sleep</h3>
-                            <p>Stops ranging and enters timer-woken ESP32 deep sleep. UWB and Bluetooth are unavailable while the ESP32 sleeps; UART cannot wake it. USB reconnects after timer wake.</p>
+                            <p>Stops ranging and enters timer-woken ESP32 deep sleep. UWB and Bluetooth are unavailable
+                                while the ESP32
+                                sleeps; UART cannot wake it. USB reconnects after timer wake.</p>
                         </div>
                         <div class="control-actions"><button class="button secondary" :disabled="!connected"
                                 @click="systemSleep">Configure sleep timer</button></div>
@@ -2268,19 +3054,28 @@ onUnmounted(() => {
                         </div>
                         <div class="control-copy">
                             <h3>Reset configuration</h3>
-                            <p>Clear saved UWB and Bluetooth configuration, peer lists and targets, restore compiled defaults, and reinitialize the radio. Both operating roles return to idle.</p>
+                            <p>Clear saved UWB and Bluetooth configuration, peer lists and targets, restore compiled
+                                defaults, and
+                                reinitialize the radio. Both operating roles return to idle.</p>
                         </div>
                         <div class="control-actions"><button class="button danger" :disabled="!connected"
                                 @click="resetConfig">Reset
                                 device config</button></div>
                     </div>
                     <div class="hint-block">
-                        <CircleHelp :size="17" /><span>The saved role and auto-start policy are restored from NVS at boot. Auto-start is controlled in Configuration; Ranging test role changes are temporary.</span>
+                        <CircleHelp :size="17" /><span>The saved role and auto-start policy are restored from NVS at
+                            boot. Auto-start is
+                            controlled in Configuration; Ranging test role changes are temporary.</span>
                     </div>
                 </section>
             </div>
-            <footer class="footer"><span><span class="dot" :class="{ online: connected }" /> {{ connected ? 'USB CDC session active':'Waiting for USB device'}}</span><span>Protocol spec v2.0 <i>·</i> wire v1 <i>·</i> USB CDC 115200 <i>·</i> D3KM
-                    0.2.0</span>
+            <footer class="footer"><span><span class="dot" :class="{ online: connected }" /> {{
+                connected ?
+                    'USB CDC session active' :
+                    'Waiting for USB device'
+                    }}</span><span>Protocol spec v2.0 <i>·</i> wire v1 <i>·</i> USB CDC
+                    115200 <i>·</i>
+                    D3KM 0.2.0</span>
             </footer>
         </main>
     </div>
