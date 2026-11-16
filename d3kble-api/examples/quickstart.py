@@ -19,6 +19,8 @@ def main():
 
         node.comms.send(PEER_ID, {"operation": "status"})
 
+        # Requires an active UWB role, target list, and schedule on the device.
+        node.uwb.start_ranging()
         while True:
             measurement = distances.get(timeout=1.0)
             if measurement.valid:
