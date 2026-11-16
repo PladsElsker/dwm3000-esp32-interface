@@ -83,7 +83,7 @@ Send a request from the other node:
 python manual_tests/07_comms_request.py --uart /dev/ttyAMA2 --peer-id 2
 ```
 
-The receiver returns an echo response using `node.comms.on_request`. The requester checks both the application ACK and the correlated response. The nodes must already have an established BLE connection and compatible peer configuration.
+Both scripts exercise the awaitable API. The echo server binds its running asyncio loop and registers an `async def` request handler. The requester calls `node.comms.request(...)`, receives a ticket immediately, and awaits that ticket for its correlated `CommsResponse`. The response deadline is one second. The nodes must already have an established BLE connection and compatible peer configuration.
 
 ## Notes
 
