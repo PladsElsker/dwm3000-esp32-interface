@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "d3kble"
 version = "0.1.0"
-description = "Persistent Python device management and communications for ESP32-C3/DWM3000"
+description = "Python host API for ESP32-C3/DWM3000 device management and communications"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = ["pyserial>=3.5"]
