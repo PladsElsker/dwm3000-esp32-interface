@@ -331,7 +331,7 @@ Common events include:
 - UWB: `range_result`, `range_failed`, `history_overrun`
 - Device: `state_changed`, `device_ready`, `error`
 - BLE: `ble_state_changed`, `ble_peer_found`, `ble_peer_connected`, `ble_peer_disconnected`, `ble_connection_failed`, `ble_message`, `ble_error`
-- Messaging: `comms_received`, `comms_ack`, `comms_response`, `comms_processed`, `comms_failed`, `comms_error`, `comms_handler_error`
+- Messaging: `comms_received`, `comms_ack`, `comms_response`, `comms_processed`, `comms_timeout`, `comms_failed`, `comms_error`, `comms_handler_error`
 - Configuration: `reconciliation_complete`, `reconciliation_failed`, `reconciliation_error`
 
 Callbacks are dispatched outside the serial reader thread. Exceptions raised by callbacks are isolated and counted in diagnostics.
