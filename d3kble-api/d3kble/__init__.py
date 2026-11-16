@@ -6,7 +6,7 @@ from .exceptions import (
     DeviceCommandError, ReconciliationError,
 )
 from .models import (
-    ApplicationMessage, BleMessage, DeviceState, DistanceMeasurement,
+    ApplicationMessage, BleMessage, CommsResponse, DeviceState, DistanceMeasurement,
     RangeFailure, RuntimeConfig, SavedConfig, UwbHistoryPage,
 )
 from .comms import CommsTicket, IncomingRequest
@@ -15,7 +15,7 @@ from .config import ConfigChange, ReconciliationAction, ReconciliationPlan
 __all__ = [
     "D3KNode", "D3KError", "ProtocolError", "ConnectionLost",
     "RequestTimeout", "DeviceCommandError", "ReconciliationError",
-    "ApplicationMessage", "BleMessage", "DeviceState", "DistanceMeasurement",
+    "ApplicationMessage", "BleMessage", "CommsResponse", "DeviceState", "DistanceMeasurement",
     "RangeFailure", "RuntimeConfig", "SavedConfig", "UwbHistoryPage",
     "CommsTicket", "IncomingRequest", "ConfigChange",
     "ReconciliationAction", "ReconciliationPlan",
