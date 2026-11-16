@@ -1680,6 +1680,7 @@ type ConfigPreset = { id: string; name: string; updatedAt: string; config: Confi
 const CONFIG_PRESETS_KEY = 'd3km.configuration-presets.v1';
 const CONFIG_SET_FORMAT = 'd3km-configuration-set';
 const CONFIG_SET_VERSION = 1;
+const NEW_CONFIG_OPTION = '__new_config__';
 const configPresets = ref<ConfigPreset[]>([]);
 const selectedConfigPresetId = ref('');
 const presetName = ref('');
@@ -1760,7 +1761,7 @@ async function persistConfigPresets(): Promise<boolean> {
         return false;
     }
 }
-async function saveConfigPreset() {
+async async function saveConfigPreset() {
     const name = presetName.value.trim();
     if (!name) { error.value = 'Enter a name for this configuration preset.'; return; }
     if (name.length > 80) { error.value = 'Preset names must be 80 characters or fewer.'; return; }
@@ -1786,6 +1787,17 @@ async function saveConfigPreset() {
     notice.value = existing ? `Updated preset “${name}”. Device NVS was not changed.` : `Saved preset “${name}”. Device NVS was not changed.`;
     error.value = '';
 }
+function handleConfigPresetSelection() {
+    if (selectedConfigPresetId.value === NEW_CONFIG_OPTION) {
+        presetName.value = '';
+        return;
+    }
+    if (!selectedConfigPresetId.value) {
+        presetName.value = '';
+        return;
+    }
+    applyConfigPreset(selectedConfigPresetId.value);
+}
 function applyConfigPreset(id = selectedConfigPresetId.value) {
     const preset = configPresets.value.find(item => item.id === id);
     if (!preset) return;
@@ -1807,7 +1819,7 @@ async function deleteConfigPreset() {
     if (!preset) return;
     const previous = configPresets.value;
     configPresets.value = configPresets.value.filter(item => item.id !== preset.id);
-    if (!persistConfigPresets()) { configPresets.value = previous; return; }
+    if (!await persistConfigPresets()) { configPresets.value = previous; return; }
     selectedConfigPresetId.value = '';
     presetName.value = '';
     notice.value = `Deleted preset “${preset.name}”.`;
@@ -2388,7 +2400,7 @@ async function importConfigSet(event: Event) {
                         <div class="heading-actions">
                             <span v-if="dirty" class="unsaved"><span class="dirty-dot" /> Unsaved edits</span>
                             <button class="button secondary" :disabled="!connected || savingConfig" @click="refreshAll">
-                                <RefreshCw :size="15" /> Reload
+                                <RefreshCw :size="15" /> Reload from board
                             </button>
                             <button class="button primary"
                                 :title="device.status?.ranging ? 'Stop ranging before saving configuration' : ble.runtime.connected ? 'Disconnect Bluetooth before saving configuration' : ''"
@@ -2397,7 +2409,7 @@ async function importConfigSet(event: Event) {
                                 <Save :size="15" :class="{ spinning: savingConfig }" /> {{
                                     savingConfig ?
                                         'Saving…' :
-                                        'Save configuration'
+                                        'Apply & save to device'
                                 }}
                             </button>
                         </div>
@@ -2406,30 +2418,40 @@ async function importConfigSet(event: Event) {
                     <div class="panel config-presets-panel">
                         <div class="panel-heading">
                             <div>
-                                <h3>Configuration presets</h3>
-                                <p>Save named configurations in this app, independently of the connected board.</p>
+                                <h3>Saved configuration set</h3>
+                                <p>Reusable configurations saved on this computer, independently of the connected board.</p>
                             </div>
                             <Save />
                         </div>
                         <div class="preset-controls">
-                            <label class="preset-select-label">Saved presets
-                                <select v-model="selectedConfigPresetId" @change="applyConfigPreset()">
-                                    <option value="">Choose a saved preset…</option>
+                            <label class="preset-select-label">Configuration
+                                <select v-model="selectedConfigPresetId" @change="handleConfigPresetSelection">
+                                    <option value="">Select a configuration…</option>
+                                    <option :value="NEW_CONFIG_OPTION">New config</option>
                                     <option v-for="preset in configPresets" :key="preset.id" :value="preset.id">{{ preset.name }}</option>
                                 </select>
                             </label>
-                            <label class="preset-name-label">Configuration name
+                            <label v-if="selectedConfigPresetId === NEW_CONFIG_OPTION" class="preset-name-label">
+                                Name for new config
                                 <input v-model="presetName" maxlength="80" placeholder="e.g. Workshop initiator" />
                             </label>
                             <div class="preset-actions">
-                                <button class="button primary" @click="saveConfigPreset"><Save :size="14" /> {{ configPresets.some(p => p.id === selectedConfigPresetId) ? 'Update preset' : 'Save as preset' }}</button>
-                                <button class="button secondary"  :disabled="!configPresets.length" @click="exportConfigSet"><Download :size="14" /> Export set</button>
-                                <button class="button secondary" @click="presetImportInput?.click()"><Inbox :size="14" /> Import set</button>
-                                <button class="button danger-ghost" :disabled="!selectedConfigPresetId" @click="deleteConfigPreset"><Trash2 :size="14" /> Delete</button>
+                                <button class="button primary" :disabled="!selectedConfigPresetId || (selectedConfigPresetId === NEW_CONFIG_OPTION && !presetName.trim())" @click="saveConfigPreset">
+                                    <Save :size="14" /> {{ selectedConfigPresetId === NEW_CONFIG_OPTION ? 'Save new config' : 'Update selected config' }}
+                                </button>
+                                <button class="button danger-ghost" :disabled="!selectedConfigPresetId || selectedConfigPresetId === NEW_CONFIG_OPTION" @click="deleteConfigPreset">
+                                    <Trash2 :size="14" /> Delete
+                                </button>
+                                <button class="button secondary" :disabled="!configPresets.length" @click="exportConfigSet">
+                                    <Download :size="14" /> Export set
+                                </button>
+                                <button class="button secondary" @click="presetImportInput?.click()">
+                                    <Inbox :size="14" /> Import set
+                                </button>
                                 <input ref="presetImportInput" class="preset-file-input" type="file" accept=".json,application/json" @change="importConfigSet" />
                             </div>
                         </div>
-                        <p class="hint preset-hint">Presets are stored in the application's persistent data directory. Export the entire saved configuration set as one JSON file, or import another set without overwriting your own. Loading a preset only updates this editor; use “Save configuration” below to send settings to the board and commit them to NVS.</p>
+                        <p class="hint preset-hint">Select a saved configuration to load it into the editor, or choose “New config” to name the current settings. Saving here updates only this computer’s configuration set. Export set and Import set transfer the entire collection; imports are added without replacing existing entries. To send the selected settings to the board and store them in its NVS, use “Apply & save to device” below.</p>
                     </div>
 
                     <fieldset class="config-fields" :disabled="savingConfig">
