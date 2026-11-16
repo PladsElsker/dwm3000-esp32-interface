@@ -42,3 +42,22 @@ def test_bytes_are_json_safe():
     original = {"raw": b"\x00\x01", "nested": [1, b"payload"]}
     round_trip = _from_json_safe(_json_safe(original))
     assert round_trip == original
+
+
+
+def test_request_outbox_and_request_index_commit_atomically():
+    import sqlite3
+    import pytest
+
+    store = MessageStore(None)
+    store._db.execute("""
+        CREATE TRIGGER reject_request BEFORE INSERT ON requests
+        BEGIN SELECT RAISE(ABORT, 'test failure'); END;
+    """)
+    with pytest.raises(sqlite3.IntegrityError):
+        store.enqueue("request-atomic", 7, "request", b"{}")
+    assert store.due_outbox(time.time() + 1) == []
+    store._db.execute("DROP TRIGGER reject_request")
+    store.enqueue("request-atomic", 7, "request", b"{}")
+    assert store.get_request("request-atomic") is not None
+    store.close()

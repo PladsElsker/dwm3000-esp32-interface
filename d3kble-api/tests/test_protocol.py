@@ -122,3 +122,13 @@ def test_non_ble_event_decoding():
     assert ready["protocol_version"] == 1
     overrun = decode_event_payload(0x84, struct.pack("<II", 10, 15))
     assert overrun == {"overwritten_sample_seq": 10, "new_sample_seq": 15}
+
+
+
+def test_uint16_helpers():
+    from d3kble.protocol import pack_u16, unpack_u16
+
+    assert pack_u16(0x1234) == b"\x34\x12"
+    assert unpack_u16(b"\x34\x12") == 0x1234
+    with pytest.raises(ValueError):
+        pack_u16(0x10000)

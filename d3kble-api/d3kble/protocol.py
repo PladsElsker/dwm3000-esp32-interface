@@ -354,3 +354,17 @@ def decode_event_payload(opcode: int, payload: bytes):
         radio_ready, protocol_version = payload
         return {"radio_ready": bool(radio_ready), "protocol_version": protocol_version}
     return payload
+
+
+
+def pack_u16(value: int) -> bytes:
+    value = int(value)
+    if not 0 <= value <= 0xFFFF:
+        raise ValueError("value must fit uint16")
+    return struct.pack("<H", value)
+
+
+def unpack_u16(data: bytes, offset: int = 0) -> int:
+    if offset < 0 or len(data) < offset + 2:
+        raise ProtocolError("truncated uint16")
+    return struct.unpack_from("<H", data, offset)[0]

@@ -53,31 +53,44 @@ class MessageStore:
     def enqueue(self, message_id: str, peer_id: int, kind: str, envelope: bytes):
         now = time.time()
         with self._lock:
-            self._db.execute(
-                "INSERT INTO outbox(message_id,peer_id,kind,envelope,next_attempt) VALUES(?,?,?,?,?)",
-                (message_id, peer_id, kind, envelope, now),
-            )
-            if kind == "request":
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
                 self._db.execute(
-                    "INSERT OR REPLACE INTO requests(message_id,peer_id,created_at) VALUES(?,?,?)",
-                    (message_id, peer_id, now),
+                    "INSERT INTO outbox(message_id,peer_id,kind,envelope,next_attempt) VALUES(?,?,?,?,?)",
+                    (message_id, peer_id, kind, envelope, now),
                 )
+                if kind == "request":
+                    self._db.execute(
+                        "INSERT OR REPLACE INTO requests(message_id,peer_id,created_at) VALUES(?,?,?)",
+                        (message_id, peer_id, now),
+                    )
+                self._db.execute("COMMIT")
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
 
     def enqueue_response_once(self, peer_id: int, request_id: str,
                               response_id: str, envelope: bytes) -> bool:
         now = time.time()
         with self._lock:
-            cursor = self._db.execute(
-                "INSERT OR IGNORE INTO responses(peer_id,request_id,response_id) VALUES(?,?,?)",
-                (peer_id, request_id, response_id),
-            )
-            if cursor.rowcount != 1:
-                return False
-            self._db.execute(
-                "INSERT INTO outbox(message_id,peer_id,kind,envelope,next_attempt) VALUES(?,?,?,?,?)",
-                (response_id, peer_id, "response", envelope, now),
-            )
-            return True
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                cursor = self._db.execute(
+                    "INSERT OR IGNORE INTO responses(peer_id,request_id,response_id) VALUES(?,?,?)",
+                    (peer_id, request_id, response_id),
+                )
+                if cursor.rowcount != 1:
+                    self._db.execute("ROLLBACK")
+                    return False
+                self._db.execute(
+                    "INSERT INTO outbox(message_id,peer_id,kind,envelope,next_attempt) VALUES(?,?,?,?,?)",
+                    (response_id, peer_id, "response", envelope, now),
+                )
+                self._db.execute("COMMIT")
+                return True
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
 
     def due_outbox(self, now: float, limit: int = 64):
         with self._lock:
@@ -104,19 +117,26 @@ class MessageStore:
 
     def acknowledge(self, peer_id: int, message_id: str):
         with self._lock:
-            row = self._db.execute(
-                "SELECT kind FROM outbox WHERE peer_id=? AND message_id=?",
-                (peer_id, message_id),
-            ).fetchone()
-            if not row:
-                return None
-            kind = row[0]
-            if kind == "request":
-                self._db.execute("UPDATE requests SET accepted=1 WHERE message_id=?", (message_id,))
-            self._db.execute(
-                "DELETE FROM outbox WHERE peer_id=? AND message_id=?", (peer_id, message_id)
-            )
-            return kind
+            self._db.execute("BEGIN IMMEDIATE")
+            try:
+                row = self._db.execute(
+                    "SELECT kind FROM outbox WHERE peer_id=? AND message_id=?",
+                    (peer_id, message_id),
+                ).fetchone()
+                if not row:
+                    self._db.execute("ROLLBACK")
+                    return None
+                kind = row[0]
+                if kind == "request":
+                    self._db.execute("UPDATE requests SET accepted=1 WHERE message_id=?", (message_id,))
+                self._db.execute(
+                    "DELETE FROM outbox WHERE peer_id=? AND message_id=?", (peer_id, message_id)
+                )
+                self._db.execute("COMMIT")
+                return kind
+            except Exception:
+                self._db.execute("ROLLBACK")
+                raise
 
     def insert_inbox(self, peer_id: int, message_id: str, kind: str,
                      envelope: str, received_at: float) -> bool:
