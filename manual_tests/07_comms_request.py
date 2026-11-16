@@ -16,7 +16,7 @@ def main() -> int:
         default='{"manual_test": "d3kble"}',
         help="JSON value to send",
     )
-    parser.add_argument("--timeout", type=float, default=15.0)
+    parser.add_argument("--timeout", type=float, default=2.0)
     args = parser.parse_args()
 
     try:
@@ -27,13 +27,13 @@ def main() -> int:
     try:
         with connected_node(args) as node:
             ticket = node.comms.request(args.peer_id, payload)
-            print("Waiting for application ACK...")
-            print(ticket.wait_ack(timeout=args.timeout))
-            print("Waiting for correlated response...")
+            print("Waiting for correlated response (1 second deadline)...")
             response = ticket.wait_response(timeout=args.timeout)
-            print(f"Response: {response}")
+            print(f"Response status: {response.status}")
+            print(f"Error: {response.error}")
+            print(f"Content: {response.content}")
 
-            if response != {"echo": payload}:
+            if not response.ok or response.content != {"echo": payload}:
                 print("FAIL: response does not match the expected echo")
                 return 1
 
