@@ -92,8 +92,6 @@ enum Opcode : uint8_t {
   OP_GET_CONFIG = 0x10, OP_SET_CONFIG = 0x11,
   OP_RESET_CONFIG = 0x13, OP_TIME_SYNC = 0x14,
   OP_GET_ANTENNA_DELAYS = 0x15, OP_SET_ANTENNA_DELAYS = 0x16,
-  // Persistent configuration extensions. These keep NVS reads/writes separate
-  // from the runtime controls used by the ranging test page.
   OP_GET_SAVED_CONFIG = 0x17, OP_APPLY_SAVE_CONFIG = 0x18,
   OP_SAVE_ANTENNA_DELAYS = 0x19,
   OP_SET_ROLE = 0x20, OP_SET_TARGETS = 0x21, OP_GET_TARGETS = 0x22,
@@ -102,7 +100,7 @@ enum Opcode : uint8_t {
   OP_RANGE_ONCE = 0x27, OP_CANCEL_OPERATION = 0x28,
   OP_GET_LAST_RANGE = 0x30, OP_GET_HISTORY = 0x31,
   OP_SUBSCRIBE = 0x32, OP_UNSUBSCRIBE = 0x33,
-  OP_CLEAR_HISTORY = 0x34, OP_GET_DIAGNOSTICS = 0x35,
+  OP_GET_DIAGNOSTICS = 0x35,
   OP_GET_TRACE = 0x38,
   OP_UWB_SLEEP = 0x40, OP_UWB_WAKE = 0x41,
   OP_SYSTEM_SLEEP = 0x42, OP_REBOOT = 0x43,

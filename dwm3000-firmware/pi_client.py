@@ -34,7 +34,7 @@ OPS = {
     "set-schedule": 0x23, "get-schedule": 0x24, "start": 0x25,
     "stop": 0x26, "range-once": 0x27, "cancel": 0x28,
     "get-last": 0x30, "get-history": 0x31, "subscribe": 0x32,
-    "unsubscribe": 0x33, "clear-history": 0x34, "diagnostics": 0x35,
+    "unsubscribe": 0x33, "diagnostics": 0x35,
     "uwb-sleep": 0x40, "uwb-wake": 0x41, "system-sleep": 0x42,
     "reboot": 0x43,
     "set-peers": 0x50, "get-peers": 0x51, "start-ble": 0x52,
@@ -347,7 +347,7 @@ def parse_args():
     sub = ap.add_subparsers(dest="command", required=True)
     for name in ("ping", "get-info", "status", "stats", "clear-stats", "last-error", "get-config",
                  "get-saved-config", "reset-config", "get-ant-delays", "get-targets", "get-schedule", "start",
-                 "stop", "clear-history", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
+                 "stop", "diagnostics", "uwb-sleep", "uwb-wake", "reboot",
                  "get-peers", "start-ble", "stop-ble", "trace"):
         sub.add_parser(name)
     p = sub.add_parser("set-role"); p.add_argument("role", choices=ROLE_NAMES.values())
