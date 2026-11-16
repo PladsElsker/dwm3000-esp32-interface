@@ -7,7 +7,7 @@ from .exceptions import (
 )
 from .models import (
     ApplicationMessage, BleMessage, DeviceState, DistanceMeasurement,
-    RangeFailure, RuntimeConfig, SavedConfig, UwbHistoryPage, UwbSchedule,
+    RangeFailure, RuntimeConfig, SavedConfig, UwbHistoryPage,
 )
 from .comms import CommsTicket, IncomingRequest
 from .config import ConfigChange, ReconciliationAction, ReconciliationPlan
@@ -17,6 +17,6 @@ __all__ = [
     "RequestTimeout", "DeviceCommandError", "ReconciliationError",
     "ApplicationMessage", "BleMessage", "DeviceState", "DistanceMeasurement",
     "RangeFailure", "RuntimeConfig", "SavedConfig", "UwbHistoryPage",
-    "UwbSchedule", "CommsTicket", "IncomingRequest", "ConfigChange",
+    "CommsTicket", "IncomingRequest", "ConfigChange",
     "ReconciliationAction", "ReconciliationPlan",
 ]
