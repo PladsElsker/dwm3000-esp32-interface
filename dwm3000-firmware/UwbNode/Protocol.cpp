@@ -70,7 +70,7 @@ bool decodeFrame(const uint8_t *encoded, size_t encodedLen, Frame &out) {
   out.flags = raw[5];
   out.length = payloadLen;
   if (payloadLen) memcpy(out.payload, raw + HEADER_LEN, payloadLen);
-  return true;
+  return out.type == TYPE_REQUEST || out.type == TYPE_RESPONSE || out.type == TYPE_EVENT;
 }
 
 size_t encodeFrame(const Frame &frame, uint8_t *encoded, size_t capacity) {
@@ -86,7 +86,7 @@ size_t encodeFrame(const Frame &frame, uint8_t *encoded, size_t capacity) {
   putU16(raw + HEADER_LEN + frame.length, crc16(raw, HEADER_LEN + frame.length));
   const size_t n = cobsEncode(raw, HEADER_LEN + frame.length + 2, encoded, capacity - 1);
   if (!n || n >= capacity) return 0;
-  encoded[n] = 0; // delimiter
+  encoded[n] = 0;
   return n + 1;
 }
-} // namespace UwbProto
+}  // namespace UwbProto

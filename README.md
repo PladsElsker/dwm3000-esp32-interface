@@ -10,6 +10,7 @@ A project for UWB ranging and BLE messaging using an ESP32-C3 and DWM3000.
 | [D3KM](d3km/README.md) | Tauri 2 desktop application for configuring and monitoring a node | D3KM README |
 | [Hardware](dwm3000-board/README.md) | KiCad schematic, PCB and fabrication outputs | Hardware README |
 | [d3kble Python API](d3kble-api/README.md) | Python API, automated tests, examples, and hardware integration tests for ESP32-C3 / DWM3000 nodes | d3kble API README |
+| [Gazebo D3K simulator](simulation/gazebo/README.md) | Gazebo Harmonic system plugin emulating D3K UART, BLE messaging, and UWB ranging | Simulator README |
 
 ## System architecture
 
@@ -17,7 +18,9 @@ The ESP32-C3 runs the UWB node firmware and controls the DWM3000 radio. Host app
 
 BLE is handled by the node firmware. D3KM sends BLE operations over the serial host protocol; it does not connect directly to the node over BLE.
 
-The protocol reference is [dwm3000-firmware/PROTOCOL.md](dwm3000-firmware/PROTOCOL.md). Keep host implementations synchronized with it when changing firmware commands, events or payloads.
+The Gazebo simulator implements the same host-facing device boundary for virtual nodes. It exposes PTYs for the existing `d3kble` serial client and emulates BLE peer messaging and UWB ranging between simulated nodes. It is intended for integration tests and simulation, not physical RF validation.
+
+The protocol reference is [dwm3000-firmware/PROTOCOL.md](dwm3000-firmware/PROTOCOL.md). Keep host implementations and the Gazebo simulator synchronized with it when changing firmware commands, events or payloads.
 
 ## Repository layout
 
@@ -26,6 +29,7 @@ The protocol reference is [dwm3000-firmware/PROTOCOL.md](dwm3000-firmware/PROTOC
 - `d3km/` — Vue frontend and Tauri/Rust desktop backend
 - `d3kble-api/` — Python host API, automated tests, examples, and real-device manual hardware tests
 - `dwm3000-board/` — KiCad design and manufacturing files
+- `simulation/gazebo/` — Gazebo Sim 8 plugin and SDF examples for simulated D3K nodes
 
 ## Development workflow
 
@@ -34,5 +38,6 @@ The protocol reference is [dwm3000-firmware/PROTOCOL.md](dwm3000-firmware/PROTOC
 3. Connect a node through D3KM or the Python client.
 4. Configure distinct node IDs and compatible UWB/BLE peer settings.
 5. Validate serial communication, UWB ranging and BLE messaging independently.
+6. Use the Gazebo simulator for host-protocol and application integration testing without physical nodes.
 
 See each project README for its own setup and validation commands. Software tests do not establish hardware or RF performance.
