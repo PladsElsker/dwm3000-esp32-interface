@@ -142,15 +142,17 @@ deviation `<noise_stddev_m>`.
 
 ### Ranging error assumptions
 
-The default is intentionally a simple calibrated line-of-sight model, not a
-radio propagation simulation. The DW3000 datasheet reports, under LOS conditions,
-roughly ±6 cm ranging accuracy after calibration and 1.5 cm ranging standard
-deviation at -85 dBm. The simulator uses a per-node fixed residual bias limited
-to ±3 cm (so a pair's summed bias is limited to ±6 cm) and 1.5 cm Gaussian
-sample noise. These are broad default assumptions, not a claim that all
-installations achieve those figures. A fixed SDF bias and seed make tests
-repeatable. There is no NLOS/multipath, antenna orientation, temperature drift,
-frequency-offset or signal-strength model yet.
+The default is intentionally a simple calibrated line-of-sight error model,
+not a radio propagation simulation or a vendor accuracy guarantee. Each
+simulated node receives a fixed residual calibration bias bounded to ±3 cm;
+the pair's combined fixed bias is therefore bounded to ±6 cm. Each measurement
+also receives independent zero-mean Gaussian noise with a 1.5 cm standard
+deviation. These are pragmatic starting assumptions for integration testing of
+a correctly calibrated setup. They should be tuned against measurements from
+the actual board, antenna, mounting and environment before using simulation
+results as a quantitative hardware-performance prediction. A fixed SDF bias
+and seed make tests repeatable. There is no NLOS/multipath, antenna orientation,
+temperature drift, frequency-offset or signal-strength model yet.
 
 The `<range_model>` block is simulator-only configuration, not NVS. The UWB and
 BLE values inside `<nvs>` are the emulated saved configuration.
