@@ -1,0 +1,109 @@
+<?xml version="1.0"?>
+<sdf version="1.9">
+  <world name="d3k_two_node_test">
+    <physics name="1ms" type="ignore">
+      <max_step_size>0.001</max_step_size>
+      <real_time_factor>1.0</real_time_factor>
+    </physics>
+    <plugin filename="gz-sim-physics-system" name="gz::sim::systems::Physics"/>
+    <plugin filename="gz-sim-scene-broadcaster-system" name="gz::sim::systems::SceneBroadcaster"/>
+
+    <model name="plane_d3k">
+      <static>true</static>
+      <pose>0 0 1 0 0 0</pose>
+      <link name="uwb_antenna">
+        <gravity>false</gravity>
+        <visual name="antenna_marker">
+          <geometry><sphere><radius>0.025</radius></sphere></geometry>
+          <material><diffuse>0.1 0.3 0.9 1</diffuse></material>
+        </visual>
+      </link>
+      <plugin filename="libd3k_gazebo_system.so" name="d3k_sim::D3kNodeSystem">
+        <uart><pty_path>/tmp/d3k-plane</pty_path><baud_rate>460800</baud_rate></uart>
+        <reference_link>uwb_antenna</reference_link>
+        <nvs>
+          <uwb>
+            <device_id>1</device_id>
+            <pan_id>57034</pan_id>
+            <channel>5</channel>
+            <tx_antenna_delay>16385</tx_antenna_delay>
+            <rx_antenna_delay>16385</rx_antenna_delay>
+            <role>initiator</role>
+            <targets>2</targets>
+            <period_ms>100</period_ms>
+            <timeout_ms>120</timeout_ms>
+            <retries>1</retries>
+            <auto_start>true</auto_start>
+          </uwb>
+          <ble>
+            <mode>hub</mode>
+            <peer_ids>2</peer_ids>
+            <auto_start>true</auto_start>
+            <advertising_interval_ms>100</advertising_interval_ms>
+            <scan_interval_ms>100</scan_interval_ms>
+            <scan_window_ms>50</scan_window_ms>
+            <retry_interval_ms>1000</retry_interval_ms>
+            <connection_timeout_ms>5000</connection_timeout_ms>
+            <max_retries>3</max_retries>
+            <rx_message_timeout_ms>1000</rx_message_timeout_ms>
+          </ble>
+        </nvs>
+        <range_model>
+          <noise_stddev_m>0.015</noise_stddev_m>
+          <node_bias_limit_m>0.03</node_bias_limit_m>
+          <max_range_m>100.0</max_range_m>
+          <seed>0</seed>
+        </range_model>
+      </plugin>
+    </model>
+
+    <model name="payload_d3k">
+      <static>true</static>
+      <pose>2 0 0.2 0 0 0</pose>
+      <link name="uwb_antenna">
+        <gravity>false</gravity>
+        <visual name="antenna_marker">
+          <geometry><sphere><radius>0.025</radius></sphere></geometry>
+          <material><diffuse>0.1 0.8 0.2 1</diffuse></material>
+        </visual>
+      </link>
+      <plugin filename="libd3k_gazebo_system.so" name="d3k_sim::D3kNodeSystem">
+        <uart><pty_path>/tmp/d3k-payload</pty_path><baud_rate>460800</baud_rate></uart>
+        <reference_link>uwb_antenna</reference_link>
+        <nvs>
+          <uwb>
+            <device_id>2</device_id>
+            <pan_id>57034</pan_id>
+            <channel>5</channel>
+            <tx_antenna_delay>16385</tx_antenna_delay>
+            <rx_antenna_delay>16385</rx_antenna_delay>
+            <role>responder</role>
+            <targets>1</targets>
+            <period_ms>100</period_ms>
+            <timeout_ms>120</timeout_ms>
+            <retries>1</retries>
+            <auto_start>true</auto_start>
+          </uwb>
+          <ble>
+            <mode>peripheral</mode>
+            <peer_ids>1</peer_ids>
+            <auto_start>true</auto_start>
+            <advertising_interval_ms>100</advertising_interval_ms>
+            <scan_interval_ms>100</scan_interval_ms>
+            <scan_window_ms>50</scan_window_ms>
+            <retry_interval_ms>1000</retry_interval_ms>
+            <connection_timeout_ms>5000</connection_timeout_ms>
+            <max_retries>3</max_retries>
+            <rx_message_timeout_ms>1000</rx_message_timeout_ms>
+          </ble>
+        </nvs>
+        <range_model>
+          <noise_stddev_m>0.015</noise_stddev_m>
+          <node_bias_limit_m>0.03</node_bias_limit_m>
+          <max_range_m>100.0</max_range_m>
+          <seed>0</seed>
+        </range_model>
+      </plugin>
+    </model>
+  </world>
+</sdf>

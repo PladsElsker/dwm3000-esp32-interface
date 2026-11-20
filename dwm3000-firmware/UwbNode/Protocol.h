@@ -1,5 +1,7 @@
 #pragma once
-#include <Arduino.h>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace UwbProto {
 static constexpr uint8_t VERSION = 1;

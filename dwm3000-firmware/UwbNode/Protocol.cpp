@@ -1,5 +1,7 @@
 #include "Protocol.h"
 
+#include <string.h>
+
 namespace UwbProto {
 uint16_t crc16(const uint8_t *data, size_t len) {
   uint16_t crc = 0xFFFF;
