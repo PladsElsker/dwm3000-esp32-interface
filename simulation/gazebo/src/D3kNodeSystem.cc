@@ -1388,6 +1388,26 @@ class D3kNodeSystem final : public gz::sim::System,
     AppendU16(event, jobId);
     event.insert(event.end(), payload.begin(), payload.end());
     EmitEvent(0x80, event);
+
+    // The responder completes the same ranging exchange and keeps its own
+    // measurement record, with a local sequence number and clock timestamp.
+    Measurement responderMeasurement;
+    responderMeasurement.sampleSeq = target->AllocateSampleSequence();
+    responderMeasurement.targetId = runtime_.deviceId;
+    responderMeasurement.monotonicUs = ToUs(target->nowSimTimeNs_);
+    responderMeasurement.epochUs = target->clockSynchronized_ ? static_cast<uint64_t>(
+        static_cast<int64_t>(responderMeasurement.monotonicUs) + target->epochOffsetUs_) : 0;
+    responderMeasurement.rangeMm = measurement.rangeMm;
+    responderMeasurement.status = measurement.status;
+    responderMeasurement.qualityFlags = measurement.qualityFlags;
+    target->StoreMeasurement(responderMeasurement);
+    ++target->rangesOk_;
+
+    auto responderPayload = EncodeMeasurement(responderMeasurement);
+    std::vector<uint8_t> responderEvent;
+    AppendU16(responderEvent, 0);  // RANGE_ONCE job IDs belong to the initiator.
+    responderEvent.insert(responderEvent.end(), responderPayload.begin(), responderPayload.end());
+    target->EmitEvent(0x80, responderEvent);
   }
 
   void RecordRangeFailure(uint16_t targetId, uint16_t jobId, uint8_t status) {
