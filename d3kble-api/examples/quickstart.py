@@ -8,7 +8,7 @@ PEER_ID = 2
 
 
 def main():
-    with D3KNode(uart_device="/dev/ttyAMA2", baudrate=460800) as node:
+    with D3KNode(uart_device="/dev/ttyACM0", baudrate=460800) as node:
         distances = node.uwb.measurements.subscribe(maxsize=256)
 
         @node.comms.on_message
@@ -17,15 +17,13 @@ def main():
                 return
             print("application message:", message.payload)
 
-        node.comms.send(PEER_ID, {"operation": "status"})
-
-        # Requires an active UWB role, target list, and schedule on the device.
-        node.uwb.start_ranging()
-        while True:
-            measurement = distances.get(timeout=1.0)
+        @node.uwb.on_measurement
+        def handle_measurement(measurement):
             if measurement.valid:
                 print(measurement.target_id, measurement.distance_m)
 
+        ticket = node.comms.send(PEER_ID, {"operation": "status"})
+        ticket.wait(timeout=10)
 
 if __name__ == "__main__":
     main()
