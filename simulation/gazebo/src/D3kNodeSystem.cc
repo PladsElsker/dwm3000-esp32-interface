@@ -90,7 +90,27 @@ uint64_t ToUs(int64_t ns) {
 template <typename T>
 T SdfValue(const sdf::ElementPtr &parent, const std::string &name, const T &fallback) {
   if (!parent || !parent->HasElement(name)) return fallback;
-  return parent->Get<T>(name);
+
+  // SDFormat 14's ParamValue variant supports int, unsigned int, and
+  // unsigned long, but not fixed-width uint8_t / uint16_t types directly.
+  // Read into a supported type, then validate before narrowing.
+  if constexpr (std::is_same_v<T, uint8_t> ||
+                std::is_same_v<T, uint16_t> ||
+                std::is_same_v<T, uint32_t>) {
+    const unsigned int value = parent->Get<unsigned int>(name);
+    if (value > static_cast<unsigned int>(std::numeric_limits<T>::max())) {
+      throw std::runtime_error("SDF value '" + name + "' is out of range");
+    }
+    return static_cast<T>(value);
+  } else if constexpr (std::is_same_v<T, uint64_t>) {
+    const unsigned long value = parent->Get<unsigned long>(name);
+    if (value > static_cast<unsigned long>(std::numeric_limits<T>::max())) {
+      throw std::runtime_error("SDF value '" + name + "' is out of range");
+    }
+    return static_cast<T>(value);
+  } else {
+    return parent->Get<T>(name);
+  }
 }
 
 sdf::ElementPtr Child(const sdf::ElementPtr &parent, const std::string &name) {
@@ -1695,10 +1715,12 @@ class D3kNodeSystem final : public gz::sim::System,
   uint32_t bleEventQueueOverflows_ = 0;
 };
 
-GZ_ADD_PLUGIN(D3kNodeSystem,
-              gz::sim::System,
-              D3kNodeSystem::ISystemConfigure,
-              D3kNodeSystem::ISystemPostUpdate)
-GZ_ADD_PLUGIN_ALIAS(D3kNodeSystem, "d3k_sim::D3kNodeSystem")
-
 }  // namespace d3k_sim
+
+// Gazebo's registration macro defines helper symbols in gz::plugin. Keep it
+// at global scope so its namespace qualifiers are resolved as intended.
+GZ_ADD_PLUGIN(d3k_sim::D3kNodeSystem,
+              gz::sim::System,
+              d3k_sim::D3kNodeSystem::ISystemConfigure,
+              d3k_sim::D3kNodeSystem::ISystemPostUpdate)
+GZ_ADD_PLUGIN_ALIAS(d3k_sim::D3kNodeSystem, "d3k_sim::D3kNodeSystem")
