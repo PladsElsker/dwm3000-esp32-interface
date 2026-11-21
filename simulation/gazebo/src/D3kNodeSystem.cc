@@ -839,7 +839,7 @@ class D3kNodeSystem final : public gz::sim::System,
         foundPeers_.clear();
         nextPeriodicNs_.clear();
         CancelQueuedJobsLocked();
-        UpdateBleConnectionsLocked(lastSimTimeNs_);
+        UpdateBleConnectionsLocked();
         EmitStateChanged();
         EmitBleStateChanged();
         break;
@@ -1005,7 +1005,7 @@ class D3kNodeSystem final : public gz::sim::System,
         incomingMessages_.clear();
         outgoingMessages_.clear();
         foundPeers_.clear();
-        UpdateBleConnectionsLocked(lastSimTimeNs_);
+        UpdateBleConnectionsLocked();
         bleEnabled_ = runtime_.bleAutoStart;
         subscriptionMask_ = 0;
         replyCache_.clear();
