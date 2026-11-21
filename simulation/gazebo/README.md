@@ -26,8 +26,12 @@ Each plugin instance is one virtual D3K device:
   nodes, including peer allow-lists and peer state events. Application payloads
   remain opaque bytes. The plugin models the D3K custom GATT message lifecycle:
   DATA fragmentation, per-fragment ACK validation, reassembly, host consumption,
-  MESSAGE_RESULT acknowledgement, and expiry. It uses the existing UART BLE
-  commands/events; the Python `d3kble.comms` layer runs unchanged.
+  MESSAGE_RESULT acknowledgement, and expiry. Receive deadlines and result
+  retries use wall-clock time like firmware `millis()`, rather than Gazebo
+  simulation time. Queue-full / busy NACKs follow the configured retry budget,
+  and expiry produces the same receiver and sender events as firmware. It uses
+  the existing UART BLE commands/events; the Python `d3kble.comms` layer runs
+  unchanged.
 - Per-instance saved configuration initialized from SDF. This is the simulated
   NVS snapshot returned by `GET_SAVED_CONFIG`. Firmware commands that persist
   configuration update the in-memory snapshot for the lifetime of the Gazebo
@@ -36,7 +40,9 @@ Each plugin instance is one virtual D3K device:
 The BLE link is simulated in-process. It does **not** start NimBLE, create real
 GATT connections, use Bluetooth hardware, or test RF coexistence. Fragment
 transfers are lossless in this first version; the protocol packets and CRCs are
-modelled, but packet-loss/retry fault injection is not yet exposed.
+modelled, but packet-loss/retry fault injection is not yet exposed. Fragment
+pacing, unread-message deadlines, and message-result retries use wall-clock
+runtime, independently of the Gazebo update rate and world pause state.
 
 ## Build
 
@@ -53,8 +59,11 @@ ctest --test-dir build/d3k-gazebo --output-on-failure
 ```
 
 The build compiles the plugin and the firmware's shared UART frame codec. The
-codec test checks a documented PING wire vector and CRC rejection. Gazebo
-integration still needs to be run on a host with Gazebo Harmonic installed.
+codec test checks a documented PING wire vector and CRC rejection. The BLE
+protocol-model test covers NACK retry budgets, wall-clock receive expiry,
+MESSAGE_RESULT / acknowledgement framing, and sender/receiver event payloads.
+Gazebo end-to-end integration still needs to be run on a host with Gazebo
+Harmonic installed.
 
 ## Run the example
 
@@ -165,8 +174,11 @@ BLE values inside `<nvs>` are the emulated saved configuration.
   interference, or physical ATT MTU negotiation.
 - Virtual BLE messages are fragmented to the configured protocol's MTU payload
   size and pass through the firmware-style DATA / ACK / MESSAGE_RESULT lifecycle.
-  The first version assumes successful fragment delivery; simulated packet-loss
-  and retry fault injection is future work.
+  Fragment scheduling and protocol deadlines use elapsed runtime, not Gazebo
+  simulation time, so BLE continues while physics is paused. NACK retry budgets,
+  unread-message expiry, and sender/receiver result events follow firmware
+  behavior. The virtual radio assumes successful packet delivery; RF loss,
+  interference, and packet-loss fault injection are future work.
 - UWB uses direct Euclidean distance. Occlusion and multipath are not inferred
   from Gazebo collision geometry.
 - Simulated NVS writes are retained only while the Gazebo server process stays
