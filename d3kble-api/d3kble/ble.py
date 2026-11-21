@@ -37,6 +37,8 @@ class BleManager:
         self._rx_active: set[int] = set()
         self._rx_lock = threading.RLock()
         self._tickets: dict[tuple[int, int], Future] = {}
+        self._early_results: dict[tuple[int, int], tuple[float, dict]] = {}
+        self._early_result_limit = 128
         self._active_futures: set[Future] = set()
         self._ticket_lock = threading.RLock()
         self._running = threading.Event()
@@ -93,15 +95,25 @@ class BleManager:
                     message_id, = struct.unpack("<H", response)
                     key = (peer_id, message_id)
                     with self._ticket_lock:
-                        self._tickets[key] = future
+                        self._prune_early_results_locked(time.monotonic())
+                        early_result = self._early_results.pop(key, None)
+                        if early_result is None:
+                            self._tickets[key] = future
+                        elif not future.done():
+                            # The receiver can consume a very short message
+                            # before this worker is scheduled to register its
+                            # ticket. Preserve and apply that early 0x8D/0x8E.
+                            future.set_result(early_result[1])
                     try:
                         result = future.result(timeout=self.delivery_timeout)
                     except FutureTimeout as exc:
                         with self._ticket_lock:
-                            self._tickets.pop(key, None)
-                        raise RequestTimeout(
-                            f"BLE delivery result timed out for peer {peer_id}, message {message_id}"
-                        ) from exc
+                            if not future.done():
+                                self._tickets.pop(key, None)
+                                raise RequestTimeout(
+                                    f"BLE delivery result timed out for peer {peer_id}, message {message_id}"
+                                ) from exc
+                        result = future.result()
                     if not future.done():
                         future.set_result(result)
                 except Exception as exc:
@@ -121,6 +133,26 @@ class BleManager:
                         target=self._tx_worker, args=(peer_id,),
                         name=f"d3kble-ble-tx-{peer_id}", daemon=True,
                     ).start()
+
+    def _prune_early_results_locked(self, now: float) -> None:
+        expired = [
+            key
+            for key, (received_at, _result) in self._early_results.items()
+            if now - received_at > self.delivery_timeout
+        ]
+        for key in expired:
+            self._early_results.pop(key, None)
+
+    def _remember_early_result_locked(self, key: tuple[int, int], result: dict) -> None:
+        now = time.monotonic()
+        self._prune_early_results_locked(now)
+        if key not in self._early_results and len(self._early_results) >= self._early_result_limit:
+            oldest_key = min(
+                self._early_results,
+                key=lambda item: self._early_results[item][0],
+            )
+            self._early_results.pop(oldest_key, None)
+        self._early_results[key] = (now, result)
 
     def on_event(self, frame) -> None:
         if frame.opcode == 0x8B:
@@ -147,22 +179,28 @@ class BleManager:
                 self.rx_errors += 1
                 return
             peer_id, message_id = struct.unpack_from("<HH", frame.payload)
+            if frame.opcode == 0x8D:
+                total_length, = struct.unpack_from("<H", frame.payload, 4)
+                result = {
+                    "delivered": True, "peer_id": peer_id,
+                    "message_id": message_id, "total_length": total_length,
+                }
+                self.sent_count += 1
+            else:
+                result = {
+                    "delivered": False, "expired": True,
+                    "peer_id": peer_id, "message_id": message_id,
+                }
+                self.expired_count += 1
             with self._ticket_lock:
                 future = self._tickets.pop((peer_id, message_id), None)
-            if future and not future.done():
-                if frame.opcode == 0x8D:
-                    total_length, = struct.unpack_from("<H", frame.payload, 4)
-                    future.set_result({
-                        "delivered": True, "peer_id": peer_id,
-                        "message_id": message_id, "total_length": total_length,
-                    })
-                    self.sent_count += 1
-                else:
-                    future.set_result({
-                        "delivered": False, "expired": True,
-                        "peer_id": peer_id, "message_id": message_id,
-                    })
-                    self.expired_count += 1
+                if future is None:
+                    # TYPE_EVENT frames are dispatched independently from the
+                    # SEND_TO_PEER response. An immediate delivery result can
+                    # therefore beat registration of its Future in _tx_worker.
+                    self._remember_early_result_locked((peer_id, message_id), result)
+                elif not future.done():
+                    future.set_result(result)
         else:
             name = {
                 0x86: "ble_state_changed", 0x87: "ble_peer_found",
@@ -236,6 +274,7 @@ class BleManager:
         with self._ticket_lock:
             pending = list(self._tickets.values()) + list(self._active_futures)
             self._tickets.clear()
+            self._early_results.clear()
             self._active_futures.clear()
         for future in set(pending):
             if not future.done():
