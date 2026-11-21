@@ -1,6 +1,7 @@
 """Firmware BLE transport adapter with per-peer send and receive queues."""
 from __future__ import annotations
 
+from collections import OrderedDict
 import queue
 import struct
 import threading
@@ -39,6 +40,12 @@ class BleManager:
         self._tickets: dict[tuple[int, int], Future] = {}
         self._active_futures: set[Future] = set()
         self._ticket_lock = threading.RLock()
+        # A delivery event can reach the event-router thread before the TX
+        # worker registers the firmware-assigned message ID. Retain such
+        # results briefly so that this scheduling race cannot lose them.
+        self._early_results: OrderedDict[tuple[int, int], tuple[float, dict]] = OrderedDict()
+        self._early_result_cache_size = 128
+        self._early_result_cache_ttl = max(1.0, self.delivery_timeout * 2.0)
         self._running = threading.Event()
         self.on_message = None
         self.sent_count = 0
@@ -70,6 +77,44 @@ class BleManager:
                 ).start()
         return BleSendTicket(peer_id, future)
 
+    def _prune_early_results_locked(self, now: float | None = None) -> None:
+        now = time.monotonic() if now is None else now
+        while self._early_results:
+            _key, (created_at, _result) = next(iter(self._early_results.items()))
+            if now - created_at <= self._early_result_cache_ttl:
+                break
+            self._early_results.popitem(last=False)
+
+    def _cache_early_result_locked(
+        self, key: tuple[int, int], result: dict, now: float
+    ) -> None:
+        self._early_results[key] = (now, result)
+        self._early_results.move_to_end(key)
+        while len(self._early_results) > self._early_result_cache_size:
+            self._early_results.popitem(last=False)
+
+    def _count_delivery_result(self, result: dict) -> None:
+        if result.get("delivered"):
+            self.sent_count += 1
+        else:
+            self.expired_count += 1
+
+    def _register_ticket(self, key: tuple[int, int], future: Future) -> None:
+        with self._ticket_lock:
+            now = time.monotonic()
+            self._prune_early_results_locked(now)
+            cached = self._early_results.pop(key, None)
+            if cached is None:
+                self._tickets[key] = future
+                return
+
+        # Resolve outside the lock: Future callbacks run synchronously and may
+        # call back into the BLE manager.
+        result = cached[1]
+        if not future.done():
+            future.set_result(result)
+            self._count_delivery_result(result)
+
     def _tx_worker(self, peer_id: int):
         q = self._tx_queues[peer_id]
         try:
@@ -92,13 +137,13 @@ class BleManager:
                         raise ValueError("SEND_TO_PEER response must contain a uint16 message ID")
                     message_id, = struct.unpack("<H", response)
                     key = (peer_id, message_id)
-                    with self._ticket_lock:
-                        self._tickets[key] = future
+                    self._register_ticket(key, future)
                     try:
                         result = future.result(timeout=self.delivery_timeout)
                     except FutureTimeout as exc:
                         with self._ticket_lock:
-                            self._tickets.pop(key, None)
+                            if self._tickets.get(key) is future:
+                                self._tickets.pop(key, None)
                         raise RequestTimeout(
                             f"BLE delivery result timed out for peer {peer_id}, message {message_id}"
                         ) from exc
@@ -147,22 +192,30 @@ class BleManager:
                 self.rx_errors += 1
                 return
             peer_id, message_id = struct.unpack_from("<HH", frame.payload)
+            if frame.opcode == 0x8D:
+                total_length, = struct.unpack_from("<H", frame.payload, 4)
+                result = {
+                    "delivered": True, "peer_id": peer_id,
+                    "message_id": message_id, "total_length": total_length,
+                }
+            else:
+                result = {
+                    "delivered": False, "expired": True,
+                    "peer_id": peer_id, "message_id": message_id,
+                }
+
+            key = (peer_id, message_id)
             with self._ticket_lock:
-                future = self._tickets.pop((peer_id, message_id), None)
-            if future and not future.done():
-                if frame.opcode == 0x8D:
-                    total_length, = struct.unpack_from("<H", frame.payload, 4)
-                    future.set_result({
-                        "delivered": True, "peer_id": peer_id,
-                        "message_id": message_id, "total_length": total_length,
-                    })
-                    self.sent_count += 1
-                else:
-                    future.set_result({
-                        "delivered": False, "expired": True,
-                        "peer_id": peer_id, "message_id": message_id,
-                    })
-                    self.expired_count += 1
+                now = time.monotonic()
+                self._prune_early_results_locked(now)
+                future = self._tickets.pop(key, None)
+                if future is None:
+                    # SEND_TO_PEER's response and its delivery event are read
+                    # on independent host threads. The event may win this race.
+                    self._cache_early_result_locked(key, result, now)
+            if future is not None and not future.done():
+                future.set_result(result)
+                self._count_delivery_result(result)
         else:
             name = {
                 0x86: "ble_state_changed", 0x87: "ble_peer_found",
@@ -236,6 +289,7 @@ class BleManager:
         with self._ticket_lock:
             pending = list(self._tickets.values()) + list(self._active_futures)
             self._tickets.clear()
+            self._early_results.clear()
             self._active_futures.clear()
         for future in set(pending):
             if not future.done():

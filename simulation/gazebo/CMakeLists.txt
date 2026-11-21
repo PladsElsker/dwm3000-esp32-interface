@@ -45,4 +45,15 @@ if(BUILD_TESTING)
   target_include_directories(d3k_protocol_codec_test PRIVATE "${D3K_FIRMWARE_DIR}")
   target_compile_features(d3k_protocol_codec_test PRIVATE cxx_std_17)
   add_test(NAME d3k_protocol_codec_test COMMAND d3k_protocol_codec_test)
+
+  add_executable(d3k_ble_protocol_model_test
+    tests/BleProtocolModelTest.cpp
+    ${D3K_FIRMWARE_DIR}/Protocol.cpp
+  )
+  target_include_directories(d3k_ble_protocol_model_test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${D3K_FIRMWARE_DIR}"
+  )
+  target_compile_features(d3k_ble_protocol_model_test PRIVATE cxx_std_17)
+  add_test(NAME d3k_ble_protocol_model_test COMMAND d3k_ble_protocol_model_test)
 endif()

@@ -4,6 +4,7 @@
 #include <cerrno>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <cstdint>
 #include <cstring>
 #include <deque>
@@ -37,6 +38,7 @@
 #include <sdf/Element.hh>
 
 #include "Protocol.h"
+#include "BleProtocolModel.hh"
 
 namespace d3k_sim {
 class D3kNodeSystem;
@@ -85,6 +87,15 @@ int64_t ToNs(const std::chrono::steady_clock::duration &duration) {
 
 uint64_t ToUs(int64_t ns) {
   return ns <= 0 ? 0 : static_cast<uint64_t>(ns / 1000);
+}
+
+bool EnvironmentFlagEnabled(const char *name) {
+  const char *value = std::getenv(name);
+  if (value == nullptr) return false;
+  const std::string setting(value);
+  return setting == "1" || setting == "true" || setting == "TRUE" ||
+         setting == "yes" || setting == "YES" || setting == "on" ||
+         setting == "ON";
 }
 
 template <typename T>
@@ -231,7 +242,15 @@ struct IncomingMessage {
   uint16_t messageId = 0;
   uint16_t peerId = 0;
   std::vector<uint8_t> data;
-  int64_t completedAtNs = 0;
+  std::chrono::steady_clock::time_point completedAt{};
+};
+
+struct PendingMessageResult {
+  uint16_t messageId = 0;
+  uint8_t status = 0;
+  uint8_t retryCount = 0;
+  bool initialAttemptPending = true;
+  std::chrono::steady_clock::time_point lastActionAt{};
 };
 
 struct OutgoingMessage {
@@ -240,9 +259,10 @@ struct OutgoingMessage {
   std::vector<uint8_t> data;
   uint8_t fragmentCount = 1;
   uint8_t nextFragment = 0;
-  int64_t lastFragmentAtNs = 0;
+  uint8_t retryCount = 0;
+  uint8_t resultRetryCount = 0;
+  std::chrono::steady_clock::time_point lastFragmentAt{};
   bool waitingForConsumption = false;
-  int64_t completedAtNs = 0;
 };
 
 struct CachedReply {
@@ -409,6 +429,8 @@ class D3kNodeSystem final : public gz::sim::System,
             << " UART PTY=" << uartPath_ << "\n";
       gzmsg << "D3K simulated node '" << modelName_ << "' ranging bias=" << nodeBiasM_
             << " m, measurement noise sigma=" << noiseStddevM_ << " m\n";
+      if (bleTraceLogging_)
+        gzmsg << "D3K BLE trace enabled for model '" << modelName_ << "' device_id=" << runtime_.deviceId << "\n";
     } catch (const std::exception &error) {
       gzerr << "D3K simulator plugin on model '" << modelName_ << "' failed to configure: "
             << error.what() << "\n";
@@ -475,6 +497,7 @@ class D3kNodeSystem final : public gz::sim::System,
     saved_.bleConnectionTimeoutMs = SdfValue<uint16_t>(ble, "connection_timeout_ms", 5000);
     saved_.bleMaxRetries = SdfValue<uint8_t>(ble, "max_retries", 3);
     saved_.bleRxMessageTimeoutMs = SdfValue<uint16_t>(ble, "rx_message_timeout_ms", 1000);
+    bleTraceLogging_ = SdfValue<bool>(ble, "trace_logging", EnvironmentFlagEnabled("D3K_GAZEBO_BLE_TRACE"));
     saved_.blePeers = ParseIds(SdfValue<std::string>(ble, "peer_ids", ""));
     if (!ValidateConfig(saved_)) throw std::runtime_error("SDF NVS configuration violates firmware limits");
     runtime_ = saved_;
@@ -610,6 +633,17 @@ class D3kNodeSystem final : public gz::sim::System,
           }
         }
       }
+      {
+        // The firmware services BLE from its MCU loop, independently of UWB.
+        // Use the same elapsed-runtime clock for virtual fragments, receive
+        // expiry, and MESSAGE_RESULT retries; do not depend on Gazebo stepping.
+        std::lock_guard<std::mutex> lock(NetworkMutex());
+        const auto now = std::chrono::steady_clock::now();
+        UpdateBleConnectionsLocked();
+        TickBleTransfersLocked(now);
+        TickBleExpiryLocked(now);
+        TickBleResultTransactionsLocked(now);
+      }
       FlushOutbound();
     }
     FlushOutbound();
@@ -640,6 +674,8 @@ class D3kNodeSystem final : public gz::sim::System,
       if (written < 0 && (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR)) return;
       // EIO means no slave has the PTY open. Drop queued telemetry so a host
       // that connects later starts with current state rather than stale events.
+      BleTrace("pty_outbound_dropped", "errno=", errno,
+               " queued_frames=", outbound_.size(), " front_offset=", outboundOffset_);
       outbound_.clear();
       outboundOffset_ = 0;
       return;
@@ -818,7 +854,7 @@ class D3kNodeSystem final : public gz::sim::System,
         foundPeers_.clear();
         nextPeriodicNs_.clear();
         CancelQueuedJobsLocked();
-        UpdateBleConnectionsLocked(lastSimTimeNs_);
+        UpdateBleConnectionsLocked();
         EmitStateChanged();
         EmitBleStateChanged();
         break;
@@ -984,7 +1020,7 @@ class D3kNodeSystem final : public gz::sim::System,
         incomingMessages_.clear();
         outgoingMessages_.clear();
         foundPeers_.clear();
-        UpdateBleConnectionsLocked(lastSimTimeNs_);
+        UpdateBleConnectionsLocked();
         bleEnabled_ = runtime_.bleAutoStart;
         subscriptionMask_ = 0;
         replyCache_.clear();
@@ -1175,12 +1211,29 @@ class D3kNodeSystem final : public gz::sim::System,
     uint16_t peerId = 0, dataLength = 0;
     if (!ReadU16(p, n, 0, peerId) || !ReadU16(p, n, 2, dataLength) ||
         dataLength > kMaxBleMessageLength || n != static_cast<size_t>(4 + dataLength)) {
+      BleTrace("send_rejected", "reason=bad_argument request_bytes=", n,
+               " parsed_peer_id=", peerId, " parsed_data_length=", dataLength,
+               " max_data_length=", kMaxBleMessageLength);
       error = kErrBadArgument;
       return;
     }
-    if (!connectedPeers_.count(peerId)) { error = kErrBadState; return; }
+    if (!connectedPeers_.count(peerId)) {
+      BleTrace("send_rejected", "reason=peer_not_connected peer_id=", peerId,
+               " connected_peer_count=", connectedPeers_.size());
+      error = kErrBadState;
+      return;
+    }
     for (const auto &entry : outgoingMessages_) {
-      if (entry.second.peerId == peerId) { error = kErrBusy; return; }
+      if (entry.second.peerId == peerId) {
+        BleTrace("send_rejected", "reason=peer_busy peer_id=", peerId,
+                 " active_message_id=", entry.second.messageId,
+                 " next_fragment=", static_cast<unsigned>(entry.second.nextFragment),
+                 " fragment_count=", static_cast<unsigned>(entry.second.fragmentCount),
+                 " waiting_for_consumption=", entry.second.waitingForConsumption,
+                 " result_retry_count=", static_cast<unsigned>(entry.second.resultRetryCount));
+        error = kErrBusy;
+        return;
+      }
     }
     const uint16_t messageId = nextMessageId_++;
     OutgoingMessage message;
@@ -1188,40 +1241,60 @@ class D3kNodeSystem final : public gz::sim::System,
     message.peerId = peerId;
     message.data.assign(p + 4, p + 4 + dataLength);
     message.fragmentCount = static_cast<uint8_t>(std::max<size_t>(1, (dataLength + kBleFragmentPayload - 1) / kBleFragmentPayload));
-    message.lastFragmentAtNs = lastSimTimeNs_;
+    message.lastFragmentAt = std::chrono::steady_clock::now();
+    const uint8_t fragmentCount = message.fragmentCount;
     outgoingMessages_[messageId] = std::move(message);
+    BleTrace("send_accepted", "peer_id=", peerId, " message_id=", messageId,
+             " data_bytes=", dataLength, " fragment_count=", static_cast<unsigned>(fragmentCount),
+             " active_outgoing_count=", outgoingMessages_.size());
     AppendU16(out, messageId);
   }
 
   void HandleGetReceivedData(const uint8_t *p, size_t n, uint8_t &error, std::vector<uint8_t> &out) {
     uint16_t peerId = 0, messageId = 0;
     if (!ReadU16(p, n, 0, peerId) || !ReadU16(p, n, 2, messageId) || n != 4) {
+      BleTrace("get_data_rejected", "reason=bad_argument request_bytes=", n);
       error = kErrBadArgument;
       return;
     }
     const IncomingKey key{peerId, messageId};
     auto incoming = incomingMessages_.find(key);
-    if (incoming == incomingMessages_.end()) { error = kErrNotFound; return; }
+    if (incoming == incomingMessages_.end()) {
+      BleTrace("get_data_rejected", "reason=message_not_found sender_peer_id=", peerId,
+               " message_id=", messageId, " incoming_count=", incomingMessages_.size());
+      error = kErrNotFound;
+      return;
+    }
     const auto data = incoming->second.data;
+    const auto now = std::chrono::steady_clock::now();
+    const auto messageAgeMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        now - incoming->second.completedAt).count();
+    const auto previousResult = pendingMessageResults_.find(peerId);
+    if (previousResult != pendingMessageResults_.end()) {
+      BleTrace("pending_result_replaced", "sender_peer_id=", peerId,
+               " old_message_id=", previousResult->second.messageId,
+               " new_message_id=", messageId,
+               " old_status=", static_cast<unsigned>(previousResult->second.status));
+    }
+    BleTrace("get_data_consumed", "sender_peer_id=", peerId, " message_id=", messageId,
+             " data_bytes=", data.size(), " message_age_ms=", messageAgeMs,
+             " pending_result_count=", pendingMessageResults_.size());
     AppendU16(out, messageId);
     AppendU16(out, static_cast<uint16_t>(data.size()));
     out.insert(out.end(), data.begin(), data.end());
     incomingMessages_.erase(incoming);
 
-    auto source = NetworkNodes().find(peerId);
-    if (source != NetworkNodes().end()) {
-      auto pending = source->second->outgoingMessages_.find(messageId);
-      if (pending != source->second->outgoingMessages_.end() && pending->second.peerId == runtime_.deviceId &&
-          source->second->ValidateVirtualBleConsumption(messageId)) {
-        std::vector<uint8_t> event;
-        AppendU16(event, runtime_.deviceId);
-        AppendU16(event, messageId);
-        AppendU16(event, static_cast<uint16_t>(data.size()));
-        source->second->EmitEvent(0x8D, event);
-        source->second->outgoingMessages_.erase(pending);
-        ++source->second->bleMessagesSent_;
-      }
-    }
+    // GET_RECEIVED_DATA starts the firmware's MESSAGE_RESULT(CONSUMED)
+    // transaction. The virtual BLE link is lossless, but the result and its
+    // acknowledgement still pass through the same peer/message correlation
+    // and sender-side completion path as the firmware.
+    PendingMessageResult result;
+    result.messageId = messageId;
+    result.status = 0;  // CONSUMED
+    result.lastActionAt = now;
+    pendingMessageResults_[peerId] = result;
+    BleTrace("message_result_created", "sender_peer_id=", peerId, " message_id=", messageId,
+             " status=CONSUMED(0) initial_attempt_pending=1 retry_count=0");
   }
 
   void HandleGetLastRange(uint16_t filter, std::vector<uint8_t> &out) {
@@ -1308,10 +1381,7 @@ class D3kNodeSystem final : public gz::sim::System,
       entry.second->lastSimTimeNs_ = nowNs;
       entry.second->nowSimTimeNs_ = nowNs;
     }
-    UpdateBleConnectionsLocked(nowNs);
     for (auto &entry : NetworkNodes()) entry.second->TickUwbLocked(nowNs);
-    for (auto &entry : NetworkNodes()) entry.second->TickBleTransfersLocked(nowNs);
-    for (auto &entry : NetworkNodes()) entry.second->TickBleExpiryLocked(nowNs);
   }
 
   void TickUwbLocked(int64_t nowNs) {
@@ -1445,8 +1515,7 @@ class D3kNodeSystem final : public gz::sim::System,
     history_.push_back(measurement);
   }
 
-  void UpdateBleConnectionsLocked(int64_t nowNs) {
-    (void)nowNs;
+  void UpdateBleConnectionsLocked() {
     std::map<D3kNodeSystem *, std::set<uint16_t>> desired;
     for (const auto &localEntry : NetworkNodes()) {
       auto *local = localEntry.second;
@@ -1475,6 +1544,8 @@ class D3kNodeSystem final : public gz::sim::System,
             AppendU16(foundEvent, peer);
             node->EmitEvent(0x87, foundEvent);
           }
+          node->BleTrace("peer_connected", "peer_id=", peer,
+                         " local_mode=", static_cast<unsigned>(node->runtime_.bleMode));
           node->connectedPeers_.insert(peer);
           std::vector<uint8_t> connectedEvent;
           AppendU16(connectedEvent, peer);
@@ -1486,6 +1557,9 @@ class D3kNodeSystem final : public gz::sim::System,
         if (!newPeers.count(peer)) lost.push_back(peer);
       for (uint16_t peer : lost) {
         node->connectedPeers_.erase(peer);
+        node->BleTrace("peer_disconnected", "peer_id=", peer,
+                       " outgoing_count=", node->outgoingMessages_.size(),
+                       " incoming_count=", node->incomingMessages_.size());
         std::vector<uint8_t> disconnectedEvent;
         AppendU16(disconnectedEvent, peer);
         disconnectedEvent.push_back(0);
@@ -1498,6 +1572,11 @@ class D3kNodeSystem final : public gz::sim::System,
   void FailTransfersForPeerLocked(uint16_t peerId) {
     for (auto it = outgoingMessages_.begin(); it != outgoingMessages_.end();) {
       if (it->second.peerId == peerId) {
+        BleTrace("outgoing_transfer_aborted", "reason=peer_disconnected peer_id=", peerId,
+                 " message_id=", it->second.messageId,
+                 " next_fragment=", static_cast<unsigned>(it->second.nextFragment),
+                 " fragment_count=", static_cast<unsigned>(it->second.fragmentCount),
+                 " waiting_for_consumption=", it->second.waitingForConsumption);
         ++bleTxErrors_;
         it = outgoingMessages_.erase(it);
       } else {
@@ -1508,51 +1587,111 @@ class D3kNodeSystem final : public gz::sim::System,
       if (it->first.peerId == peerId) it = incomingMessages_.erase(it);
       else ++it;
     }
+    const auto pending = pendingMessageResults_.find(peerId);
+    if (pending != pendingMessageResults_.end()) {
+      BleTrace("pending_result_aborted", "reason=peer_disconnected sender_peer_id=", peerId,
+               " message_id=", pending->second.messageId);
+    }
+    pendingMessageResults_.erase(peerId);
   }
 
-  void TickBleTransfersLocked(int64_t nowNs) {
+  void TickBleTransfersLocked(std::chrono::steady_clock::time_point now) {
     for (auto it = outgoingMessages_.begin(); it != outgoingMessages_.end();) {
       auto &message = it->second;
-      if (message.waitingForConsumption) { ++it; continue; }
+      if (message.waitingForConsumption) {
+        // The firmware sender independently waits for MESSAGE_RESULT_ACK,
+        // retrying its result wait at RESULT_TIMEOUT_MS up to max_retries.
+        if (!ble::MessageResultRetryDue(message.lastFragmentAt, now)) {
+          ++it;
+          continue;
+        }
+        if (message.resultRetryCount >= runtime_.bleMaxRetries) {
+          BleTrace("sender_result_wait_exhausted", "peer_id=", message.peerId,
+                   " message_id=", message.messageId,
+                   " retry_count=", static_cast<unsigned>(message.resultRetryCount),
+                   " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+          EmitBleMessageError(0, message.peerId, message.messageId, 0xFF, 9);
+          it = outgoingMessages_.erase(it);
+        } else {
+          ++message.resultRetryCount;
+          message.lastFragmentAt = now;
+          BleTrace("sender_result_wait_retry", "peer_id=", message.peerId,
+                   " message_id=", message.messageId,
+                   " retry_count=", static_cast<unsigned>(message.resultRetryCount),
+                   " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+          ++it;
+        }
+        continue;
+      }
       auto peer = NetworkNodes().find(message.peerId);
       if (!connectedPeers_.count(message.peerId) || peer == NetworkNodes().end()) {
+        BleTrace("fragment_send_aborted", "reason=peer_unavailable peer_id=", message.peerId,
+                 " message_id=", message.messageId,
+                 " connected=", connectedPeers_.count(message.peerId) != 0,
+                 " peer_registered=", peer != NetworkNodes().end());
         ++bleTxErrors_;
         it = outgoingMessages_.erase(it);
         continue;
       }
-      if (nowNs - message.lastFragmentAtNs < 1000000LL) { ++it; continue; }
-      const size_t offset = static_cast<size_t>(message.nextFragment) * kBleFragmentPayload;
-      const size_t fragmentLength = std::min(kBleFragmentPayload, message.data.size() - std::min(offset, message.data.size()));
-      if (!ValidateVirtualBleFragment(message, fragmentLength)) {
-        ++bleTxErrors_;
-        it = outgoingMessages_.erase(it);
-        continue;
-      }
-      ++message.nextFragment;
-      message.lastFragmentAtNs = nowNs;
-      if (message.nextFragment >= message.fragmentCount) {
-        auto *receiver = peer->second;
-        const IncomingKey key{runtime_.deviceId, message.messageId};
-        bool peerHasUnread = std::any_of(receiver->incomingMessages_.begin(), receiver->incomingMessages_.end(),
-            [this](const auto &candidate) { return candidate.first.peerId == runtime_.deviceId; });
-        if (peerHasUnread) {
-          ++bleTxErrors_;
-          ++receiver->bleRxErrors_;
-          std::vector<uint8_t> bleError{0};
-          AppendU16(bleError, receiver->runtime_.deviceId);
-          AppendU16(bleError, message.messageId);
-          bleError.push_back(static_cast<uint8_t>(message.fragmentCount - 1));
-          bleError.push_back(1);  // RX_QUEUE_FULL
-          bleError.push_back(0);
-          EmitEvent(0x8C, bleError);
+      if (!ble::FragmentIntervalElapsed(message.lastFragmentAt, now)) { ++it; continue; }
+
+      // The firmware rejects the first fragment while a completed message is
+      // unread (RX_QUEUE_FULL), or while a MESSAGE_RESULT is outstanding
+      // (RX_BUSY). Its sender retries the NACK up to max_retries. The virtual
+      // link is lossless, so model those deterministic NACK/retry cycles
+      // without introducing radio packet loss.
+      const bool resultPending =
+          peer->second->pendingMessageResults_.count(runtime_.deviceId) != 0;
+      const bool peerHasUnread = std::any_of(
+          peer->second->incomingMessages_.begin(), peer->second->incomingMessages_.end(),
+          [this](const auto &candidate) { return candidate.first.peerId == runtime_.deviceId; });
+      if (message.nextFragment == 0 && (resultPending || peerHasUnread)) {
+        const uint8_t nackCode = resultPending ? 2 : 1;  // RX_BUSY / RX_QUEUE_FULL
+        if (!ble::ShouldRetryNack(message.retryCount, runtime_.bleMaxRetries)) {
+          BleTrace("fragment_nack_exhausted", "peer_id=", message.peerId,
+                   " message_id=", message.messageId,
+                   " nack=", (nackCode == 2 ? "RX_BUSY" : "RX_QUEUE_FULL"),
+                   " retry_count=", static_cast<unsigned>(message.retryCount),
+                   " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+          EmitBleMessageError(0, message.peerId, message.messageId, 0, nackCode);
           it = outgoingMessages_.erase(it);
           continue;
         }
+        message.lastFragmentAt = now;
+        BleTrace("fragment_nack_retry", "peer_id=", message.peerId,
+                 " message_id=", message.messageId,
+                 " nack=", (nackCode == 2 ? "RX_BUSY" : "RX_QUEUE_FULL"),
+                 " retry_count=", static_cast<unsigned>(message.retryCount),
+                 " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+        ++it;
+        continue;
+      }
+
+      const size_t offset = static_cast<size_t>(message.nextFragment) * kBleFragmentPayload;
+      const size_t fragmentLength = std::min(kBleFragmentPayload, message.data.size() - std::min(offset, message.data.size()));
+      if (!ValidateVirtualBleFragment(message, fragmentLength)) {
+        BleTrace("fragment_validation_failed", "peer_id=", message.peerId,
+                 " message_id=", message.messageId,
+                 " fragment_index=", static_cast<unsigned>(message.nextFragment),
+                 " fragment_count=", static_cast<unsigned>(message.fragmentCount));
+        ++bleTxErrors_;
+        it = outgoingMessages_.erase(it);
+        continue;
+      }
+      BleTrace("fragment_tx", "peer_id=", message.peerId, " message_id=", message.messageId,
+               " fragment_index=", static_cast<unsigned>(message.nextFragment),
+               " fragment_count=", static_cast<unsigned>(message.fragmentCount),
+               " fragment_bytes=", fragmentLength, " total_bytes=", message.data.size());
+      ++message.nextFragment;
+      message.lastFragmentAt = now;
+      if (message.nextFragment >= message.fragmentCount) {
+        auto *receiver = peer->second;
+        const IncomingKey key{runtime_.deviceId, message.messageId};
         IncomingMessage incoming;
         incoming.messageId = message.messageId;
         incoming.peerId = runtime_.deviceId;
         incoming.data = message.data;
-        incoming.completedAtNs = nowNs;
+        incoming.completedAt = now;
         receiver->incomingMessages_[key] = std::move(incoming);
         ++receiver->bleMessagesReceived_;
         std::vector<uint8_t> receivedEvent;
@@ -1560,8 +1699,14 @@ class D3kNodeSystem final : public gz::sim::System,
         AppendU16(receivedEvent, message.messageId);
         AppendU16(receivedEvent, static_cast<uint16_t>(message.data.size()));
         receiver->EmitEvent(0x8B, receivedEvent);
+        receiver->BleTrace("message_reassembled", "sender_peer_id=", runtime_.deviceId,
+                           " message_id=", message.messageId,
+                           " data_bytes=", message.data.size(),
+                           " fragment_count=", static_cast<unsigned>(message.fragmentCount));
         message.waitingForConsumption = true;
-        message.completedAtNs = nowNs;
+        BleTrace("sender_waiting_for_consumption", "peer_id=", message.peerId,
+                 " message_id=", message.messageId,
+                 " retry_deadline_ms=", ble::kMessageResultTimeoutMs);
       }
       ++it;
     }
@@ -1596,46 +1741,184 @@ class D3kNodeSystem final : public gz::sim::System,
     return UwbProto::crc16(ack.data(), ack.size() - 2) == UwbProto::getU16(ack.data() + ack.size() - 2);
   }
 
-  bool ValidateVirtualBleConsumption(uint16_t messageId) const {
-    // MESSAGE_RESULT(CONSUMED) and MESSAGE_RESULT_ACK complete the custom BLE
-    // link protocol after the receiving host consumes GET_RECEIVED_DATA.
-    std::vector<uint8_t> result{0x04};
-    AppendU16(result, messageId);
-    result.push_back(0);  // CONSUMED
-    AppendU16(result, UwbProto::crc16(result.data(), result.size()));
-    const bool resultValid = UwbProto::crc16(result.data(), result.size() - 2) ==
-        UwbProto::getU16(result.data() + result.size() - 2);
-    std::vector<uint8_t> ack{0x05};
-    AppendU16(ack, messageId);
-    AppendU16(ack, UwbProto::crc16(ack.data(), ack.size()));
-    const bool ackValid = UwbProto::crc16(ack.data(), ack.size() - 2) ==
-        UwbProto::getU16(ack.data() + ack.size() - 2);
-    return resultValid && ackValid;
+  void EmitBleMessageError(uint8_t direction, uint16_t peerId, uint16_t messageId,
+                           uint8_t fragmentIndex, uint8_t errorCode) {
+    BleTrace("ble_message_error", "direction=", static_cast<unsigned>(direction),
+             " peer_id=", peerId, " message_id=", messageId,
+             " fragment_index=", static_cast<unsigned>(fragmentIndex),
+             " error_code=", static_cast<unsigned>(errorCode));
+    EmitEvent(0x8C, ble::BuildErrorPayload(
+        direction, peerId, messageId, fragmentIndex, errorCode));
+    if (direction == 0) ++bleTxErrors_;
+    else ++bleRxErrors_;
   }
 
-  void TickBleExpiryLocked(int64_t nowNs) {
-    for (auto it = incomingMessages_.begin(); it != incomingMessages_.end();) {
-      const auto key = it->first;
-      const auto &message = it->second;
-      const int64_t timeoutNs = static_cast<int64_t>(runtime_.bleRxMessageTimeoutMs) * 1000000LL;
-      if (nowNs - message.completedAtNs < timeoutNs) { ++it; continue; }
-      std::vector<uint8_t> expiredEvent;
-      AppendU16(expiredEvent, message.peerId);
-      AppendU16(expiredEvent, message.messageId);
-      EmitEvent(0x8E, expiredEvent);
-      auto sender = NetworkNodes().find(message.peerId);
-      if (sender != NetworkNodes().end()) {
-        auto outgoing = sender->second->outgoingMessages_.find(message.messageId);
-        if (outgoing != sender->second->outgoingMessages_.end()) {
-          std::vector<uint8_t> senderExpired;
-          AppendU16(senderExpired, runtime_.deviceId);
-          AppendU16(senderExpired, message.messageId);
-          sender->second->EmitEvent(0x8E, senderExpired);
-          sender->second->outgoingMessages_.erase(outgoing);
+  bool DeliverPendingMessageResultLocked(uint16_t senderId,
+                                         const PendingMessageResult &result) {
+    auto sender = NetworkNodes().find(senderId);
+    if (sender == NetworkNodes().end()) {
+      BleTrace("message_result_blocked", "reason=sender_not_registered sender_id=", senderId,
+               " message_id=", result.messageId,
+               " status=", static_cast<unsigned>(result.status));
+      return false;
+    }
+    if (!sender->second->connectedPeers_.count(runtime_.deviceId)) {
+      BleTrace("message_result_blocked", "reason=sender_not_connected sender_id=", senderId,
+               " receiver_id=", runtime_.deviceId,
+               " message_id=", result.messageId);
+      return false;
+    }
+
+    // MESSAGE_RESULT and MESSAGE_RESULT_ACK are real protocol packets. Their
+    // delivery is immediate and reliable in the virtual link, but CRC and
+    // message-ID matching are still checked before completing the send.
+    const auto resultPacket = ble::BuildMessageResultPacket(result.messageId, result.status);
+    if (result.status > 1 || !ble::HasValidPacketCrc(resultPacket)) {
+      BleTrace("message_result_invalid", "reason=bad_result_packet message_id=", result.messageId,
+               " status=", static_cast<unsigned>(result.status),
+               " crc_valid=", ble::HasValidPacketCrc(resultPacket));
+      return false;
+    }
+
+    const auto ackPacket = ble::BuildMessageResultAckPacket(result.messageId);
+    if (!ble::HasValidPacketCrc(ackPacket)) {
+      BleTrace("message_result_invalid", "reason=bad_result_ack message_id=", result.messageId,
+               " ack_crc_valid=", ble::HasValidPacketCrc(ackPacket));
+      return false;
+    }
+
+    auto outgoing = sender->second->outgoingMessages_.find(result.messageId);
+    if (outgoing == sender->second->outgoingMessages_.end()) {
+      BleTrace("message_result_sender_entry_missing", "sender_id=", senderId,
+               " receiver_id=", runtime_.deviceId,
+               " message_id=", result.messageId,
+               " sender_outgoing_count=", sender->second->outgoingMessages_.size());
+      return true;
+    }
+    if (outgoing->second.peerId != runtime_.deviceId) {
+      BleTrace("message_result_sender_entry_mismatch", "sender_id=", senderId,
+               " receiver_id=", runtime_.deviceId,
+               " message_id=", result.messageId,
+               " actual_peer_id=", outgoing->second.peerId);
+      return true;
+    }
+
+    if (result.status == 0) {
+      sender->second->BleTrace("data_sent_event_emitted", "peer_id=", runtime_.deviceId,
+                               " message_id=", result.messageId,
+                               " data_bytes=", outgoing->second.data.size(),
+                               " event_opcode=0x8D");
+      sender->second->EmitEvent(0x8D, ble::BuildDataSentPayload(
+          runtime_.deviceId, result.messageId,
+          static_cast<uint16_t>(outgoing->second.data.size())));
+      ++sender->second->bleMessagesSent_;
+    } else {
+      // Firmware reports a consumption timeout as an error on the sender;
+      // EVENT_DATA_EXPIRED (0x8E) is emitted only by the receiving node.
+      sender->second->BleTrace("data_consumption_timeout_emitted", "peer_id=", runtime_.deviceId,
+                               " message_id=", result.messageId,
+                               " status=", static_cast<unsigned>(result.status),
+                               " event_opcode=0x8C");
+      sender->second->EmitBleMessageError(
+          0, runtime_.deviceId, result.messageId, 0xFF, result.status);
+    }
+    sender->second->outgoingMessages_.erase(outgoing);
+    BleTrace("message_result_acknowledged", "sender_id=", senderId,
+             " receiver_id=", runtime_.deviceId,
+             " message_id=", result.messageId,
+             " status=", static_cast<unsigned>(result.status));
+    return true;
+  }
+
+  void TickBleResultTransactionsLocked(std::chrono::steady_clock::time_point now) {
+    for (auto it = pendingMessageResults_.begin(); it != pendingMessageResults_.end();) {
+      const uint16_t senderId = it->first;
+      auto &result = it->second;
+
+      // The receiver keeps result.active set until MESSAGE_RESULT_ACK returns.
+      // The virtual link has a one-millisecond minimum packet interval, so
+      // retain that state for one scheduler turn rather than completing the
+      // entire handshake in the same call that consumes GET_RECEIVED_DATA.
+      if (result.initialAttemptPending) {
+        if (!ble::FragmentIntervalElapsed(result.lastActionAt, now)) {
+          ++it;
+          continue;
+        }
+        result.initialAttemptPending = false;
+        BleTrace("message_result_initial_attempt", "sender_id=", senderId,
+                 " message_id=", result.messageId,
+                 " status=", static_cast<unsigned>(result.status));
+        if (DeliverPendingMessageResultLocked(senderId, result)) {
+          it = pendingMessageResults_.erase(it);
+        } else {
+          result.lastActionAt = now;
+          BleTrace("message_result_initial_deferred", "sender_id=", senderId,
+                   " message_id=", result.messageId,
+                   " retry_in_ms=", ble::kMessageResultTimeoutMs);
+          ++it;
+        }
+        continue;
+      }
+
+      // Subsequent MESSAGE_RESULT packets are sent only when the receiver's
+      // 400 ms retry timer expires. Do not continuously re-send on each
+      // invocation of the 10 ms UART service loop.
+      if (!ble::MessageResultRetryDue(result.lastActionAt, now)) {
+        ++it;
+        continue;
+      }
+      if (result.retryCount >= runtime_.bleMaxRetries) {
+        BleTrace("message_result_retries_exhausted", "sender_id=", senderId,
+                 " message_id=", result.messageId,
+                 " retry_count=", static_cast<unsigned>(result.retryCount),
+                 " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+        EmitBleMessageError(1, senderId, result.messageId, 0xFF, 9);
+        it = pendingMessageResults_.erase(it);
+      } else {
+        ++result.retryCount;
+        result.lastActionAt = now;
+        BleTrace("message_result_retry", "sender_id=", senderId,
+                 " message_id=", result.messageId,
+                 " retry_count=", static_cast<unsigned>(result.retryCount),
+                 " max_retries=", static_cast<unsigned>(runtime_.bleMaxRetries));
+        if (DeliverPendingMessageResultLocked(senderId, result)) {
+          it = pendingMessageResults_.erase(it);
+        } else {
+          BleTrace("message_result_retry_deferred", "sender_id=", senderId,
+                   " message_id=", result.messageId);
+          ++it;
         }
       }
+    }
+  }
+
+  void TickBleExpiryLocked(std::chrono::steady_clock::time_point now) {
+    for (auto it = incomingMessages_.begin(); it != incomingMessages_.end();) {
+      const IncomingMessage &message = it->second;
+      if (!ble::MessageExpired(message.completedAt, now, runtime_.bleRxMessageTimeoutMs)) {
+        ++it;
+        continue;
+      }
+
+      const uint16_t senderId = message.peerId;
+      const uint16_t messageId = message.messageId;
+      const auto ageMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+          now - message.completedAt).count();
+      BleTrace("message_expired", "sender_id=", senderId,
+               " message_id=", messageId, " age_ms=", ageMs,
+               " timeout_ms=", runtime_.bleRxMessageTimeoutMs);
+      EmitEvent(0x8E, ble::BuildDataExpiredPayload(senderId, messageId));
+
+      // Firmware clears the unread receive buffer, then sends
+      // MESSAGE_RESULT(CONSUMPTION_TIMEOUT) to the sender.
+      PendingMessageResult result;
+      result.messageId = messageId;
+      result.status = 1;  // CONSUMPTION_TIMEOUT
+      result.lastActionAt = now;
+      pendingMessageResults_[senderId] = result;
+      BleTrace("expiry_result_created", "sender_id=", senderId,
+               " message_id=", messageId, " status=CONSUMPTION_TIMEOUT(1)");
       it = incomingMessages_.erase(it);
-      (void)key;
     }
   }
 
@@ -1654,6 +1937,38 @@ class D3kNodeSystem final : public gz::sim::System,
   }
 
   void EmitEvent(uint8_t opcode, const std::vector<uint8_t> &payload) {
+    if (opcode >= 0x8B && opcode <= 0x8E) {
+      std::ostringstream details;
+      details << "opcode=0x" << std::hex << static_cast<unsigned>(opcode)
+              << std::dec << " payload_bytes=" << payload.size();
+      if ((opcode == 0x8B || opcode == 0x8D) && payload.size() == 6) {
+        uint16_t peerId = 0, messageId = 0, totalLength = 0;
+        ReadU16(payload.data(), payload.size(), 0, peerId);
+        ReadU16(payload.data(), payload.size(), 2, messageId);
+        ReadU16(payload.data(), payload.size(), 4, totalLength);
+        details << " peer_id=" << peerId << " message_id=" << messageId
+                << " total_length=" << totalLength;
+      } else if (opcode == 0x8E && payload.size() == 4) {
+        uint16_t peerId = 0, messageId = 0;
+        ReadU16(payload.data(), payload.size(), 0, peerId);
+        ReadU16(payload.data(), payload.size(), 2, messageId);
+        details << " peer_id=" << peerId << " message_id=" << messageId;
+      } else if (opcode == 0x8C && payload.size() >= 7) {
+        uint16_t peerId = 0, messageId = 0;
+        ReadU16(payload.data(), payload.size(), 1, peerId);
+        ReadU16(payload.data(), payload.size(), 3, messageId);
+        details << " direction=" << static_cast<unsigned>(payload[0])
+                << " peer_id=" << peerId << " message_id=" << messageId
+                << " fragment_index=" << static_cast<unsigned>(payload[5])
+                << " error_code=" << static_cast<unsigned>(payload[6]);
+      }
+      if (!IsEventSubscribed(opcode)) {
+        BleTrace("event_suppressed", details.str(), " subscription_mask=0x",
+                 std::hex, subscriptionMask_);
+      } else {
+        BleTrace("event_queued", details.str(), " next_event_sequence=", eventSequence_ + 1);
+      }
+    }
     const uint8_t bit = static_cast<uint8_t>(opcode - 0x80);
     if (opcode != 0x85 && (bit >= 15 || (subscriptionMask_ & (1u << bit)) == 0)) return;
     UwbProto::Frame frame;
@@ -1664,6 +1979,24 @@ class D3kNodeSystem final : public gz::sim::System,
     frame.length = static_cast<uint16_t>(std::min(payload.size(), UwbProto::MAX_PAYLOAD));
     if (frame.length) std::memcpy(frame.payload, payload.data(), frame.length);
     QueueFrame(frame);
+  }
+
+  bool IsEventSubscribed(uint8_t opcode) const {
+    const uint8_t bit = static_cast<uint8_t>(opcode - 0x80);
+    return opcode == 0x85 || (bit < 15 && (subscriptionMask_ & (1u << bit)) != 0);
+  }
+
+  template <typename... Values>
+  void BleTrace(const char *event, Values &&...values) const {
+    if (!bleTraceLogging_) return;
+    const auto monotonicMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+    std::ostringstream details;
+    (details << ... << std::forward<Values>(values));
+    gzmsg << "[D3K_BLE_TRACE] t_ms=" << monotonicMs
+          << " device_id=" << runtime_.deviceId
+          << " model='" << modelName_ << "' event=" << event
+          << " " << details.str() << "\n";
   }
 
  private:
@@ -1678,6 +2011,7 @@ class D3kNodeSystem final : public gz::sim::System,
   std::thread ioThread_;
   std::atomic<bool> running_{false};
   bool registered_ = false;
+  bool bleTraceLogging_ = false;
 
   DeviceConfig saved_;
   DeviceConfig runtime_;
@@ -1701,6 +2035,7 @@ class D3kNodeSystem final : public gz::sim::System,
   std::set<uint16_t> connectedPeers_;
   std::set<uint16_t> foundPeers_;
   std::map<IncomingKey, IncomingMessage> incomingMessages_;
+  std::map<uint16_t, PendingMessageResult> pendingMessageResults_;
   std::map<uint16_t, OutgoingMessage> outgoingMessages_;
   gz::math::Vector3d worldPosition_;
   bool poseValid_ = false;
