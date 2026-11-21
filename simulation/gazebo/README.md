@@ -74,6 +74,24 @@ export GZ_SIM_SYSTEM_PLUGIN_PATH="$PWD/build/d3k-gazebo${GZ_SIM_SYSTEM_PLUGIN_PA
 gz sim -r simulation/gazebo/examples/two_node_world.sdf
 ```
 
+### BLE lifecycle tracing
+
+To trace the virtual BLE message lifecycle while diagnosing delivery-result
+timeouts, enable the simulator trace before starting Gazebo:
+
+```bash
+export D3K_GAZEBO_BLE_TRACE=1
+gz sim -r simulation/gazebo/examples/two_node_world.sdf
+```
+
+Tracing can also be enabled per node with
+`<nvs><ble><trace_logging>true</trace_logging></ble></nvs>` in its plugin SDF.
+The trace records message IDs, fragment progress, receive consumption, pending
+`MESSAGE_RESULT` attempts, sender-side result completion, event subscription and
+PTY queue drops. Each record includes a process-monotonic timestamp and device
+ID so logs from both simulated nodes can be correlated. Leave tracing disabled
+for normal runs to avoid verbose BLE logs.
+
 The two plugin instances create these symlinks:
 
 ```text
