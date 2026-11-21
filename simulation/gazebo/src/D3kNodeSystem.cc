@@ -250,6 +250,7 @@ struct OutgoingMessage {
   uint8_t fragmentCount = 1;
   uint8_t nextFragment = 0;
   uint8_t retryCount = 0;
+  uint8_t resultRetryCount = 0;
   std::chrono::steady_clock::time_point lastFragmentAt{};
   bool waitingForConsumption = false;
 };
@@ -1525,7 +1526,23 @@ class D3kNodeSystem final : public gz::sim::System,
   void TickBleTransfersLocked(std::chrono::steady_clock::time_point now) {
     for (auto it = outgoingMessages_.begin(); it != outgoingMessages_.end();) {
       auto &message = it->second;
-      if (message.waitingForConsumption) { ++it; continue; }
+      if (message.waitingForConsumption) {
+        // The firmware sender independently waits for MESSAGE_RESULT_ACK,
+        // retrying its result wait at RESULT_TIMEOUT_MS up to max_retries.
+        if (!ble::MessageResultRetryDue(message.lastFragmentAt, now)) {
+          ++it;
+          continue;
+        }
+        if (message.resultRetryCount >= runtime_.bleMaxRetries) {
+          EmitBleMessageError(0, message.peerId, message.messageId, 0xFF, 9);
+          it = outgoingMessages_.erase(it);
+        } else {
+          ++message.resultRetryCount;
+          message.lastFragmentAt = now;
+          ++it;
+        }
+        continue;
+      }
       auto peer = NetworkNodes().find(message.peerId);
       if (!connectedPeers_.count(message.peerId) || peer == NetworkNodes().end()) {
         ++bleTxErrors_;
@@ -1681,11 +1698,9 @@ class D3kNodeSystem final : public gz::sim::System,
         continue;
       }
 
-      if (DeliverPendingMessageResultLocked(senderId, result)) {
-        it = pendingMessageResults_.erase(it);
-        continue;
-      }
-
+      // Subsequent MESSAGE_RESULT packets are sent only when the receiver's
+      // 400 ms retry timer expires. Do not continuously re-send on each
+      // invocation of the 10 ms UART service loop.
       if (!ble::MessageResultRetryDue(result.lastActionAt, now)) {
         ++it;
         continue;
