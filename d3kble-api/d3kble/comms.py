@@ -442,9 +442,9 @@ class CommsManager:
                         "request" if kind == "request" else "message"
                     ])
                 if not has_handler:
-                    self.store.retry_inbox_later(
-                        peer_id, message_id, _attempts, time.monotonic() + 1.0
-                    )
+                    # Retain the inbox entry without periodically retrying an
+                    # unavailable handler. Handler registration reactivates it.
+                    self.store.retry_inbox_later(peer_id, message_id, _attempts, None)
                     continue
                 key = (peer_id, message_id)
                 with self._active_dispatch_lock:
