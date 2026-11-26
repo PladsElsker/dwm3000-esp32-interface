@@ -36,7 +36,7 @@ class CommsState:
             self._check_open()
             self._outbox[message_id] = {
                 "peer_id": peer_id, "kind": kind, "envelope": bytes(envelope),
-                "attempts": 0, "next_attempt": time.time(),
+                "attempts": 0, "next_attempt": time.monotonic(),
                 "status": "pending", "last_error": None,
             }
             if kind == "request":
@@ -58,7 +58,7 @@ class CommsState:
             self._trim_responses()
             self._outbox[response_id] = {
                 "peer_id": peer_id, "kind": "response", "envelope": bytes(envelope),
-                "attempts": 0, "next_attempt": time.time(),
+                "attempts": 0, "next_attempt": time.monotonic(),
                 "status": "pending", "last_error": None,
             }
             return True
@@ -178,13 +178,48 @@ class CommsState:
             if peer_id is not None and request["peer_id"] != peer_id:
                 return False
             deadline = request["deadline"]
-            if deadline is not None and time.time() >= deadline:
+            if deadline is not None and time.monotonic() >= deadline:
                 return False
             request["accepted"] = True
             request["response_json"] = response_json
             self._requests.move_to_end(request_id)
             self._trim_completed_requests()
             return True
+
+    def next_deadline(
+        self,
+        active_outbox: set[str] | None = None,
+        active_inbox: set[tuple[int, str]] | None = None,
+    ) -> float | None:
+        """Return the earliest pending monotonic deadline, excluding active work."""
+        active_outbox = active_outbox or set()
+        active_inbox = active_inbox or set()
+        with self._lock:
+            self._check_open()
+            deadlines = [
+                row["next_attempt"]
+                for message_id, row in self._outbox.items()
+                if row["status"] == "pending" and message_id not in active_outbox
+            ]
+            deadlines.extend(
+                row["next_dispatch"]
+                for key, row in self._inbox.items()
+                if not row["processed"] and key not in active_inbox
+            )
+            deadlines.extend(
+                row["deadline"]
+                for row in self._requests.values()
+                if row["response_json"] is None and row["deadline"] is not None
+            )
+            return min(deadlines) if deadlines else None
+
+    def make_inbox_ready(self, kind: str) -> None:
+        """Make retained messages of a newly registered handler type dispatchable."""
+        with self._lock:
+            self._check_open()
+            for row in self._inbox.values():
+                if not row["processed"] and row["kind"] == kind:
+                    row["next_dispatch"] = 0.0
 
     def due_requests(self, now: float):
         with self._lock:

@@ -135,6 +135,8 @@ class CommsManager:
         self._active_dispatch_lock = threading.RLock()
         self._running = threading.Event()
         self._thread: threading.Thread | None = None
+        self._scheduler_condition = threading.Condition()
+        self._scheduler_generation = 0
         self._executor = ThreadPoolExecutor(max_workers=8, thread_name_prefix="d3kble-comms-tx")
         self._dispatch_executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="d3kble-comms-handler")
         self.tx_retries = 0
@@ -148,6 +150,12 @@ class CommsManager:
         self._running.set()
         self._thread = threading.Thread(target=self._run, name="d3kble-comms", daemon=True)
         self._thread.start()
+
+    def _wake_scheduler(self) -> None:
+        """Wake the scheduler after new work or a deadline change."""
+        with self._scheduler_condition:
+            self._scheduler_generation += 1
+            self._scheduler_condition.notify()
 
     def bind_asyncio_loop(self, loop: asyncio.AbstractEventLoop):
         """Run async request/message/response handlers on an application event loop."""
@@ -182,6 +190,9 @@ class CommsManager:
                 raise TypeError("callback must be callable")
             with self._callback_lock:
                 self._callbacks[kind].append(fn)
+            if kind in {"message", "request"}:
+                self.store.make_inbox_ready(kind)
+            self._wake_scheduler()
             return fn
         return add(callback) if callback is not None else add
 
@@ -219,13 +230,14 @@ class CommsManager:
         if not 1 <= peer_id <= 65534:
             raise ValueError("peer_id must be in 1..65534")
         message_id, envelope = self._new_envelope(kind, payload)
-        deadline = time.time() + response_timeout if response_timeout is not None else None
+        deadline = time.monotonic() + response_timeout if response_timeout is not None else None
         self.store.enqueue(message_id, peer_id, kind, envelope, response_deadline=deadline)
         ack = Future()
         response = Future() if expects_response else None
         ticket = CommsTicket(message_id, peer_id, kind, ack, response)
         with self._tickets_lock:
             self._tickets[message_id] = ticket
+        self._wake_scheduler()
         return ticket
 
     def resume_request(self, message_id: str) -> CommsTicket:
@@ -244,6 +256,7 @@ class CommsManager:
         ticket = CommsTicket(message_id, peer_id, "request", ack, response)
         with self._tickets_lock:
             self._tickets[message_id] = ticket
+        self._wake_scheduler()
         return ticket
 
     def receive_ble_message(self, message) -> None:
@@ -267,6 +280,8 @@ class CommsManager:
                 self.rx_messages += 1
             # Record receipt in process memory before sending the application ACK.
             self._send_ack(message.peer_id, message_id)
+            if inserted and kind != "response":
+                self._wake_scheduler()
             if inserted and kind == "response":
                 self._receive_response(message.peer_id, envelope)
                 self.store.complete_inbox(message.peer_id, message_id)
@@ -306,6 +321,7 @@ class CommsManager:
                 if kind != "request":
                     self._tickets.pop(ack_id, None)
         self.dispatcher.emit("comms_ack", {"peer_id": peer_id, "message_id": ack_id, "kind": kind})
+        self._wake_scheduler()
 
     @staticmethod
     def _response_to_wire(response: CommsResponse) -> dict:
@@ -406,7 +422,10 @@ class CommsManager:
 
     def _run(self):
         while self._running.is_set():
-            now = time.time()
+            with self._scheduler_condition:
+                generation = self._scheduler_generation
+
+            now = time.monotonic()
             for message_id, peer_id, deadline in self.store.due_requests(now):
                 self._expire_request(message_id, peer_id, deadline)
             for row in self.store.due_outbox(now):
@@ -419,11 +438,13 @@ class CommsManager:
             for row in self.store.due_inbox(now):
                 peer_id, message_id, kind, _encoded, _received_at, _attempts = row
                 with self._callback_lock:
-                    has_handler = (kind == "response" or bool(self._callbacks[
+                    has_handler = bool(self._callbacks[
                         "request" if kind == "request" else "message"
-                    ]))
+                    ])
                 if not has_handler:
-                    self.store.retry_inbox_later(peer_id, message_id, _attempts, now + 1.0)
+                    self.store.retry_inbox_later(
+                        peer_id, message_id, _attempts, time.monotonic() + 1.0
+                    )
                     continue
                 key = (peer_id, message_id)
                 with self._active_dispatch_lock:
@@ -431,7 +452,19 @@ class CommsManager:
                         continue
                     self._active_dispatch.add(key)
                 self._dispatch_executor.submit(self._dispatch_inbox, row)
-            time.sleep(0.02)
+
+            with self._active_tx_lock:
+                active_tx = set(self._active_tx)
+            with self._active_dispatch_lock:
+                active_dispatch = set(self._active_dispatch)
+            deadline = self.store.next_deadline(active_tx, active_dispatch)
+            timeout = None if deadline is None else max(0.0, deadline - time.monotonic())
+
+            with self._scheduler_condition:
+                if not self._running.is_set():
+                    break
+                if generation == self._scheduler_generation:
+                    self._scheduler_condition.wait(timeout)
 
     def _transmit(self, row):
         message_id, peer_id, kind, envelope, attempts = row
@@ -454,7 +487,7 @@ class CommsManager:
                         "peer_id": peer_id, "message_id": message_id, "error": error,
                     })
             else:
-                self.store.mark_transport_attempt(message_id, attempts, time.time() + self.ack_timeout)
+                self.store.mark_transport_attempt(message_id, attempts, time.monotonic() + self.ack_timeout)
         except Exception as exc:
             attempts += 1
             self.tx_retries += 1
@@ -472,10 +505,11 @@ class CommsManager:
                     })
             else:
                 delay = min(10.0, 0.25 * (2 ** min(attempts, 5)))
-                self.store.mark_transport_attempt(message_id, attempts, time.time() + delay, str(exc))
+                self.store.mark_transport_attempt(message_id, attempts, time.monotonic() + delay, str(exc))
         finally:
             with self._active_tx_lock:
                 self._active_tx.discard(message_id)
+            self._wake_scheduler()
 
     def _dispatch_inbox(self, row):
         peer_id, message_id, kind, encoded, received_at, attempts = row
@@ -494,7 +528,7 @@ class CommsManager:
             with self._callback_lock:
                 callbacks = tuple(self._callbacks[callback_kind])
             if not callbacks:
-                self.store.retry_inbox_later(peer_id, message_id, attempts, time.time() + 1.0)
+                self.store.retry_inbox_later(peer_id, message_id, attempts, time.monotonic() + 1.0)
                 return
             if kind == "request":
                 request = IncomingRequest(
@@ -535,7 +569,7 @@ class CommsManager:
                 attempts += 1
                 self.store.retry_inbox_later(
                     peer_id, message_id, attempts,
-                    time.time() + min(30.0, 0.5 * (2 ** min(attempts, 6))),
+                    time.monotonic() + min(30.0, 0.5 * (2 ** min(attempts, 6))),
                 )
             self.dispatcher.emit("comms_handler_error", {
                 "peer_id": peer_id, "message_id": message_id, "error": exc,
@@ -543,6 +577,7 @@ class CommsManager:
         finally:
             with self._active_dispatch_lock:
                 self._active_dispatch.discard((peer_id, message_id))
+            self._wake_scheduler()
 
     def _respond(self, peer_id: int, request_id: str, payload):
         if not isinstance(payload, CommsResponse):
@@ -552,6 +587,7 @@ class CommsManager:
         )
         self.store.enqueue_response_once(peer_id, request_id, response_id, envelope)
         self.store.complete_inbox(peer_id, request_id)
+        self._wake_scheduler()
         return response_id
 
     def pending_requests(self):
@@ -559,6 +595,7 @@ class CommsManager:
 
     def close(self):
         self._running.clear()
+        self._wake_scheduler()
         reason = "communications manager closed before the operation completed"
         with self._tickets_lock:
             tickets = tuple(self._tickets.values())

@@ -1,5 +1,6 @@
 import asyncio
 import json
+import threading
 import time
 from concurrent.futures import Future
 
@@ -93,6 +94,47 @@ def test_request_ticket_is_awaitable_and_returns_response_object():
     manager.close()
 
 
+def test_new_incoming_message_wakes_dispatcher():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    handled = threading.Event()
+    manager.on_message(lambda _message: handled.set())
+    manager.start()
+    try:
+        envelope = {
+            "v": 1, "id": "event-driven-message", "kind": "message",
+            "payload": {"move": "forward"},
+        }
+        message = BleMessage(
+            peer_id=7, message_id=12,
+            data=json.dumps(envelope).encode("utf-8"), received_at=time.monotonic(),
+        )
+        manager.receive_ble_message(message)
+        assert handled.wait(timeout=0.5)
+    finally:
+        manager.close()
+
+
+def test_outgoing_message_wakes_transmit_scheduler():
+    ble = FakeBle()
+    manager = CommsManager(ble, FakeDispatcher())
+    manager.start()
+    try:
+        ticket = manager.send(7, {"operation": "status"})
+        deadline = time.monotonic() + 0.5
+        while not ble.sent and time.monotonic() < deadline:
+            time.sleep(0.001)
+        sent_messages = [
+            json.loads(payload.decode("utf-8"))
+            for _peer, payload in ble.sent
+        ]
+        assert any(
+            item.get("kind") == "message" and item["id"] == ticket.message_id
+            for item in sent_messages
+        )
+    finally:
+        manager.close()
+
+
 def test_request_timeout_resolves_to_error_response_and_cleans_up():
     manager = CommsManager(FakeBle(), FakeDispatcher(), response_timeout=0.05)
     ticket = manager.request(7, {"operation": "status"})
@@ -103,7 +145,7 @@ def test_request_timeout_resolves_to_error_response_and_cleans_up():
         assert "0.050 seconds" in response.error
         assert response.content is None
         assert manager.pending_requests() == []
-        assert all(row[0] != ticket.message_id for row in manager.store.due_outbox(time.time() + 10))
+        assert all(row[0] != ticket.message_id for row in manager.store.due_outbox(time.monotonic() + 10))
     finally:
         manager.close()
 
@@ -123,9 +165,9 @@ def test_async_request_handler_returns_structured_response():
     manager.store.insert_inbox(
         8, "incoming-request", "request", json.dumps(envelope), time.time()
     )
-    manager._dispatch_inbox(manager.store.due_inbox(time.time() + 1)[0])
+    manager._dispatch_inbox(manager.store.due_inbox(time.monotonic() + 1)[0])
 
-    rows = manager.store.due_outbox(time.time() + 1)
+    rows = manager.store.due_outbox(time.monotonic() + 1)
     assert len(rows) == 1
     assert rows[0][2] == "response"
     wire = json.loads(rows[0][3].decode("utf-8"))["payload"]
@@ -148,11 +190,11 @@ def test_request_handler_failure_is_returned_and_not_retried():
     manager.store.insert_inbox(
         8, "failing-request", "request", json.dumps(envelope), time.time()
     )
-    manager._dispatch_inbox(manager.store.due_inbox(time.time() + 1)[0])
+    manager._dispatch_inbox(manager.store.due_inbox(time.monotonic() + 1)[0])
 
     assert calls == ["failing-request"]
-    assert manager.store.due_inbox(time.time() + 60) == []
-    rows = manager.store.due_outbox(time.time() + 1)
+    assert manager.store.due_inbox(time.monotonic() + 60) == []
+    rows = manager.store.due_outbox(time.monotonic() + 1)
     assert len(rows) == 1
     response = json.loads(rows[0][3].decode("utf-8"))["payload"]
     assert response["status"] == "error"

@@ -21,16 +21,23 @@ class StateManager:
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def refresh(self, include_saved: bool = False) -> DeviceState:
-        try:
-            runtime = decode_runtime_config(self.transport.request("get_config"))
-            runtime["targets"] = decode_targets(self.transport.request("get_targets"))
-            runtime["schedule"] = decode_schedule(self.transport.request("get_schedule"))
-            with self._lock:
-                self.runtime = RuntimeConfig(runtime, True, time.monotonic())
-        except Exception:
-            with self._lock:
-                self.runtime = RuntimeConfig(self.runtime.values, False, self.runtime.updated_at)
+    def refresh(
+        self,
+        include_saved: bool = False,
+        *,
+        include_runtime: bool = True,
+    ) -> DeviceState:
+        """Refresh live status and, when requested, runtime/saved configuration."""
+        if include_runtime:
+            try:
+                runtime = decode_runtime_config(self.transport.request("get_config"))
+                runtime["targets"] = decode_targets(self.transport.request("get_targets"))
+                runtime["schedule"] = decode_schedule(self.transport.request("get_schedule"))
+                with self._lock:
+                    self.runtime = RuntimeConfig(runtime, True, time.monotonic())
+            except Exception:
+                with self._lock:
+                    self.runtime = RuntimeConfig(self.runtime.values, False, self.runtime.updated_at)
 
         try:
             status = decode_status(self.transport.request("get_status"))
@@ -69,12 +76,12 @@ class StateManager:
         self._thread.start()
 
     def _poll_loop(self):
-        first = True
-        while not self._stop.is_set():
+        # Connection setup performs a full refresh. The periodic poller only
+        # refreshes live status; configuration changes are read on demand or
+        # during reconnect, avoiding repeated multi-request UART traffic.
+        while not self._stop.wait(self.poll_interval):
             if self.transport.connected:
-                self.refresh(include_saved=first)
-                first = False
-            self._stop.wait(self.poll_interval)
+                self.refresh(include_runtime=False)
 
     def close(self):
         self._stop.set()
