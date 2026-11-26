@@ -3,7 +3,7 @@ name: DWM3000 firmware build
 on:
   push:
     branches:
-      - ci/firmware-artifacts
+      - main
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
