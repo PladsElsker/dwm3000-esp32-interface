@@ -50,6 +50,7 @@ class BleManager:
         self.on_message = None
         self.sent_count = 0
         self.expired_count = 0
+        self.tx_errors = 0
         self.rx_errors = 0
 
     def start(self):
