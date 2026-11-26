@@ -96,8 +96,18 @@ class BleManager:
     def _count_delivery_result(self, result: dict) -> None:
         if result.get("delivered"):
             self.sent_count += 1
-        else:
+        elif result.get("expired"):
             self.expired_count += 1
+
+    @staticmethod
+    def _complete_ticket(future: Future, result: dict) -> None:
+        if result.get("error"):
+            future.set_exception(ConnectionError(
+                "BLE delivery failed for peer {peer_id}, message {message_id} "
+                "(fragment {fragment_index}, error {error_code})".format(**result)
+            ))
+        else:
+            future.set_result(result)
 
     def _register_ticket(self, key: tuple[int, int], future: Future) -> None:
         with self._ticket_lock:
@@ -112,7 +122,7 @@ class BleManager:
         # call back into the BLE manager.
         result = cached[1]
         if not future.done():
-            future.set_result(result)
+            self._complete_ticket(future, result)
             self._count_delivery_result(result)
 
     def _tx_worker(self, peer_id: int):
@@ -219,6 +229,38 @@ class BleManager:
                     self._count_delivery_result(result)
             else:
                 self.dispatcher.emit("ble_error", frame.payload)
+        elif frame.opcode == 0x8C:
+            if len(frame.payload) != 8:
+                self.rx_errors += 1
+                return
+            direction, peer_id, message_id, fragment_index, error_code, _reserved = struct.unpack(
+                "<BHHBBB", frame.payload
+            )
+            if direction == 0:
+                # A sender-side BLE_ERROR is the terminal delivery outcome for
+                # this message. Complete the ticket now instead of waiting for
+                # the full delivery_timeout in _tx_worker.
+                result = {
+                    "delivered": False,
+                    "error": True,
+                    "peer_id": peer_id,
+                    "message_id": message_id,
+                    "fragment_index": fragment_index,
+                    "error_code": error_code,
+                }
+                key = (peer_id, message_id)
+                with self._ticket_lock:
+                    now = time.monotonic()
+                    self._prune_early_results_locked(now)
+                    future = self._tickets.pop(key, None)
+                    if future is None:
+                        # BLE_ERROR can race ahead of SEND_TO_PEER's response
+                        # and ticket registration, just like 0x8D / 0x8E.
+                        self._cache_early_result_locked(key, result, now)
+                self.tx_errors += 1
+                if future is not None and not future.done():
+                    self._complete_ticket(future, result)
+            self.dispatcher.emit("ble_error", frame.payload)
         elif frame.opcode in (0x8D, 0x8E):
             expected_len = 6 if frame.opcode == 0x8D else 4
             if len(frame.payload) != expected_len:
@@ -247,7 +289,7 @@ class BleManager:
                     # on independent host threads. The event may win this race.
                     self._cache_early_result_locked(key, result, now)
             if future is not None and not future.done():
-                future.set_result(result)
+                self._complete_ticket(future, result)
                 self._count_delivery_result(result)
         else:
             name = {
