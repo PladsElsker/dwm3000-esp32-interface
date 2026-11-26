@@ -65,7 +65,7 @@ def test_next_deadline_ignores_active_work_and_selects_earliest_deadline():
 
     assert state.next_deadline() == 0.0
     assert state.next_deadline(
-        active_outbox={"outbox"},
+        active_outbox={"outbox", "request"},
         active_inbox={(7, "inbox")},
     ) == now + 5
 
