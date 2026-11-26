@@ -30,7 +30,7 @@ env:
   ESP32_BUILDER_PYTHON_ENV: ${{ github.workspace }}/.ci-builder-venv
   IDF_TOOLS_PATH: ${{ github.workspace }}/.ci-espressif-tools
   GH_TOKEN: ${{ github.token }}
-  GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+  REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
   prepare:
@@ -183,7 +183,7 @@ jobs:
           # a release/tag with GITHUB_TOKEN when the target commit changes workflow
           # files relative to the default branch (GITHUB_TOKEN has no Workflows:write).
           # The exact commit used for this build is separately recorded in the manifest.
-          DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH"
+          DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
 
           RELEASE_NOTES="Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard. The exact source commit, core fingerprint inputs, upstream revisions, and validated BLE settings are recorded in core-manifest.json."
