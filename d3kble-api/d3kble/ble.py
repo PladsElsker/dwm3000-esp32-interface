@@ -186,6 +186,39 @@ class BleManager:
                         target=self._rx_worker, args=(peer_id,),
                         name=f"d3kble-ble-rx-{peer_id}", daemon=True,
                     ).start()
+        elif frame.opcode == 0x8C:
+            # BLE_ERROR reports a failed outbound transfer when direction == 0.
+            # Fail the matching send ticket immediately rather than leaving the
+            # per-peer TX worker waiting for its delivery timeout.
+            if len(frame.payload) != 8:
+                self.rx_errors += 1
+                return
+            direction, peer_id, message_id, fragment_index, error_code, _reserved = struct.unpack(
+                "<BHHBBB", frame.payload
+            )
+            if direction == 0:
+                result = {
+                    "delivered": False,
+                    "error": True,
+                    "peer_id": peer_id,
+                    "message_id": message_id,
+                    "fragment_index": fragment_index,
+                    "error_code": error_code,
+                }
+                key = (peer_id, message_id)
+                with self._ticket_lock:
+                    now = time.monotonic()
+                    self._prune_early_results_locked(now)
+                    future = self._tickets.pop(key, None)
+                    if future is None:
+                        # The error event may race ahead of SEND_TO_PEER's reply,
+                        # just like BLE_DATA_SENT / BLE_DATA_EXPIRED.
+                        self._cache_early_result_locked(key, result, now)
+                if future is not None and not future.done():
+                    future.set_result(result)
+                    self._count_delivery_result(result)
+            else:
+                self.dispatcher.emit("ble_error", frame.payload)
         elif frame.opcode in (0x8D, 0x8E):
             expected_len = 6 if frame.opcode == 0x8D else 4
             if len(frame.payload) != expected_len:
