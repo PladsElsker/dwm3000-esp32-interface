@@ -2,9 +2,8 @@ name: DWM3000 firmware build
 
 on:
   push:
-    # Temporary validation trigger. Restored to main after the pipeline is verified.
     branches:
-      - ci/firmware-artifacts
+      - main
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
