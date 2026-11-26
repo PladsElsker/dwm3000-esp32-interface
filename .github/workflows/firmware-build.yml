@@ -301,6 +301,7 @@ jobs:
     permissions:
       contents: write
     env:
+      CORE_VERSION: ${{ needs.prepare.outputs.core_version }}
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
@@ -433,6 +434,7 @@ jobs:
             --arg commit "$GITHUB_SHA" \
             --arg ref "$GITHUB_REF" \
             --arg firmware_version "$VERSION" \
+            --arg core_version "$CORE_VERSION" \
             --arg protocol_version "$PROTOCOL_VERSION" \
             --arg fqbn "$FQBN" \
             --arg core_fingerprint "$CORE_FINGERPRINT" \
@@ -442,6 +444,7 @@ jobs:
               source_commit: $commit,
               source_ref: $ref,
               firmware_version: $firmware_version,
+              core_version: $core_version,
               protocol_version: ($protocol_version | tonumber),
               build_fqbn: $fqbn,
               chip: "esp32c3",
