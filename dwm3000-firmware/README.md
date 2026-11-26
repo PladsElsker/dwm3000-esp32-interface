@@ -82,7 +82,7 @@ Before compiling firmware, CI calculates a SHA-256 fingerprint from those two co
 - **Both changed:** CI builds and publishes the new core first. The firmware job waits for that job to succeed, then compiles using the new core.
 - **Core build failed:** firmware compilation is blocked. CI never silently falls back to an older core.
 
-The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Its fingerprinted GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
+The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact source commit, builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Its release tag points at the repository default branch; the manifest preserves the actual build-source commit. This avoids GitHub's workflow-file tag guard when CI validates an unmerged workflow change. Its fingerprinted GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
 
 Every successful firmware build publishes the `dwm3000-firmware-esp32c3` Actions artifact. The pinned Arduino Library Manager dependencies, including NimBLE-Arduino 2.5.0, are installed and verified in the firmware job. When `FIRMWARE_VERSION` changes on `main`, the workflow also creates `firmware-v<VERSION>` and a GitHub Release containing the complete firmware ZIP. Routine firmware changes without a version bump do not create a new firmware release.
 

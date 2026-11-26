@@ -10,7 +10,7 @@ on:
       - ".github/workflows/firmware-build.yml"
 
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: firmware-build-${{ github.ref }}
@@ -28,6 +28,7 @@ env:
   ESP32_BUILDER_PYTHON_ENV: ${{ github.workspace }}/.ci-builder-venv
   IDF_TOOLS_PATH: ${{ github.workspace }}/.ci-espressif-tools
   GH_TOKEN: ${{ github.token }}
+  GITHUB_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
 
 jobs:
   prepare:
@@ -82,6 +83,8 @@ jobs:
     if: needs.prepare.outputs.build_core == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
+    permissions:
+      contents: write
     env:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
@@ -139,6 +142,9 @@ jobs:
 
           jq -n \
             --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg source_repository "$GITHUB_REPOSITORY" \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg source_ref "$GITHUB_REF" \
             --arg builder_commit "$BUILDER_SHA" \
             --arg arduino_commit "$ARDUINO_SHA" \
             --arg idf_commit "$IDF_SHA" \
@@ -150,6 +156,9 @@ jobs:
             --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
             '{
               core_fingerprint: $fingerprint,
+              source_repository: $source_repository,
+              source_commit: $source_commit,
+              source_ref: $source_ref,
               arduino_cli_version: $arduino_cli_version,
               build_fqbn: $fqbn,
               arduino_esp32_builder_commit: $builder_commit,
@@ -168,15 +177,31 @@ jobs:
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
+          # Core packages are content-addressed build outputs, not source releases.
+          # Point their Git tag at the repository's default branch to avoid GitHub's
+          # workflow-file tag protection on unmerged feature-branch workflow changes.
+          # The exact commit used to build this package is recorded in core-manifest.json.
+          DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH"
+          [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
+          git fetch --no-tags --depth=1 origin "refs/heads/$DEFAULT_BRANCH"
+          DEFAULT_BRANCH_SHA="$(git rev-parse FETCH_HEAD)"
+          [[ "$DEFAULT_BRANCH_SHA" =~ ^[0-9a-f]{40}$ ]] || {
+            echo "Could not resolve the default branch commit for the core release tag." >&2
+            exit 1
+          }
+
           if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
             gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY" --clobber
+            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --draft=false --prerelease --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The release tag points at the repository default branch; the exact build source commit is recorded in core-manifest.json. The fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision."
           else
             gh release create "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$GITHUB_SHA" \
+              --target "$DEFAULT_BRANCH_SHA" \
               --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
+              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The release tag points at the repository default branch; the exact build source commit is recorded in core-manifest.json. The fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision." \
               --prerelease
           fi
 
@@ -192,6 +217,8 @@ jobs:
       (needs.core.result == 'success' || needs.core.result == 'skipped')
     runs-on: ubuntu-22.04
     timeout-minutes: 45
+    permissions:
+      contents: write
     env:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
