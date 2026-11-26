@@ -22,7 +22,7 @@ env:
   UWB_NODE_DIR: dwm3000-firmware/UwbNode
   DRIVER_LIBRARY_DIR: dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
   BUILD_DIR: ${{ github.workspace }}/.ci-firmware-build
-  ARTIFACT_DIR: ${{ github.workspace }}/.ci-firmware-artifact
+  ARTIFACT_DIR: ${{ github.workspace }}/ci-firmware-artifact
   ARDUINO_SKETCHBOOK_DIR: ${{ github.workspace }}/.ci-arduino
   ARDUINO_DIRECTORIES_USER: ${{ github.workspace }}/.ci-arduino
   ESP32_ARDUINO_CORE_DIR: ${{ github.workspace }}/.ci-arduino/hardware/espressif/esp32
@@ -396,7 +396,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: dwm3000-firmware-esp32c3
-          path: ${{ github.workspace }}/.ci-firmware-artifact/
+          path: ${{ github.workspace }}/ci-firmware-artifact/
           if-no-files-found: error
           retention-days: 90
 
