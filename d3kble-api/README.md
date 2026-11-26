@@ -276,7 +276,7 @@ A `DeviceState` contains:
 - `status`: live device status, including service state.
 - Validity flags and monotonic update timestamps for each observation.
 
-Connection setup and reconnect perform a full runtime, status, and saved-configuration refresh. The background state poller refreshes live status at the configured `poll_interval` and refreshes runtime configuration at a lower cadence (no more frequently than every 5 seconds, or the configured poll interval if longer). Runtime and saved configuration can still be refreshed immediately with `refresh()` / `get_state(refresh=True)`. This keeps cached runtime state from remaining stale indefinitely while avoiding repeated multi-request UART traffic at the status polling rate. Failed reads mark the affected observation invalid; previous values are retained but are not marked current.
+The background state poller refreshes runtime configuration and status at the configured `poll_interval`. Failed reads mark the affected observation invalid; previous values are retained but are not marked current.
 
 ## Configuration and reconciliation
 

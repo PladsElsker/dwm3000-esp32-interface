@@ -18,33 +18,19 @@ class StateManager:
         self.status = {}
         self.status_valid = False
         self.status_updated_at = None
-        # Status is refreshed at poll_interval; configuration changes less
-        # frequently because they require several additional UART requests.
-        self._runtime_poll_interval = max(5.0, self.poll_interval)
-        self._last_runtime_refresh_at: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
-    def refresh(
-        self,
-        include_saved: bool = False,
-        *,
-        include_runtime: bool = True,
-    ) -> DeviceState:
-        """Refresh live status and, when requested, runtime/saved configuration."""
-        if include_runtime:
-            try:
-                runtime = decode_runtime_config(self.transport.request("get_config"))
-                runtime["targets"] = decode_targets(self.transport.request("get_targets"))
-                runtime["schedule"] = decode_schedule(self.transport.request("get_schedule"))
-                with self._lock:
-                    self.runtime = RuntimeConfig(runtime, True, time.monotonic())
-            except Exception:
-                with self._lock:
-                    self.runtime = RuntimeConfig(self.runtime.values, False, self.runtime.updated_at)
-            finally:
-                with self._lock:
-                    self._last_runtime_refresh_at = time.monotonic()
+    def refresh(self, include_saved: bool = False) -> DeviceState:
+        try:
+            runtime = decode_runtime_config(self.transport.request("get_config"))
+            runtime["targets"] = decode_targets(self.transport.request("get_targets"))
+            runtime["schedule"] = decode_schedule(self.transport.request("get_schedule"))
+            with self._lock:
+                self.runtime = RuntimeConfig(runtime, True, time.monotonic())
+        except Exception:
+            with self._lock:
+                self.runtime = RuntimeConfig(self.runtime.values, False, self.runtime.updated_at)
 
         try:
             status = decode_status(self.transport.request("get_status"))
@@ -83,21 +69,12 @@ class StateManager:
         self._thread.start()
 
     def _poll_loop(self):
-        # Status changes frequently, while runtime configuration is normally
-        # static. Poll status at the requested cadence and re-read configuration
-        # less often to keep snapshots current without competing for UART time.
-        while not self._stop.wait(self.poll_interval):
-            if not self.transport.connected:
-                continue
-
-            now = time.monotonic()
-            with self._lock:
-                last_runtime_refresh = self._last_runtime_refresh_at
-            refresh_runtime = (
-                last_runtime_refresh is None
-                or now - last_runtime_refresh >= self._runtime_poll_interval
-            )
-            self.refresh(include_runtime=refresh_runtime)
+        first = True
+        while not self._stop.is_set():
+            if self.transport.connected:
+                self.refresh(include_saved=first)
+                first = False
+            self._stop.wait(self.poll_interval)
 
     def close(self):
         self._stop.set()
