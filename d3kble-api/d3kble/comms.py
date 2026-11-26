@@ -441,9 +441,12 @@ class CommsManager:
             for row in self.store.due_inbox(now):
                 peer_id, message_id, kind, _encoded, _received_at, _attempts = row
                 with self._callback_lock:
-                    has_handler = bool(self._callbacks[
-                        "request" if kind == "request" else "message"
-                    ])
+                    has_handler = (
+                        kind == "response"
+                        or bool(self._callbacks[
+                            "request" if kind == "request" else "message"
+                        ])
+                    )
                     if not has_handler:
                         # Keep suspension ordered with handler registration so a
                         # concurrent registration cannot be overwritten here.

@@ -18,6 +18,10 @@ class StateManager:
         self.status = {}
         self.status_valid = False
         self.status_updated_at = None
+        # Status is refreshed at poll_interval; configuration changes less
+        # frequently because they require several additional UART requests.
+        self._runtime_poll_interval = max(5.0, self.poll_interval)
+        self._last_runtime_refresh_at: float | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
 
@@ -38,6 +42,9 @@ class StateManager:
             except Exception:
                 with self._lock:
                     self.runtime = RuntimeConfig(self.runtime.values, False, self.runtime.updated_at)
+            finally:
+                with self._lock:
+                    self._last_runtime_refresh_at = time.monotonic()
 
         try:
             status = decode_status(self.transport.request("get_status"))
@@ -76,12 +83,21 @@ class StateManager:
         self._thread.start()
 
     def _poll_loop(self):
-        # Connection setup performs a full refresh. The periodic poller only
-        # refreshes live status; configuration changes are read on demand or
-        # during reconnect, avoiding repeated multi-request UART traffic.
+        # Status changes frequently, while runtime configuration is normally
+        # static. Poll status at the requested cadence and re-read configuration
+        # less often to keep snapshots current without competing for UART time.
         while not self._stop.wait(self.poll_interval):
-            if self.transport.connected:
-                self.refresh(include_runtime=False)
+            if not self.transport.connected:
+                continue
+
+            now = time.monotonic()
+            with self._lock:
+                last_runtime_refresh = self._last_runtime_refresh_at
+            refresh_runtime = (
+                last_runtime_refresh is None
+                or now - last_runtime_refresh >= self._runtime_poll_interval
+            )
+            self.refresh(include_runtime=refresh_runtime)
 
     def close(self):
         self._stop.set()
