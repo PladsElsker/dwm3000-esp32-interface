@@ -35,10 +35,13 @@ jobs:
     name: Resolve custom core artifact
     runs-on: ubuntu-22.04
     outputs:
+      core_version: ${{ steps.core.outputs.version }}
       core_fingerprint: ${{ steps.core.outputs.fingerprint }}
       core_tag: ${{ steps.core.outputs.tag }}
       core_asset: ${{ steps.core.outputs.asset }}
       build_core: ${{ steps.core.outputs.build_core }}
+      publish_core: ${{ steps.core.outputs.publish_core }}
+      core_source_tag: ${{ steps.core.outputs.source_tag }}
       arduino_cli_version: ${{ steps.core.outputs.arduino_cli_version }}
       fqbn: ${{ steps.core.outputs.fqbn }}
     steps:
@@ -57,38 +60,66 @@ jobs:
           set -Eeuo pipefail
           source dwm3000-firmware/core-build.env
 
-          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/build-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
-          TAG="esp32c3-core-$FINGERPRINT"
-          ASSET="esp32c3-custom-core-$FINGERPRINT.tar.gz"
-
-          ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
-          if printf '%s\n' "$ASSETS" | grep -Fxq "$ASSET"; then
-            BUILD_CORE=false
-            echo "Reusing durable core package $TAG ($ASSET)"
-          else
-            BUILD_CORE=true
-            echo "No matching core package exists; the core must be built."
+          VERSION="$(tr -d '[:space:]' < dwm3000-firmware/CORE_VERSION)"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "CORE_VERSION must use MAJOR.MINOR.PATCH (got: $VERSION)" >&2
+            exit 1
           fi
 
+          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/build-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
+          TAG="esp32c3-core-v$VERSION"
+          LEGACY_TAG="esp32c3-core-$FINGERPRINT"
+          ASSET="esp32c3-custom-core-$FINGERPRINT.tar.gz"
+          BUILD_CORE=false
+          PUBLISH_CORE=false
+          SOURCE_TAG=""
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            if printf '%s\n' "$ASSETS" | grep -Fxq "$ASSET"; then
+              echo "Reusing SemVer core release $TAG ($ASSET)"
+            else
+              echo "Core release $TAG already exists for a different fingerprint." >&2
+              echo "Bump dwm3000-firmware/CORE_VERSION before publishing changed core inputs." >&2
+              exit 1
+            fi
+          else
+            LEGACY_ASSETS="$(gh release view "$LEGACY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+            PUBLISH_CORE=true
+            if printf '%s\n' "$LEGACY_ASSETS" | grep -Fxq "$ASSET"; then
+              SOURCE_TAG="$LEGACY_TAG"
+              echo "Adopting existing core package from legacy fingerprint release $LEGACY_TAG"
+            else
+              BUILD_CORE=true
+              echo "No matching SemVer or legacy package exists; the core must be built."
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
           echo "build_core=$BUILD_CORE" >> "$GITHUB_OUTPUT"
+          echo "publish_core=$PUBLISH_CORE" >> "$GITHUB_OUTPUT"
+          echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
           echo "arduino_cli_version=$ARDUINO_CLI_VERSION" >> "$GITHUB_OUTPUT"
           echo "fqbn=$FQBN" >> "$GITHUB_OUTPUT"
 
   core:
     name: Build and publish custom ESP32-C3 core
     needs: prepare
-    if: needs.prepare.outputs.build_core == 'true'
+    if: needs.prepare.outputs.publish_core == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     permissions:
       contents: write
     env:
+      CORE_VERSION: ${{ needs.prepare.outputs.core_version }}
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      CORE_SOURCE_TAG: ${{ needs.prepare.outputs.core_source_tag }}
+      BUILD_CORE: ${{ needs.prepare.outputs.build_core }}
       FQBN: ${{ needs.prepare.outputs.fqbn }}
     steps:
       - name: Check out source
@@ -97,11 +128,13 @@ jobs:
           fetch-depth: 1
 
       - name: Install Arduino CLI
+        if: env.BUILD_CORE == 'true'
         uses: arduino/setup-arduino-cli@v2
         with:
           version: ${{ needs.prepare.outputs.arduino_cli_version }}
 
       - name: Install ESP32 core build prerequisites
+        if: env.BUILD_CORE == 'true'
         run: |
           sudo apt-get update
           sudo apt-get install --no-install-recommends -y \
@@ -109,36 +142,35 @@ jobs:
             libncurses-dev libssl-dev ninja-build python3-venv wget zip
 
       - name: Free disk space for ESP-IDF and Arduino toolchains
+        if: env.BUILD_CORE == 'true'
         run: |
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
 
-      - name: Preflight write access for the fingerprinted core release
+      - name: Preflight write access for the SemVer core release
         shell: bash
         run: |
           set -Eeuo pipefail
           DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
-          if ! gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Creating draft core release on $DEFAULT_BRANCH before the long build."
-            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Draft, content-addressed custom ESP32-C3 core. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
-              --draft --prerelease
-          else
-            echo "Core release $CORE_TAG already exists; checking its default-branch target before the build."
-            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Draft, content-addressed custom ESP32-C3 core. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
-              --prerelease
+          if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Refusing to modify existing SemVer release $CORE_TAG." >&2
+            exit 1
           fi
 
+          echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
+          gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$DEFAULT_BRANCH" \
+            --title "ESP32-C3 custom core v$CORE_VERSION" \
+            --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+            --draft --prerelease
+
       - name: Build the pinned eight-peer ESP32-C3 core
+        if: env.BUILD_CORE == 'true'
         run: ./dwm3000-firmware/build-custom-arduino-core.sh
 
-      - name: Package and publish the versioned core
+      - name: Package freshly built core
+        if: env.BUILD_CORE == 'true'
         shell: bash
         run: |
           set -Eeuo pipefail
@@ -163,6 +195,7 @@ jobs:
           test "$TINYUSB_SHA" = "$TINYUSB_COMMIT"
 
           jq -n \
+            --arg core_version "$CORE_VERSION" \
             --arg fingerprint "$CORE_FINGERPRINT" \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_commit "$GITHUB_SHA" \
@@ -177,6 +210,7 @@ jobs:
             --argjson nimble_max_connections "$NIMBLE_MAX_CONNECTIONS" \
             --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
             '{
+              core_version: $core_version,
               core_fingerprint: $fingerprint,
               source_repository: $source_repository,
               source_commit: $source_commit,
@@ -199,27 +233,72 @@ jobs:
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
-          # Preflight created this draft on the default branch before the core build.
-          # Upload first, then publish, so consumers never see a release without its asset.
+      - name: Adopt existing fingerprinted core package
+        if: env.BUILD_CORE != 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$CORE_SOURCE_TAG" ]] || { echo "Missing source tag for core package reuse." >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/core-source" "$RUNNER_TEMP/core-reuse" "$RUNNER_TEMP/core-release"
+          gh release download "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-source"
+          tar -xzf "$RUNNER_TEMP/core-source/$CORE_ASSET" -C "$RUNNER_TEMP/core-reuse"
+
+          source dwm3000-firmware/core-build.env
+          CORE_DIR="$RUNNER_TEMP/core-reuse/hardware/espressif/esp32"
+          SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          MANIFEST="$RUNNER_TEMP/core-reuse/core-manifest.json"
+          test -s "$CORE_DIR/platform.txt"
+          test -s "$SDKCONFIG"
+          test -s "$MANIFEST"
+          jq -e \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg builder "$BUILDER_COMMIT" \
+            --arg arduino "$ARDUINO_COMMIT" \
+            --arg idf "$IDF_COMMIT" \
+            --arg tinyusb "$TINYUSB_COMMIT" \
+            --arg fqbn "$FQBN" \
+            --argjson host_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson controller_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '.core_fingerprint == $fingerprint and
+             .arduino_esp32_builder_commit == $builder and
+             .arduino_esp32_commit == $arduino and
+             .esp_idf_commit == $idf and
+             .tinyusb_commit == $tinyusb and
+             .build_fqbn == $fqbn and
+             .nimble_max_connections == $host_connections and
+             .bluetooth_controller_max_activities == $controller_activities' \
+            "$MANIFEST" >/dev/null
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+          EXPECTED_SDKCONFIG_SHA="$(jq -r '.sdkconfig_sha256' "$MANIFEST")"
+          ACTUAL_SDKCONFIG_SHA="$(sha256sum "$SDKCONFIG" | awk '{print $1}')"
+          test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
+
+          jq --arg version "$CORE_VERSION" '.core_version = $version' "$MANIFEST" > "$MANIFEST.tmp"
+          mv "$MANIFEST.tmp" "$MANIFEST"
+          tar --exclude-vcs -C "$RUNNER_TEMP/core-reuse" \
+            -czf "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+            hardware core-manifest.json
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
+
+      - name: Publish SemVer core release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
           DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
 
-          if ! gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Draft custom Arduino-ESP32 core. Exact source commit and upstream revisions are in core-manifest.json." \
-              --draft --prerelease
-          fi
-
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-            --repo "$GITHUB_REPOSITORY" --clobber
+            --repo "$GITHUB_REPOSITORY"
 
           gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$DEFAULT_BRANCH" \
             --draft=false --prerelease \
-            --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-            --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard. The exact source commit, core fingerprint inputs, upstream revisions, and validated BLE settings are recorded in core-manifest.json."
+            --title "ESP32-C3 custom core v$CORE_VERSION" \
+            --notes "SemVer release for custom Arduino-ESP32 core v$CORE_VERSION. The fingerprinted asset filename and core-manifest.json identify the exact build inputs and SDK configuration. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
 
           gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
