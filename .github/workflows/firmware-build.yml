@@ -4,7 +4,6 @@ on:
   push:
     branches:
       - main
-      - ci/firmware-artifacts
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
