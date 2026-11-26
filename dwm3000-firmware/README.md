@@ -8,9 +8,12 @@ The firmware README describes how to build, flash, wire, and test the firmware. 
 
 - `UwbNode/` — Arduino CLI firmware for the Seeed XIAO ESP32-C3 and DWM3000
 - `PROTOCOL.md` — normative host API specification with per-command request/response schemas, examples, events, and BLE wire formats
-- `pi_client.py` — Python command-line serial client
+- `pi_client.py` — Python host client
 - `requirements.txt` — Python host-client dependencies
 - `tests/` — host-side protocol tests
+- `FIRMWARE_VERSION` — semantic firmware release version, independent of the wire protocol version
+- `CORE_VERSION` — semantic custom Arduino-ESP32 core release version, independent of the firmware version
+- `flash-windows.ps1` — Windows helper for uploading a CI-precompiled build using Arduino CLI
 
 ## Hardware and pin map
 
@@ -30,15 +33,15 @@ The reference target is a Seeed XIAO ESP32-C3 connected to a DWM3000 module.
 
 Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strapping pins; verify boot, reset and upload behavior with the actual board circuitry. Confirm this pin map against the assembled hardware revision before wiring.
 
-## Build and flash firmware
+## Build and flash firmware locally
 
-Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, and compile the firmware:
+Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, install the pinned Arduino libraries (including NimBLE-Arduino 2.5.0), and compile the firmware:
 
 ```sh
 ./setup-custom-arduino-core.sh
 ```
 
-The script pins the library builder to commit `165a3d6`, uses the matching Arduino-ESP32 `idf-release/v5.5` and ESP-IDF `release/v5.5` branches, and builds with:
+The core builder pins the library builder, Arduino-ESP32, ESP-IDF, and TinyUSB source revisions in `core-build.env`. The setup wrapper builds the core, installs the pinned Arduino libraries, and compiles the firmware. The core-only builder is also available directly as `./build-custom-arduino-core.sh`. Both use:
 
 ```ini
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
@@ -51,12 +54,15 @@ Requirements: Arduino CLI, Git, Python 3.9 or newer, and the native build prereq
 
 The default core and builder directories can be overridden with `ARDUINO_SKETCHBOOK_DIR`, `ESP32_ARDUINO_CORE_DIR`, and `ESP32_ARDUINO_LIB_BUILDER_DIR`.
 
-After the custom core has been built, subsequent firmware-only builds can use Arduino CLI directly without BLE compiler flag overrides:
+After the custom core has been built, install the firmware's pinned Arduino library dependency and compile without BLE compiler flag overrides:
 
 ```sh
+arduino-cli lib install "NimBLE-Arduino@2.5.0"
 arduino-cli compile --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
+
+The pinned Arduino Library Manager dependencies are listed in `arduino-libraries.txt` and are installed automatically by `setup-custom-arduino-core.sh`. For a separate direct compile, install them with `arduino-cli lib install "NimBLE-Arduino@2.5.0"` first.
 
 Upload the compiled sketch:
 
@@ -65,6 +71,37 @@ arduino-cli upload -p /dev/ttyACM0 --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,
 ```
 
 The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
+
+## CI build artifacts and firmware releases
+
+The CI pipeline keeps the custom ESP32-C3 core separate from the UwbNode firmware. The immutable core inputs are recorded in `core-build.env`; the core build logic lives in `build-custom-arduino-core.sh`.
+
+Before compiling firmware, CI calculates a SHA-256 fingerprint from those two core inputs and looks for the exact matching permanent core package:
+
+- **Core inputs changed:** the fingerprint changes, so CI builds the eight-peer core, validates the NimBLE/controller settings, and publishes the package in a SemVer-tagged GitHub Release (`esp32c3-core-v<CORE_VERSION>`).
+- **Firmware sources changed only:** the fingerprint is unchanged, so CI downloads and verifies the existing core package. It does not rebuild ESP-IDF or the custom core.
+- **Both changed:** CI builds and publishes the new core first. The firmware job waits for that job to succeed, then compiles using the new core.
+- **Core build failed:** firmware compilation is blocked. CI never silently falls back to an older core.
+
+The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact source commit, core fingerprint, builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Core releases use the independent `CORE_VERSION` SemVer tag (`esp32c3-core-v<CORE_VERSION>`) and title (`ESP32-C3 8-peer core v<CORE_VERSION>`). The current prerelease is `0.1.0-alpha.1`, producing tag `esp32c3-core-v0.1.0-alpha.1` and archive `esp32c3-custom-core-v0.1.0-alpha.1.tar.gz`. The full SHA-256 fingerprint stays in `core-manifest.json` for exact matching and reuse. The release also exposes `core-manifest.json` as a small sidecar asset so future CI runs can find a matching core across earlier SemVer releases. A new version can adopt an existing matching archive without rebuilding or repacking it. Before creating a new release, CI creates a draft tag targeting the repository default branch; this catches release-token restrictions before the long build. GitHub requires the default-branch target because the Actions GITHUB_TOKEN cannot carry Workflows:write when the target commit changes workflow files; the manifest still preserves the actual build-source commit. The permanent GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
+
+Every successful firmware build publishes the `dwm3000-firmware-esp32c3` Actions artifact. Its manifest records both `CORE_VERSION` and `FIRMWARE_VERSION`. The pinned Arduino Library Manager dependencies, including NimBLE-Arduino 2.5.0, are installed and verified in the firmware job. When `FIRMWARE_VERSION` changes on `main`, the workflow also creates `firmware-v<VERSION>` and a GitHub Release containing the complete firmware ZIP. Routine firmware changes without a version bump do not create a new firmware release.
+
+On Windows, install Arduino CLI and the standard Espressif ESP32 board package (for the board definition and Windows upload tools; it is not used to compile this firmware):
+
+```powershell
+arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32
+```
+
+Download and extract the latest successful `dwm3000-firmware-esp32c3` artifact from the repository's **Actions** tab. Run the included helper, replacing `COM5` with the node's serial port:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\\flash-windows.ps1 -Port COM5
+```
+
+The helper invokes `arduino-cli upload` with the precompiled `build` directory. It does not compile on Windows and does not require the custom Arduino CLI executable or a Windows port of the eight-peer build patch. The eight-peer NimBLE settings are already compiled into the firmware. The helper accepts `-Fqbn` to override the default Windows Espressif FQBN and `-Baud` to change upload speed.
 
 ## BLE peer messaging
 
@@ -76,8 +113,8 @@ BLE uses NimBLE-Arduino 2.5.0 and runs independently of UWB ranging.
 - While enabled, HUB nodes scan for peers and run one Central connection attempt at a time; scanning pauses through connection and GATT identity validation. Failed attempts enter backoff and are retried automatically. PERIPHERAL nodes advertise and accept permitted peers. The node manages scanning, advertising, connections, and reconnection autonomously; hosts read per-peer status and detailed connection failure events.
 - Up to eight concurrent peer links are maintained. The NimBLE host is configured for eight connections; the Bluetooth controller activity pool is configured for nine activities.
 - An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
-- Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
-- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. \`BLE_DATA_SENT\` indicates that the remote host retrieved the complete message.
+- Application messages are unicast. `send-to-peer PEER_ID TEXT` routes to the specified connected peer; the node does not broadcast application payloads.
+- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. `BLE_DATA_SENT` indicates that the remote host retrieved the complete message.
 
 ## Use the Python client
 

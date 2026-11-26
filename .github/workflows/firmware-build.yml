@@ -1,0 +1,619 @@
+name: DWM3000 firmware build
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "dwm3000-firmware/**"
+      - ".gitmodules"
+      - ".github/workflows/firmware-build.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: firmware-build-${{ github.ref }}
+  cancel-in-progress: false
+
+env:
+  UWB_NODE_DIR: dwm3000-firmware/UwbNode
+  DRIVER_LIBRARY_DIR: dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
+  BUILD_DIR: ${{ github.workspace }}/.ci-firmware-build
+  ARTIFACT_DIR: ${{ github.workspace }}/ci-firmware-artifact
+  ARDUINO_SKETCHBOOK_DIR: ${{ github.workspace }}/.ci-arduino
+  ARDUINO_DIRECTORIES_USER: ${{ github.workspace }}/.ci-arduino
+  ESP32_ARDUINO_CORE_DIR: ${{ github.workspace }}/.ci-arduino/hardware/espressif/esp32
+  ESP32_ARDUINO_LIB_BUILDER_DIR: ${{ github.workspace }}/.ci-esp32-arduino-lib-builder
+  ESP32_BUILDER_PYTHON_ENV: ${{ github.workspace }}/.ci-builder-venv
+  IDF_TOOLS_PATH: ${{ github.workspace }}/.ci-espressif-tools
+  GH_TOKEN: ${{ github.token }}
+  REPOSITORY_DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+
+jobs:
+  prepare:
+    name: Resolve custom core artifact
+    runs-on: ubuntu-22.04
+    outputs:
+      core_version: ${{ steps.core.outputs.version }}
+      core_fingerprint: ${{ steps.core.outputs.fingerprint }}
+      core_tag: ${{ steps.core.outputs.tag }}
+      core_asset: ${{ steps.core.outputs.asset }}
+      core_manifest_asset: ${{ steps.core.outputs.manifest_asset }}
+      build_core: ${{ steps.core.outputs.build_core }}
+      publish_core: ${{ steps.core.outputs.publish_core }}
+      core_source_tag: ${{ steps.core.outputs.source_tag }}
+      core_source_asset: ${{ steps.core.outputs.source_asset }}
+      arduino_cli_version: ${{ steps.core.outputs.arduino_cli_version }}
+      fqbn: ${{ steps.core.outputs.fqbn }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Validate build scripts
+        run: bash -n dwm3000-firmware/build-custom-arduino-core.sh dwm3000-firmware/setup-custom-arduino-core.sh
+
+      - name: Calculate the core fingerprint and check the artifact store
+        id: core
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source dwm3000-firmware/core-build.env
+
+          VERSION="$(tr -d '[:space:]' < dwm3000-firmware/CORE_VERSION)"
+          if [[ ! "$VERSION" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "CORE_VERSION must use MAJOR.MINOR.PATCH with an optional SemVer prerelease suffix (got: $VERSION)" >&2
+            exit 1
+          fi
+
+          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/build-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
+          TAG="esp32c3-core-v$VERSION"
+          ASSET="esp32c3-custom-core-v$VERSION.tar.gz"
+          MANIFEST_ASSET="core-manifest.json"
+          LEGACY_ASSET="esp32c3-custom-core-$FINGERPRINT.tar.gz"
+          BUILD_CORE=false
+          PUBLISH_CORE=false
+          SOURCE_TAG=""
+          SOURCE_ASSET=""
+
+          if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            RELEASE_INFO="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)"
+            IS_DRAFT="$(jq -r '.isDraft' <<< "$RELEASE_INFO")"
+            ASSETS="$(jq -r '.assets[].name' <<< "$RELEASE_INFO")"
+            if printf '%s\n' "$ASSETS" | grep -Fxq "$ASSET" && printf '%s\n' "$ASSETS" | grep -Fxq "$MANIFEST_ASSET"; then
+              MANIFEST_DIR="$(mktemp -d)"
+              gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern "$MANIFEST_ASSET" --dir "$MANIFEST_DIR"
+              jq -e --arg fingerprint "$FINGERPRINT" '.core_fingerprint == $fingerprint' "$MANIFEST_DIR/$MANIFEST_ASSET" >/dev/null
+              if [[ "$IS_DRAFT" == "true" ]]; then
+                PUBLISH_CORE=true
+                SOURCE_TAG="$TAG"
+                SOURCE_ASSET="$ASSET"
+                echo "Resuming draft SemVer release $TAG with its matching core package."
+              else
+                echo "Reusing published SemVer core release $TAG ($ASSET)"
+              fi
+            elif [[ "$IS_DRAFT" == "true" ]]; then
+              PUBLISH_CORE=true
+              BUILD_CORE=true
+              echo "Resuming draft $TAG by rebuilding its missing or incomplete package."
+            else
+              echo "Core release $TAG exists but its assets do not match fingerprint $FINGERPRINT." >&2
+              echo "Bump dwm3000-firmware/CORE_VERSION before publishing changed core inputs." >&2
+              exit 1
+            fi
+          else
+            # Search prior core releases by fingerprint. Historical fingerprint-named
+            # archives are recognized for this migration; future SemVer archives are
+            # discovered using their core-manifest.json sidecar.
+            RELEASE_TAGS="$(gh api "repos/$GITHUB_REPOSITORY/releases?per_page=100" --jq '.[] | select(.draft == false) | .tag_name')"
+            while IFS= read -r CANDIDATE_TAG; do
+              [[ -n "$CANDIDATE_TAG" && "$CANDIDATE_TAG" != "$TAG" ]] || continue
+              CANDIDATE_ASSETS="$(gh release view "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+              CANDIDATE_ARCHIVE="$(printf '%s\n' "$CANDIDATE_ASSETS" | grep -E '^esp32c3-custom-core-.*\.tar\.gz$' | head -n 1 || true)"
+              [[ -n "$CANDIDATE_ARCHIVE" ]] || continue
+
+              if [[ "$CANDIDATE_ARCHIVE" == "$LEGACY_ASSET" ]]; then
+                SOURCE_TAG="$CANDIDATE_TAG"
+                SOURCE_ASSET="$CANDIDATE_ARCHIVE"
+                break
+              fi
+
+              if printf '%s\n' "$CANDIDATE_ASSETS" | grep -Fxq "$MANIFEST_ASSET"; then
+                MANIFEST_DIR="$(mktemp -d)"
+                if gh release download "$CANDIDATE_TAG" --repo "$GITHUB_REPOSITORY" --pattern "$MANIFEST_ASSET" --dir "$MANIFEST_DIR" >/dev/null 2>&1 &&
+                   jq -e --arg fingerprint "$FINGERPRINT" '.core_fingerprint == $fingerprint' "$MANIFEST_DIR/$MANIFEST_ASSET" >/dev/null 2>&1; then
+                  SOURCE_TAG="$CANDIDATE_TAG"
+                  SOURCE_ASSET="$CANDIDATE_ARCHIVE"
+                  break
+                fi
+              fi
+            done <<< "$RELEASE_TAGS"
+
+            PUBLISH_CORE=true
+            if [[ -n "$SOURCE_TAG" ]]; then
+              echo "Reusing matching core package from $SOURCE_TAG ($SOURCE_ASSET)"
+            else
+              BUILD_CORE=true
+              echo "No published core has fingerprint $FINGERPRINT; a new core build is required."
+            fi
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "manifest_asset=$MANIFEST_ASSET" >> "$GITHUB_OUTPUT"
+          echo "build_core=$BUILD_CORE" >> "$GITHUB_OUTPUT"
+          echo "publish_core=$PUBLISH_CORE" >> "$GITHUB_OUTPUT"
+          echo "source_tag=$SOURCE_TAG" >> "$GITHUB_OUTPUT"
+          echo "source_asset=$SOURCE_ASSET" >> "$GITHUB_OUTPUT"
+          echo "arduino_cli_version=$ARDUINO_CLI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "fqbn=$FQBN" >> "$GITHUB_OUTPUT"
+
+  core:
+    name: Build and publish custom ESP32-C3 core
+    needs: prepare
+    if: needs.prepare.outputs.publish_core == 'true'
+    runs-on: ubuntu-22.04
+    timeout-minutes: 180
+    permissions:
+      contents: write
+    env:
+      CORE_VERSION: ${{ needs.prepare.outputs.core_version }}
+      CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
+      CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
+      CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      CORE_MANIFEST_ASSET: ${{ needs.prepare.outputs.core_manifest_asset }}
+      CORE_SOURCE_TAG: ${{ needs.prepare.outputs.core_source_tag }}
+      CORE_SOURCE_ASSET: ${{ needs.prepare.outputs.core_source_asset }}
+      BUILD_CORE: ${{ needs.prepare.outputs.build_core }}
+      FQBN: ${{ needs.prepare.outputs.fqbn }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Install Arduino CLI
+        if: env.BUILD_CORE == 'true'
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: ${{ needs.prepare.outputs.arduino_cli_version }}
+
+      - name: Install ESP32 core build prerequisites
+        if: env.BUILD_CORE == 'true'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            build-essential ccache cmake flex bison gperf jq \
+            libncurses-dev libssl-dev ninja-build python3-venv wget zip
+
+      - name: Free disk space for ESP-IDF and Arduino toolchains
+        if: env.BUILD_CORE == 'true'
+        run: |
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
+          df -h /
+
+      - name: Preflight write access for the SemVer core release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
+          [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
+          if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            IS_DRAFT="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            [[ "$IS_DRAFT" == "true" ]] || {
+              echo "Refusing to modify already-published SemVer release $CORE_TAG." >&2
+              exit 1
+            }
+            echo "Resuming draft core release $CORE_TAG."
+            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --prerelease
+          else
+            echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
+            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --draft --prerelease
+          fi
+
+      - name: Build the pinned eight-peer ESP32-C3 core
+        if: env.BUILD_CORE == 'true'
+        run: ./dwm3000-firmware/build-custom-arduino-core.sh
+
+      - name: Package freshly built core
+        if: env.BUILD_CORE == 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source dwm3000-firmware/core-build.env
+
+          CORE_DIR="$ESP32_ARDUINO_CORE_DIR"
+          SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          test -s "$SDKCONFIG"
+          test -s "$CORE_DIR/platform.txt"
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+
+          ARDUINO_SHA="$(git -C "$CORE_DIR" rev-parse HEAD)"
+          BUILDER_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR" rev-parse HEAD)"
+          BUILDER_ARDUINO_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/components/arduino" rev-parse HEAD)"
+          IDF_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/esp-idf" rev-parse HEAD)"
+          TINYUSB_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/components/arduino_tinyusb/tinyusb" rev-parse HEAD)"
+          test "$ARDUINO_SHA" = "$ARDUINO_COMMIT"
+          test "$BUILDER_SHA" = "$BUILDER_COMMIT"
+          test "$BUILDER_ARDUINO_SHA" = "$ARDUINO_COMMIT"
+          test "$IDF_SHA" = "$IDF_COMMIT"
+          test "$TINYUSB_SHA" = "$TINYUSB_COMMIT"
+
+          jq -n \
+            --arg core_version "$CORE_VERSION" \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg source_repository "$GITHUB_REPOSITORY" \
+            --arg source_commit "$GITHUB_SHA" \
+            --arg source_ref "$GITHUB_REF" \
+            --arg builder_commit "$BUILDER_SHA" \
+            --arg arduino_commit "$ARDUINO_SHA" \
+            --arg idf_commit "$IDF_SHA" \
+            --arg tinyusb_commit "$TINYUSB_SHA" \
+            --arg fqbn "$FQBN" \
+            --arg arduino_cli_version "$ARDUINO_CLI_VERSION" \
+            --arg sdkconfig_sha256 "$(sha256sum "$SDKCONFIG" | awk '{print $1}')" \
+            --argjson nimble_max_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '{
+              core_version: $core_version,
+              core_fingerprint: $fingerprint,
+              source_repository: $source_repository,
+              source_commit: $source_commit,
+              source_ref: $source_ref,
+              arduino_cli_version: $arduino_cli_version,
+              build_fqbn: $fqbn,
+              arduino_esp32_builder_commit: $builder_commit,
+              arduino_esp32_commit: $arduino_commit,
+              esp_idf_commit: $idf_commit,
+              tinyusb_commit: $tinyusb_commit,
+              nimble_max_connections: $nimble_max_connections,
+              bluetooth_controller_max_activities: $bluetooth_controller_max_activities,
+              sdkconfig_sha256: $sdkconfig_sha256
+            }' > "$ARDUINO_SKETCHBOOK_DIR/core-manifest.json"
+
+          mkdir -p "$RUNNER_TEMP/core-release"
+          tar --exclude-vcs -C "$ARDUINO_SKETCHBOOK_DIR" \
+            -czf "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+            hardware core-manifest.json
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
+
+      - name: Adopt existing fingerprinted core package
+        if: env.BUILD_CORE != 'true'
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          [[ -n "$CORE_SOURCE_TAG" && -n "$CORE_SOURCE_ASSET" ]] || { echo "Missing source release or asset for core package reuse." >&2; exit 1; }
+          mkdir -p "$RUNNER_TEMP/core-source" "$RUNNER_TEMP/core-release"
+          gh release download "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$CORE_SOURCE_ASSET" --dir "$RUNNER_TEMP/core-source"
+
+          source dwm3000-firmware/core-build.env
+          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" core-manifest.json \
+            > "$RUNNER_TEMP/core-source/core-manifest.json"
+          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" \
+            hardware/espressif/esp32/tools/esp32-arduino-libs/esp32c3/sdkconfig \
+            > "$RUNNER_TEMP/core-source/sdkconfig"
+          test -s "$RUNNER_TEMP/core-source/sdkconfig"
+          jq -e \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg builder "$BUILDER_COMMIT" \
+            --arg arduino "$ARDUINO_COMMIT" \
+            --arg idf "$IDF_COMMIT" \
+            --arg tinyusb "$TINYUSB_COMMIT" \
+            --arg fqbn "$FQBN" \
+            --argjson host_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson controller_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '.core_fingerprint == $fingerprint and
+             .arduino_esp32_builder_commit == $builder and
+             .arduino_esp32_commit == $arduino and
+             .esp_idf_commit == $idf and
+             .tinyusb_commit == $tinyusb and
+             .build_fqbn == $fqbn and
+             .nimble_max_connections == $host_connections and
+             .bluetooth_controller_max_activities == $controller_activities' \
+            "$RUNNER_TEMP/core-source/core-manifest.json" >/dev/null
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$RUNNER_TEMP/core-source/sdkconfig"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$RUNNER_TEMP/core-source/sdkconfig"
+          EXPECTED_SDKCONFIG_SHA="$(jq -r '.sdkconfig_sha256' "$RUNNER_TEMP/core-source/core-manifest.json")"
+          ACTUAL_SDKCONFIG_SHA="$(sha256sum "$RUNNER_TEMP/core-source/sdkconfig" | awk '{print $1}')"
+          test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
+
+          cp "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          jq --arg core_version "$CORE_VERSION" '. + {core_version: $core_version}' \
+            "$RUNNER_TEMP/core-source/core-manifest.json" > "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          test -s "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
+          sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET"
+
+      - name: Publish SemVer core release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
+          [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
+
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          EXISTING_ASSETS="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fxq "$CORE_ASSET"; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+          if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fxq "$CORE_MANIFEST_ASSET"; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
+
+          gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$DEFAULT_BRANCH" \
+            --draft=false --prerelease \
+            --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+            --notes "SemVer prerelease for the ESP32-C3 8-peer core v$CORE_VERSION. The archive filename uses SemVer; core-manifest.json records the full SHA-256 build fingerprint and exact source/configuration provenance. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
+
+          VERIFIED_ASSETS="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          printf '%s\n' "$VERIFIED_ASSETS" | grep -Fxq "$CORE_ASSET"
+          printf '%s\n' "$VERIFIED_ASSETS" | grep -Fxq "$CORE_MANIFEST_ASSET"
+
+          # If migrating from the old fingerprint-named release, retire it only
+          # after the SemVer release is published and its archive matches byte-for-byte.
+          if [[ -n "$CORE_SOURCE_TAG" && "$CORE_SOURCE_TAG" != "$CORE_TAG" ]]; then
+            mkdir -p "$RUNNER_TEMP/core-verify"
+            gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-verify"
+            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" | awk '{print $1}')"
+            RELEASE_SHA="$(sha256sum "$RUNNER_TEMP/core-verify/$CORE_ASSET" | awk '{print $1}')"
+            test "$SOURCE_SHA" = "$RELEASE_SHA"
+            echo "Verified SemVer archive SHA-256: $RELEASE_SHA"
+
+            gh release delete "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag --yes
+            if gh release view "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Legacy fingerprint release still exists after cleanup." >&2
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$CORE_SOURCE_TAG" >/dev/null 2>&1; then
+              echo "Legacy fingerprint tag still exists after cleanup." >&2
+              exit 1
+            fi
+            echo "Removed obsolete fingerprint-named release and tag $CORE_SOURCE_TAG"
+          fi
+
+  firmware:
+    name: Compile and publish DWM3000 firmware
+    needs: [prepare, core]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.core.result == 'success' || needs.core.result == 'skipped')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    env:
+      CORE_VERSION: ${{ needs.prepare.outputs.core_version }}
+      CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
+      CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
+      CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      FQBN: ${{ needs.prepare.outputs.fqbn }}
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: ${{ needs.prepare.outputs.arduino_cli_version }}
+
+      - name: Download and verify the matching custom core
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/core-package" "$ARDUINO_SKETCHBOOK_DIR"
+          gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-package"
+          tar -xzf "$RUNNER_TEMP/core-package/$CORE_ASSET" -C "$ARDUINO_SKETCHBOOK_DIR"
+
+          CORE_MANIFEST="$ARDUINO_SKETCHBOOK_DIR/core-manifest.json"
+          source dwm3000-firmware/core-build.env
+          jq -e \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg builder "$BUILDER_COMMIT" \
+            --arg arduino "$ARDUINO_COMMIT" \
+            --arg idf "$IDF_COMMIT" \
+            --arg tinyusb "$TINYUSB_COMMIT" \
+            --arg fqbn "$FQBN" \
+            --argjson host_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson controller_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '.core_fingerprint == $fingerprint and
+             .arduino_esp32_builder_commit == $builder and
+             .arduino_esp32_commit == $arduino and
+             .esp_idf_commit == $idf and
+             .tinyusb_commit == $tinyusb and
+             .build_fqbn == $fqbn and
+             .nimble_max_connections == $host_connections and
+             .bluetooth_controller_max_activities == $controller_activities' \
+            "$CORE_MANIFEST" >/dev/null
+
+          CORE_DIR="$ESP32_ARDUINO_CORE_DIR"
+          SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          test -s "$CORE_DIR/platform.txt"
+          test -s "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+          EXPECTED_SDKCONFIG_SHA="$(jq -r '.sdkconfig_sha256' "$CORE_MANIFEST")"
+          ACTUAL_SDKCONFIG_SHA="$(sha256sum "$SDKCONFIG" | awk '{print $1}')"
+          test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
+
+          SELECTED_PLATFORM="$(arduino-cli board details --fqbn "$FQBN" --show-properties=expanded | sed -n 's/^runtime\.platform\.path=//p' | tail -n 1)"
+          test -n "$SELECTED_PLATFORM"
+          test "$(cd "$SELECTED_PLATFORM" && pwd -P)" = "$(cd "$CORE_DIR" && pwd -P)"
+          echo "Using core fingerprint $CORE_FINGERPRINT"
+          cat "$CORE_MANIFEST"
+
+      - name: Install pinned Arduino libraries
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          arduino-cli lib update-index
+
+          while IFS= read -r dependency || [[ -n "$dependency" ]]; do
+            [[ -z "$dependency" || "$dependency" == \#* ]] && continue
+            echo "Installing $dependency"
+            arduino-cli lib install "$dependency"
+
+            library_name="${dependency%@*}"
+            library_version="${dependency#*@}"
+            properties="$ARDUINO_SKETCHBOOK_DIR/libraries/$library_name/library.properties"
+            test -s "$properties"
+            grep -Fxq "name=$library_name" "$properties"
+            grep -Fxq "version=$library_version" "$properties"
+          done < dwm3000-firmware/arduino-libraries.txt
+
+          arduino-cli lib list
+
+      - name: Compile firmware
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$BUILD_DIR"
+          arduino-cli compile \
+            --fqbn "$FQBN" \
+            --libraries "$DRIVER_LIBRARY_DIR" \
+            --build-path "$BUILD_DIR" \
+            "$UWB_NODE_DIR"
+
+      - name: Assemble Arduino CLI upload artifact
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$ARTIFACT_DIR/build"
+          cp -a "$BUILD_DIR/." "$ARTIFACT_DIR/build/"
+
+          for required in \
+            "$ARTIFACT_DIR/build/UwbNode.ino.bin" \
+            "$ARTIFACT_DIR/build/UwbNode.ino.bootloader.bin" \
+            "$ARTIFACT_DIR/build/UwbNode.ino.partitions.bin"; do
+            test -s "$required" || {
+              echo "Missing Arduino upload output: $required" >&2
+              find "$ARTIFACT_DIR/build" -maxdepth 2 -type f -printf '%P\n' >&2
+              exit 1
+            }
+          done
+
+          SDKCONFIG="$ESP32_ARDUINO_CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          cp "$SDKCONFIG" "$ARTIFACT_DIR/sdkconfig"
+          cp "$ARDUINO_SKETCHBOOK_DIR/core-manifest.json" "$ARTIFACT_DIR/core-manifest.json"
+          cp dwm3000-firmware/flash-windows.ps1 "$ARTIFACT_DIR/flash-windows.ps1"
+
+          VERSION="$(tr -d '[:space:]' < dwm3000-firmware/FIRMWARE_VERSION)"
+          PROTOCOL_VERSION="$(sed -n -E 's/^static constexpr uint8_t VERSION = ([0-9]+);$/\1/p' dwm3000-firmware/UwbNode/Protocol.h)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "FIRMWARE_VERSION must use MAJOR.MINOR.PATCH (got: $VERSION)" >&2
+            exit 1
+          fi
+          if [[ ! "$PROTOCOL_VERSION" =~ ^[0-9]+$ ]]; then
+            echo "Could not read protocol version from Protocol.h" >&2
+            exit 1
+          fi
+
+          jq -n \
+            --arg repository "$GITHUB_REPOSITORY" \
+            --arg commit "$GITHUB_SHA" \
+            --arg ref "$GITHUB_REF" \
+            --arg firmware_version "$VERSION" \
+            --arg core_version "$CORE_VERSION" \
+            --arg protocol_version "$PROTOCOL_VERSION" \
+            --arg fqbn "$FQBN" \
+            --arg core_fingerprint "$CORE_FINGERPRINT" \
+            --slurpfile core "$ARTIFACT_DIR/core-manifest.json" \
+            '{
+              repository: $repository,
+              source_commit: $commit,
+              source_ref: $ref,
+              firmware_version: $firmware_version,
+              core_version: $core_version,
+              protocol_version: ($protocol_version | tonumber),
+              build_fqbn: $fqbn,
+              chip: "esp32c3",
+              core_fingerprint: $core_fingerprint,
+              core: $core[0],
+              windows_upload_method: "arduino-cli upload --input-dir build"
+            }' > "$ARTIFACT_DIR/manifest.json"
+
+          (
+            cd "$ARTIFACT_DIR"
+            find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum > SHA256SUMS
+          )
+
+      - name: Upload firmware build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dwm3000-firmware-esp32c3
+          path: ${{ github.workspace }}/ci-firmware-artifact/
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Check firmware release version
+        id: firmware-version
+        if: github.ref == 'refs/heads/main'
+        shell: bash
+        env:
+          BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -Eeuo pipefail
+          VERSION="$(tr -d '[:space:]' < dwm3000-firmware/FIRMWARE_VERSION)"
+          if [[ ! "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "FIRMWARE_VERSION must use MAJOR.MINOR.PATCH (got: $VERSION)" >&2
+            exit 1
+          fi
+
+          PREVIOUS_VERSION=""
+          if git cat-file -e "$BEFORE_SHA:dwm3000-firmware/FIRMWARE_VERSION" 2>/dev/null; then
+            PREVIOUS_VERSION="$(git show "$BEFORE_SHA:dwm3000-firmware/FIRMWARE_VERSION" | tr -d '[:space:]')"
+          fi
+
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          if [[ "$VERSION" == "$PREVIOUS_VERSION" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          TAG="firmware-v$VERSION"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists. Bump FIRMWARE_VERSION before releasing again." >&2
+            exit 1
+          fi
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Package firmware release
+        if: steps.firmware-version.outputs.changed == 'true'
+        run: |
+          cd "$ARTIFACT_DIR"
+          zip -qr "$GITHUB_WORKSPACE/dwm3000-firmware-${{ steps.firmware-version.outputs.version }}.zip" .
+
+      - name: Create firmware tag and GitHub Release
+        if: steps.firmware-version.outputs.changed == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: firmware-v${{ steps.firmware-version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          name: DWM3000 firmware v${{ steps.firmware-version.outputs.version }}
+          generate_release_notes: true
+          make_latest: true
+          files: ${{ github.workspace }}/dwm3000-firmware-${{ steps.firmware-version.outputs.version }}.zip
+          fail_on_unmatched_files: true
