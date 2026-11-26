@@ -195,7 +195,6 @@ jobs:
           test "$TINYUSB_SHA" = "$TINYUSB_COMMIT"
 
           jq -n \
-            --arg core_version "$CORE_VERSION" \
             --arg fingerprint "$CORE_FINGERPRINT" \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_commit "$GITHUB_SHA" \
@@ -210,7 +209,6 @@ jobs:
             --argjson nimble_max_connections "$NIMBLE_MAX_CONNECTIONS" \
             --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
             '{
-              core_version: $core_version,
               core_fingerprint: $fingerprint,
               source_repository: $source_repository,
               source_commit: $source_commit,
@@ -246,6 +244,10 @@ jobs:
           source dwm3000-firmware/core-build.env
           tar -xOzf "$RUNNER_TEMP/core-source/$CORE_ASSET" core-manifest.json \
             > "$RUNNER_TEMP/core-source/core-manifest.json"
+          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_ASSET" \
+            hardware/espressif/esp32/tools/esp32-arduino-libs/esp32c3/sdkconfig \
+            > "$RUNNER_TEMP/core-source/sdkconfig"
+          test -s "$RUNNER_TEMP/core-source/sdkconfig"
           jq -e \
             --arg fingerprint "$CORE_FINGERPRINT" \
             --arg builder "$BUILDER_COMMIT" \
@@ -264,6 +266,11 @@ jobs:
              .nimble_max_connections == $host_connections and
              .bluetooth_controller_max_activities == $controller_activities' \
             "$RUNNER_TEMP/core-source/core-manifest.json" >/dev/null
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$RUNNER_TEMP/core-source/sdkconfig"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$RUNNER_TEMP/core-source/sdkconfig"
+          EXPECTED_SDKCONFIG_SHA="$(jq -r '.sdkconfig_sha256' "$RUNNER_TEMP/core-source/core-manifest.json")"
+          ACTUAL_SDKCONFIG_SHA="$(sha256sum "$RUNNER_TEMP/core-source/sdkconfig" | awk '{print $1}')"
+          test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
 
           cp "$RUNNER_TEMP/core-source/$CORE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
