@@ -8,9 +8,11 @@ The firmware README describes how to build, flash, wire, and test the firmware. 
 
 - `UwbNode/` — Arduino CLI firmware for the Seeed XIAO ESP32-C3 and DWM3000
 - `PROTOCOL.md` — normative host API specification with per-command request/response schemas, examples, events, and BLE wire formats
-- `pi_client.py` — Python command-line serial client
+- `pi_client.py` — Python host client
 - `requirements.txt` — Python host-client dependencies
 - `tests/` — host-side protocol tests
+- `FIRMWARE_VERSION` — semantic firmware release version, independent of the wire protocol version
+- `flash-windows.ps1` — Windows helper for uploading a CI-precompiled build using Arduino CLI
 
 ## Hardware and pin map
 
@@ -30,7 +32,7 @@ The reference target is a Seeed XIAO ESP32-C3 connected to a DWM3000 module.
 
 Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strapping pins; verify boot, reset and upload behavior with the actual board circuitry. Confirm this pin map against the assembled hardware revision before wiring.
 
-## Build and flash firmware
+## Build and flash firmware locally
 
 Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, and compile the firmware:
 
@@ -66,6 +68,30 @@ arduino-cli upload -p /dev/ttyACM0 --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,
 
 The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same binary protocol. The bundled Makerfabs port contains the board-specific SPI/reset changes for the XIAO pin map.
 
+## CI build artifacts and firmware releases
+
+The independent firmware release version is maintained in `FIRMWARE_VERSION` using `MAJOR.MINOR.PATCH` semantic versioning. It is not the protocol version defined in `UwbNode/Protocol.h`. Update this file when preparing a firmware release.
+
+A push to `main` that changes firmware sources runs the custom eight-peer ESP32-C3 build and publishes the `dwm3000-firmware-esp32c3` Actions artifact. When `FIRMWARE_VERSION` changes, the workflow also creates a Git tag named `firmware-v<VERSION>` and a GitHub Release containing a ZIP of the complete artifact. Reusing an existing firmware version is rejected; bump the version file before the next release.
+
+On Windows, install Arduino CLI and the standard Espressif ESP32 board package (for the board definition and Windows upload tools; it is not used to compile this firmware):
+
+```powershell
+arduino-cli config add board_manager.additional_urls https://espressif.github.io/arduino-esp32/package_esp32_index.json
+arduino-cli core update-index
+arduino-cli core install esp32:esp32
+```
+
+Download and extract the latest successful `dwm3000-firmware-esp32c3` artifact from the repository's **Actions** tab. Run the included helper, replacing `COM5` with the node's serial port:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\flash-windows.ps1 -Port COM5
+```
+
+The helper invokes `arduino-cli upload` with the precompiled `build` directory. It does not compile on Windows, and does not require the custom Arduino CLI executable or a Windows port of the eight-peer build patch. The eight-peer NimBLE settings are already compiled into the firmware. The helper accepts `-Fqbn` to override the default Windows Espressif FQBN and `-Baud` to change upload speed.
+
+Actions artifacts are retained for 90 days. Firmware releases are retained as GitHub Releases and are not subject to that artifact retention period.
+
 ## BLE peer messaging
 
 BLE uses NimBLE-Arduino 2.5.0 and runs independently of UWB ranging.
@@ -76,8 +102,8 @@ BLE uses NimBLE-Arduino 2.5.0 and runs independently of UWB ranging.
 - While enabled, HUB nodes scan for peers and run one Central connection attempt at a time; scanning pauses through connection and GATT identity validation. Failed attempts enter backoff and are retried automatically. PERIPHERAL nodes advertise and accept permitted peers. The node manages scanning, advertising, connections, and reconnection autonomously; hosts read per-peer status and detailed connection failure events.
 - Up to eight concurrent peer links are maintained. The NimBLE host is configured for eight connections; the Bluetooth controller activity pool is configured for nine activities.
 - An empty peer list is open mode and accepts any valid peer. A non-empty list is an allow-list.
-- Application messages are unicast. \`send-to-peer PEER_ID TEXT\` routes to the specified connected peer; the node does not broadcast application payloads.
-- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. \`BLE_DATA_SENT\` indicates that the remote host retrieved the complete message.
+- Application messages are unicast. `send-to-peer PEER_ID TEXT` routes to the specified connected peer; the node does not broadcast application payloads.
+- Messages are limited to 496 bytes and fragmented according to the negotiated ATT MTU. `BLE_DATA_SENT` indicates that the remote host retrieved the complete message.
 
 ## Use the Python client
 
