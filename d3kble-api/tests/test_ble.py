@@ -1,4 +1,5 @@
 import struct
+import time
 
 import pytest
 
@@ -9,6 +10,16 @@ from d3kble.protocol import Frame, TYPE_EVENT
 class FakeDispatcher:
     def emit(self, *args):
         pass
+
+
+class PendingResultTransport:
+    """Return the message ID without delivering its asynchronous outcome."""
+
+    def request(self, opcode, payload, retryable=False):
+        peer_id, data_length = struct.unpack_from("<HH", payload)
+        assert opcode == "send_to_peer"
+        assert data_length == len(payload) - 4
+        return struct.pack("<H", 37)
 
 
 class EarlyResultTransport:
@@ -103,5 +114,32 @@ def test_receiver_ble_error_does_not_complete_outbound_ticket():
         assert not future.done()
         assert (18, 37) in manager._tickets
         assert manager.tx_errors == 0
+    finally:
+        manager.close()
+
+
+
+def test_sender_ble_error_completes_registered_ticket_immediately():
+    manager = BleManager(None, FakeDispatcher(), delivery_timeout=5.0)
+    manager.transport = PendingResultTransport()
+    manager.start()
+    try:
+        ticket = manager.send(18, b"pong")
+        deadline = time.monotonic() + 1.0
+        while (18, 37) not in manager._tickets and time.monotonic() < deadline:
+            time.sleep(0.005)
+        assert (18, 37) in manager._tickets
+
+        payload = struct.pack("<BHHBBB", 0, 18, 37, 0xFF, 1, 0)
+        manager.on_event(Frame(TYPE_EVENT, 0, 0x8C, 0, payload))
+
+        with pytest.raises(
+            ConnectionError,
+            match=r"BLE delivery failed for peer 18, message 37 .*fragment 255, error 1",
+        ):
+            ticket.wait(timeout=1.0)
+        assert manager.tx_errors == 1
+        assert manager.expired_count == 0
+        assert (18, 37) not in manager._tickets
     finally:
         manager.close()
