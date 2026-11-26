@@ -2,10 +2,8 @@ name: DWM3000 firmware build
 
 on:
   push:
-    # Keep the feature branch enabled only while the PR validation is running.
     branches:
       - main
-      - ci/firmware-artifacts
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
