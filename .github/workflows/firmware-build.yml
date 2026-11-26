@@ -212,14 +212,14 @@ jobs:
             gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
               --title "ESP32-C3 8-peer core v$CORE_VERSION" \
-              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --prerelease
           else
             echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
             gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core v$CORE_VERSION" \
-              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --draft --prerelease
           fi
 
@@ -360,7 +360,7 @@ jobs:
           gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$DEFAULT_BRANCH" \
             --draft=false --prerelease \
-            --title "ESP32-C3 custom core v$CORE_VERSION" \
+            --title "ESP32-C3 8-peer core v$CORE_VERSION" \
             --notes "SemVer prerelease for the ESP32-C3 8-peer core v$CORE_VERSION. The archive filename uses SemVer; core-manifest.json records the full SHA-256 build fingerprint and exact source/configuration provenance. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
 
           VERIFIED_ASSETS="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
