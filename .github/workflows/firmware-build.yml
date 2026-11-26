@@ -2,8 +2,10 @@ name: DWM3000 firmware build
 
 on:
   push:
+    # Keep the feature branch enabled only while the PR validation is running.
     branches:
       - main
+      - ci/firmware-artifacts
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
@@ -177,32 +179,31 @@ jobs:
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
-          # Core packages are content-addressed build outputs, not source releases.
-          # Point their Git tag at the repository's default branch to avoid GitHub's
-          # workflow-file tag protection on unmerged feature-branch workflow changes.
-          # The exact commit used to build this package is recorded in core-manifest.json.
+          # The release target MUST be the default branch. GitHub refuses to create
+          # a release/tag with GITHUB_TOKEN when the target commit changes workflow
+          # files relative to the default branch (GITHUB_TOKEN has no Workflows:write).
+          # The exact commit used for this build is separately recorded in the manifest.
           DEFAULT_BRANCH="$GITHUB_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
-          git fetch --no-tags --depth=1 origin "refs/heads/$DEFAULT_BRANCH"
-          DEFAULT_BRANCH_SHA="$(git rev-parse FETCH_HEAD)"
-          [[ "$DEFAULT_BRANCH_SHA" =~ ^[0-9a-f]{40}$ ]] || {
-            echo "Could not resolve the default branch commit for the core release tag." >&2
-            exit 1
-          }
+
+          RELEASE_NOTES="Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard. The exact source commit, core fingerprint inputs, upstream revisions, and validated BLE settings are recorded in core-manifest.json."
 
           if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --draft=false --prerelease --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+              --notes "$RELEASE_NOTES"
             gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY" --clobber
-            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --draft=false --prerelease --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The release tag points at the repository default branch; the exact build source commit is recorded in core-manifest.json. The fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision."
           else
             gh release create "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY" \
-              --target "$DEFAULT_BRANCH_SHA" \
+              --target "$DEFAULT_BRANCH" \
               --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The release tag points at the repository default branch; the exact build source commit is recorded in core-manifest.json. The fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision." \
+              --notes "$RELEASE_NOTES" \
               --prerelease
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+              --repo "$GITHUB_REPOSITORY" --clobber
           fi
 
           gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
