@@ -15,10 +15,9 @@ permissions:
 
 concurrency:
   group: firmware-build-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 env:
-  FQBN: espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin
   UWB_NODE_DIR: dwm3000-firmware/UwbNode
   DRIVER_LIBRARY_DIR: dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
   BUILD_DIR: ${{ github.workspace }}/.ci-firmware-build
@@ -40,11 +39,16 @@ jobs:
       core_tag: ${{ steps.core.outputs.tag }}
       core_asset: ${{ steps.core.outputs.asset }}
       build_core: ${{ steps.core.outputs.build_core }}
+      arduino_cli_version: ${{ steps.core.outputs.arduino_cli_version }}
+      fqbn: ${{ steps.core.outputs.fqbn }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Validate build scripts
+        run: bash -n dwm3000-firmware/build-custom-arduino-core.sh dwm3000-firmware/setup-custom-arduino-core.sh
 
       - name: Calculate the core fingerprint and check the artifact store
         id: core
@@ -70,6 +74,8 @@ jobs:
           echo "tag=$TAG" >> "$GITHUB_OUTPUT"
           echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
           echo "build_core=$BUILD_CORE" >> "$GITHUB_OUTPUT"
+          echo "arduino_cli_version=$ARDUINO_CLI_VERSION" >> "$GITHUB_OUTPUT"
+          echo "fqbn=$FQBN" >> "$GITHUB_OUTPUT"
 
   core:
     name: Build and publish custom ESP32-C3 core
@@ -81,6 +87,7 @@ jobs:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      FQBN: ${{ needs.prepare.outputs.fqbn }}
     steps:
       - name: Check out source
         uses: actions/checkout@v4
@@ -90,7 +97,7 @@ jobs:
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
         with:
-          version: "1.5.1"
+          version: ${{ needs.prepare.outputs.arduino_cli_version }}
 
       - name: Install ESP32 core build prerequisites
         run: |
@@ -170,7 +177,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and setup-custom-arduino-core.sh, including the pinned TinyUSB revision. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
+              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and build-custom-arduino-core.sh, including the pinned TinyUSB revision. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
               --prerelease
           fi
 
@@ -190,6 +197,7 @@ jobs:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      FQBN: ${{ needs.prepare.outputs.fqbn }}
     steps:
       - name: Check out source and submodules
         uses: actions/checkout@v4
@@ -200,7 +208,7 @@ jobs:
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
         with:
-          version: "1.5.1"
+          version: ${{ needs.prepare.outputs.arduino_cli_version }}
 
       - name: Download and verify the matching custom core
         shell: bash

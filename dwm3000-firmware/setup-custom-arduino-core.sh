@@ -69,7 +69,7 @@ fi
 log "Installing the pinned Arduino libraries required by UwbNode"
 "$ARDUINO_CLI_PATH" lib update-index
 while IFS= read -r dependency || [[ -n "$dependency" ]]; do
-  [[ -z "$dependency" || "$dependency" == #* ]] && continue
+  [[ -z "$dependency" || "$dependency" == \#* ]] && continue
   "$ARDUINO_CLI_PATH" lib install "$dependency"
   library_name="${dependency%@*}"
   library_version="${dependency#*@}"

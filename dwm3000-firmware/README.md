@@ -73,9 +73,18 @@ The serial host interface uses UART1 at 460800 baud, 8N1; USB CDC uses the same 
 
 ## CI build artifacts and firmware releases
 
-The independent firmware release version is maintained in `FIRMWARE_VERSION` using `MAJOR.MINOR.PATCH` semantic versioning. It is not the protocol version defined in `UwbNode/Protocol.h`. Update this file when preparing a firmware release.
+The CI pipeline keeps the custom ESP32-C3 core separate from the UwbNode firmware. The immutable core inputs are recorded in `core-build.env`; the core build logic lives in `build-custom-arduino-core.sh`.
 
-A push to `main` that changes firmware sources runs the custom eight-peer ESP32-C3 build and publishes the `dwm3000-firmware-esp32c3` Actions artifact. When `FIRMWARE_VERSION` changes, the workflow also creates a Git tag named `firmware-v<VERSION>` and a GitHub Release containing a ZIP of the complete artifact. Reusing an existing firmware version is rejected; bump the version file before the next release.
+Before compiling firmware, CI calculates a SHA-256 fingerprint from those two core inputs and looks for the exact matching permanent core package:
+
+- **Core inputs changed:** the fingerprint changes, so CI builds the eight-peer core, validates the NimBLE/controller settings, and publishes a fingerprint-named GitHub Release asset.
+- **Firmware sources changed only:** the fingerprint is unchanged, so CI downloads and verifies the existing core package. It does not rebuild ESP-IDF or the custom core.
+- **Both changed:** CI builds and publishes the new core first. The firmware job waits for that job to succeed, then compiles using the new core.
+- **Core build failed:** firmware compilation is blocked. CI never silently falls back to an older core.
+
+The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Its fingerprinted GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
+
+Every successful firmware build publishes the `dwm3000-firmware-esp32c3` Actions artifact. The pinned Arduino Library Manager dependencies, including NimBLE-Arduino 2.5.0, are installed and verified in the firmware job. When `FIRMWARE_VERSION` changes on `main`, the workflow also creates `firmware-v<VERSION>` and a GitHub Release containing the complete firmware ZIP. Routine firmware changes without a version bump do not create a new firmware release.
 
 On Windows, install Arduino CLI and the standard Espressif ESP32 board package (for the board definition and Windows upload tools; it is not used to compile this firmware):
 
@@ -88,12 +97,10 @@ arduino-cli core install esp32:esp32
 Download and extract the latest successful `dwm3000-firmware-esp32c3` artifact from the repository's **Actions** tab. Run the included helper, replacing `COM5` with the node's serial port:
 
 ```powershell
-powershell -ExecutionPolicy Bypass -File .\flash-windows.ps1 -Port COM5
+powershell -ExecutionPolicy Bypass -File .\\flash-windows.ps1 -Port COM5
 ```
 
-The helper invokes `arduino-cli upload` with the precompiled `build` directory. It does not compile on Windows, and does not require the custom Arduino CLI executable or a Windows port of the eight-peer build patch. The eight-peer NimBLE settings are already compiled into the firmware. The helper accepts `-Fqbn` to override the default Windows Espressif FQBN and `-Baud` to change upload speed.
-
-Actions artifacts are retained for 90 days. Firmware releases are retained as GitHub Releases and are not subject to that artifact retention period.
+The helper invokes `arduino-cli upload` with the precompiled `build` directory. It does not compile on Windows and does not require the custom Arduino CLI executable or a Windows port of the eight-peer build patch. The eight-peer NimBLE settings are already compiled into the firmware. The helper accepts `-Fqbn` to override the default Windows Espressif FQBN and `-Baud` to change upload speed.
 
 ## BLE peer messaging
 
