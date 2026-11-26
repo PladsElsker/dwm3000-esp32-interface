@@ -115,6 +115,23 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
 
+      - name: Preflight write access for the fingerprinted core release
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
+          [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
+          if ! gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Creating draft core release on $DEFAULT_BRANCH before the long build."
+            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+              --notes "Draft, content-addressed custom ESP32-C3 core. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --draft --prerelease
+          else
+            echo "Core release $CORE_TAG already exists; publishing access is preflighted."
+          fi
+
       - name: Build the pinned eight-peer ESP32-C3 core
         run: ./dwm3000-firmware/build-custom-arduino-core.sh
 
@@ -179,32 +196,27 @@ jobs:
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
-          # The release target MUST be the default branch. GitHub refuses to create
-          # a release/tag with GITHUB_TOKEN when the target commit changes workflow
-          # files relative to the default branch (GITHUB_TOKEN has no Workflows:write).
-          # The exact commit used for this build is separately recorded in the manifest.
+          # Preflight created this draft on the default branch before the core build.
+          # Upload first, then publish, so consumers never see a release without its asset.
           DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
 
-          RELEASE_NOTES="Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard. The exact source commit, core fingerprint inputs, upstream revisions, and validated BLE settings are recorded in core-manifest.json."
-
-          if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-              --target "$DEFAULT_BRANCH" \
-              --draft=false --prerelease --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "$RELEASE_NOTES"
-            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-              --repo "$GITHUB_REPOSITORY" --clobber
-          else
-            gh release create "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-              --repo "$GITHUB_REPOSITORY" \
+          if ! gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
               --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "$RELEASE_NOTES" \
-              --prerelease
-            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-              --repo "$GITHUB_REPOSITORY" --clobber
+              --notes "Draft custom Arduino-ESP32 core. Exact source commit and upstream revisions are in core-manifest.json." \
+              --draft --prerelease
           fi
+
+          gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+            --repo "$GITHUB_REPOSITORY" --clobber
+
+          gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --target "$DEFAULT_BRANCH" \
+            --draft=false --prerelease \
+            --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+            --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard. The exact source commit, core fingerprint inputs, upstream revisions, and validated BLE settings are recorded in core-manifest.json."
 
           gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
