@@ -129,7 +129,12 @@ jobs:
               --notes "Draft, content-addressed custom ESP32-C3 core. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --draft --prerelease
           else
-            echo "Core release $CORE_TAG already exists; publishing access is preflighted."
+            echo "Core release $CORE_TAG already exists; checking its default-branch target before the build."
+            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+              --notes "Draft, content-addressed custom ESP32-C3 core. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --prerelease
           fi
 
       - name: Build the pinned eight-peer ESP32-C3 core
