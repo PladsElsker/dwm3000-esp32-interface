@@ -444,10 +444,13 @@ class CommsManager:
                     has_handler = bool(self._callbacks[
                         "request" if kind == "request" else "message"
                     ])
+                    if not has_handler:
+                        # Keep suspension ordered with handler registration so a
+                        # concurrent registration cannot be overwritten here.
+                        self.store.retry_inbox_later(
+                            peer_id, message_id, _attempts, None
+                        )
                 if not has_handler:
-                    # Retain the inbox entry without periodically retrying an
-                    # unavailable handler. Handler registration reactivates it.
-                    self.store.retry_inbox_later(peer_id, message_id, _attempts, None)
                     continue
                 key = (peer_id, message_id)
                 with self._active_dispatch_lock:
