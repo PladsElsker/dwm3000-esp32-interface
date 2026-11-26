@@ -11,7 +11,7 @@ readonly BUILDER_REPO="https://github.com/PladsElsker/esp32-arduino-lib-builder.
 readonly IDF_REPO="https://github.com/espressif/esp-idf.git"
 readonly BUILDER_COMMIT="165a3d6e094266eb8c54c96732c0f0cb3e1b3e84"
 readonly ARDUINO_REPO="https://github.com/espressif/arduino-esp32.git"
-readonly ARDUINO_BRANCH="idf-release/v5.5"
+readonly ARDUINO_BRANCH="release/v3.3.x"
 readonly BUILDER_IDF_BRANCH="release/v5.5"
 readonly FQBN="espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin"
 readonly SUBMODULE_PATH="dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"
