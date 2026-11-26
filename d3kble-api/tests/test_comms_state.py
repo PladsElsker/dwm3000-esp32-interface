@@ -7,32 +7,32 @@ from d3kble.comms_state import CommsState
 def test_volatile_outbox_ack_and_inbox_deduplication():
     state = CommsState()
     state.enqueue("m1", 7, "message", b'{"id":"m1"}')
-    rows = state.due_outbox(time.time() + 1)
+    rows = state.due_outbox(time.monotonic() + 1)
     assert rows[0][0:3] == ("m1", 7, "message")
-    state.mark_transport_attempt("m1", 1, time.time() + 1)
+    state.mark_transport_attempt("m1", 1, time.monotonic() + 1)
     assert state.acknowledge(7, "m1") == "message"
-    assert state.due_outbox(time.time() + 10) == []
+    assert state.due_outbox(time.monotonic() + 10) == []
 
     assert state.insert_inbox(7, "m2", "request", '{"id":"m2"}', time.time())
     assert not state.insert_inbox(7, "m2", "request", '{"id":"m2"}', time.time())
-    pending = state.due_inbox(time.time() + 1)
+    pending = state.due_inbox(time.monotonic() + 1)
     assert pending[0][0:3] == (7, "m2", "request")
     state.complete_inbox(7, "m2")
-    assert state.due_inbox(time.time() + 1) == []
+    assert state.due_inbox(time.monotonic() + 1) == []
 
 
 def test_response_is_enqueued_at_most_once_per_request():
     state = CommsState()
     assert state.enqueue_response_once(7, "request-1", "response-1", b"{}")
     assert not state.enqueue_response_once(7, "request-1", "response-2", b"{}")
-    rows = state.due_outbox(time.time() + 1)
+    rows = state.due_outbox(time.monotonic() + 1)
     assert len(rows) == 1
     assert rows[0][0:3] == ("response-1", 7, "response")
 
 
 def test_request_outbox_and_ack_state_are_in_memory():
     state = CommsState()
-    deadline = time.time() + 1
+    deadline = time.monotonic() + 1
     state.enqueue("request-1", 7, "request", b"{}", response_deadline=deadline)
     assert state.get_request("request-1") == (7, False, None, deadline)
     assert state.acknowledge(7, "request-1") == "request"
@@ -46,7 +46,7 @@ def test_processed_inbox_history_is_bounded_but_pending_items_are_kept():
     for i in range(3):
         state.insert_inbox(7, f"m{i}", "message", "{}", time.time())
         state.complete_inbox(7, f"m{i}")
-    assert len(state.due_inbox(time.time() + 1)) == 0
+    assert len(state.due_inbox(time.monotonic() + 1)) == 0
     assert len(state._inbox) == 2
     assert (7, "m0") not in state._inbox
 
@@ -54,6 +54,44 @@ def test_processed_inbox_history_is_bounded_but_pending_items_are_kept():
     state.insert_inbox(7, "pending2", "message", "{}", time.time())
     assert (7, "pending") in state._inbox
     assert (7, "pending2") in state._inbox
+
+
+def test_next_deadline_ignores_active_work_and_selects_earliest_deadline():
+    state = CommsState()
+    now = time.monotonic()
+    state.enqueue("outbox", 7, "message", b"{}")
+    state.insert_inbox(7, "inbox", "message", "{}", time.time())
+    state.enqueue("request", 7, "request", b"{}", response_deadline=now + 5)
+
+    assert state.next_deadline() == 0.0
+    assert state.next_deadline(
+        active_outbox={"outbox", "request"},
+        active_inbox={(7, "inbox")},
+    ) == now + 5
+
+
+def test_make_inbox_ready_releases_delayed_message():
+    state = CommsState()
+    state.insert_inbox(7, "m1", "message", "{}", time.time())
+    state.retry_inbox_later(7, "m1", 1, time.monotonic() + 30)
+    state.make_inbox_ready("message")
+    rows = state.due_inbox(time.monotonic())
+    assert len(rows) == 1
+    assert rows[0][0:3] == (7, "m1", "message")
+
+
+def test_inbox_without_handler_is_suspended_until_registration():
+    state = CommsState()
+    state.insert_inbox(7, "m1", "message", "{}", time.time())
+    state.retry_inbox_later(7, "m1", 1, None)
+
+    assert state.due_inbox(time.monotonic() + 100) == []
+    assert state.next_deadline() is None
+
+    state.make_inbox_ready("message")
+    rows = state.due_inbox(time.monotonic())
+    assert len(rows) == 1
+    assert rows[0][0:3] == (7, "m1", "message")
 
 
 def test_close_discards_all_volatile_message_state():
@@ -76,14 +114,14 @@ def test_bytes_are_json_safe():
 
 def test_request_deadline_expires_once_and_rejects_late_response():
     state = CommsState()
-    deadline = time.time() + 0.01
+    deadline = time.monotonic() + 0.01
     state.enqueue("request-timeout", 7, "request", b"{}", response_deadline=deadline)
     time.sleep(0.02)
-    assert state.due_requests(time.time()) == [
+    assert state.due_requests(time.monotonic()) == [
         ("request-timeout", 7, deadline)
     ]
     assert state.expire_request("request-timeout", '{"status":"error"}')
-    assert state.due_requests(time.time() + 10) == []
+    assert state.due_requests(time.monotonic() + 10) == []
     assert not state.store_response("request-timeout", '{"status":"ok"}', peer_id=7)
     assert state.get_request("request-timeout")[2] == '{"status":"error"}'
 
