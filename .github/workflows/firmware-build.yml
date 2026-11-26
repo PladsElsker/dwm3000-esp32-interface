@@ -2,8 +2,9 @@ name: DWM3000 firmware build
 
 on:
   push:
+    # Temporary validation trigger. Restored to main after the pipeline is verified.
     branches:
-      - main
+      - ci/firmware-artifacts
     paths:
       - "dwm3000-firmware/**"
       - ".gitmodules"
@@ -16,29 +17,75 @@ concurrency:
   group: firmware-build-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  FQBN: espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin
+  UWB_NODE_DIR: dwm3000-firmware/UwbNode
+  DRIVER_LIBRARY_DIR: dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
+  BUILD_DIR: ${{ github.workspace }}/.ci-firmware-build
+  ARTIFACT_DIR: ${{ github.workspace }}/.ci-firmware-artifact
+  ARDUINO_SKETCHBOOK_DIR: ${{ github.workspace }}/.ci-arduino
+  ARDUINO_DIRECTORIES_USER: ${{ github.workspace }}/.ci-arduino
+  ESP32_ARDUINO_CORE_DIR: ${{ github.workspace }}/.ci-arduino/hardware/espressif/esp32
+  ESP32_ARDUINO_LIB_BUILDER_DIR: ${{ github.workspace }}/.ci-esp32-arduino-lib-builder
+  ESP32_BUILDER_PYTHON_ENV: ${{ github.workspace }}/.ci-builder-venv
+  IDF_TOOLS_PATH: ${{ github.workspace }}/.ci-espressif-tools
+  GH_TOKEN: ${{ github.token }}
+
 jobs:
-  build:
-    name: Build ESP32-C3 firmware
+  prepare:
+    name: Resolve custom core artifact
+    runs-on: ubuntu-22.04
+    outputs:
+      core_fingerprint: ${{ steps.core.outputs.fingerprint }}
+      core_tag: ${{ steps.core.outputs.tag }}
+      core_asset: ${{ steps.core.outputs.asset }}
+      build_core: ${{ steps.core.outputs.build_core }}
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Calculate the core fingerprint and check the artifact store
+        id: core
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source dwm3000-firmware/core-build.env
+
+          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/setup-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
+          TAG="esp32c3-core-$FINGERPRINT"
+          ASSET="esp32c3-custom-core-$FINGERPRINT.tar.gz"
+
+          ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+          if printf '%s\n' "$ASSETS" | grep -Fxq "$ASSET"; then
+            BUILD_CORE=false
+            echo "Reusing durable core package $TAG ($ASSET)"
+          else
+            BUILD_CORE=true
+            echo "No matching core package exists; the core must be built."
+          fi
+
+          echo "fingerprint=$FINGERPRINT" >> "$GITHUB_OUTPUT"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET" >> "$GITHUB_OUTPUT"
+          echo "build_core=$BUILD_CORE" >> "$GITHUB_OUTPUT"
+
+  core:
+    name: Build and publish custom ESP32-C3 core
+    needs: prepare
+    if: needs.prepare.outputs.build_core == 'true'
     runs-on: ubuntu-22.04
     timeout-minutes: 180
     env:
-      FQBN: espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin
-      UWB_NODE_DIR: dwm3000-firmware/UwbNode
-      DRIVER_LIBRARY_DIR: dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000
-      BUILD_DIR: ${{ github.workspace }}/.ci-firmware-build
-      ARTIFACT_DIR: ${{ github.workspace }}/.ci-firmware-artifact
-      ARDUINO_SKETCHBOOK_DIR: ${{ github.workspace }}/.ci-arduino
-      ESP32_ARDUINO_CORE_DIR: ${{ github.workspace }}/.ci-arduino/hardware/espressif/esp32
-      ESP32_ARDUINO_LIB_BUILDER_DIR: ${{ github.workspace }}/.ci-esp32-arduino-lib-builder
-      ESP32_BUILDER_PYTHON_ENV: ${{ github.workspace }}/.ci-builder-venv
-      IDF_TOOLS_PATH: ${{ github.workspace }}/.ci-espressif-tools
-
+      CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
+      CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
+      CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
     steps:
-      - name: Check out source and submodules
+      - name: Check out source
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-          submodules: recursive
+          fetch-depth: 1
 
       - name: Install Arduino CLI
         uses: arduino/setup-arduino-cli@v2
@@ -57,11 +104,151 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc
           df -h /
 
-      - name: Build the custom eight-peer ESP32-C3 core
+      - name: Build the pinned eight-peer ESP32-C3 core
         run: ./dwm3000-firmware/setup-custom-arduino-core.sh --core-only
+
+      - name: Package and publish the versioned core
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          source dwm3000-firmware/core-build.env
+
+          CORE_DIR="$ESP32_ARDUINO_CORE_DIR"
+          SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          test -s "$SDKCONFIG"
+          test -s "$CORE_DIR/platform.txt"
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+
+          ARDUINO_SHA="$(git -C "$CORE_DIR" rev-parse HEAD)"
+          BUILDER_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR" rev-parse HEAD)"
+          BUILDER_ARDUINO_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/components/arduino" rev-parse HEAD)"
+          IDF_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/esp-idf" rev-parse HEAD)"
+          test "$ARDUINO_SHA" = "$ARDUINO_COMMIT"
+          test "$BUILDER_SHA" = "$BUILDER_COMMIT"
+          test "$BUILDER_ARDUINO_SHA" = "$ARDUINO_COMMIT"
+          test "$IDF_SHA" = "$IDF_COMMIT"
+
+          jq -n \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg builder_commit "$BUILDER_SHA" \
+            --arg arduino_commit "$ARDUINO_SHA" \
+            --arg idf_commit "$IDF_SHA" \
+            --arg fqbn "$FQBN" \
+            --arg arduino_cli_version "$ARDUINO_CLI_VERSION" \
+            --arg sdkconfig_sha256 "$(sha256sum "$SDKCONFIG" | awk '{print $1}')" \
+            --argjson nimble_max_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '{
+              core_fingerprint: $fingerprint,
+              arduino_cli_version: $arduino_cli_version,
+              build_fqbn: $fqbn,
+              arduino_esp32_builder_commit: $builder_commit,
+              arduino_esp32_commit: $arduino_commit,
+              esp_idf_commit: $idf_commit,
+              nimble_max_connections: $nimble_max_connections,
+              bluetooth_controller_max_activities: $bluetooth_controller_max_activities,
+              sdkconfig_sha256: $sdkconfig_sha256
+            }' > "$ARDUINO_SKETCHBOOK_DIR/core-manifest.json"
+
+          mkdir -p "$RUNNER_TEMP/core-release"
+          tar --exclude-vcs -C "$ARDUINO_SKETCHBOOK_DIR" \
+            -czf "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+            hardware tools core-manifest.json
+          test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
+
+          if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+              --repo "$GITHUB_REPOSITORY" --clobber
+          else
+            gh release create "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+              --repo "$GITHUB_REPOSITORY" \
+              --target "$GITHUB_SHA" \
+              --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
+              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and setup-custom-arduino-core.sh. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
+              --prerelease
+          fi
+
+          gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
+
+  firmware:
+    name: Compile and publish DWM3000 firmware
+    needs: [prepare, core]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      (needs.core.result == 'success' || needs.core.result == 'skipped')
+    runs-on: ubuntu-22.04
+    timeout-minutes: 45
+    env:
+      CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
+      CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
+      CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+    steps:
+      - name: Check out source and submodules
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          submodules: recursive
+
+      - name: Install Arduino CLI
+        uses: arduino/setup-arduino-cli@v2
+        with:
+          version: "1.5.1"
+
+      - name: Download and verify the matching custom core
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          mkdir -p "$RUNNER_TEMP/core-package" "$ARDUINO_SKETCHBOOK_DIR"
+          gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+            --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-package"
+          tar -xzf "$RUNNER_TEMP/core-package/$CORE_ASSET" -C "$ARDUINO_SKETCHBOOK_DIR"
+
+          CORE_MANIFEST="$ARDUINO_SKETCHBOOK_DIR/core-manifest.json"
+          jq -e --arg fingerprint "$CORE_FINGERPRINT" \
+            '.core_fingerprint == $fingerprint' "$CORE_MANIFEST" >/dev/null
+
+          source dwm3000-firmware/core-build.env
+          CORE_DIR="$ESP32_ARDUINO_CORE_DIR"
+          SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
+          test -s "$CORE_DIR/platform.txt"
+          test -s "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
+          grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+
+          SELECTED_PLATFORM="$(arduino-cli board details --fqbn "$FQBN" --show-properties=expanded | sed -n 's/^runtime\.platform\.path=//p' | tail -n 1)"
+          test -n "$SELECTED_PLATFORM"
+          test "$(cd "$SELECTED_PLATFORM" && pwd -P)" = "$(cd "$CORE_DIR" && pwd -P)"
+          echo "Using core fingerprint $CORE_FINGERPRINT"
+          cat "$CORE_MANIFEST"
+
+      - name: Install pinned Arduino libraries
+        shell: bash
+        run: |
+          set -Eeuo pipefail
+          arduino-cli lib update-index
+
+          while IFS= read -r dependency || [[ -n "$dependency" ]]; do
+            [[ -z "$dependency" || "$dependency" == \#* ]] && continue
+            echo "Installing $dependency"
+            arduino-cli lib install "$dependency"
+
+            library_name="${dependency%@*}"
+            library_version="${dependency#*@}"
+            properties="$ARDUINO_SKETCHBOOK_DIR/libraries/$library_name/library.properties"
+            test -s "$properties"
+            grep -Fxq "name=$library_name" "$properties"
+            grep -Fxq "version=$library_version" "$properties"
+          done < dwm3000-firmware/arduino-libraries.txt
+
+          arduino-cli lib list
 
       - name: Compile firmware
         run: |
+          set -Eeuo pipefail
           mkdir -p "$BUILD_DIR"
           arduino-cli compile \
             --fqbn "$FQBN" \
@@ -88,9 +275,8 @@ jobs:
           done
 
           SDKCONFIG="$ESP32_ARDUINO_CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
-          test -s "$SDKCONFIG"
           cp "$SDKCONFIG" "$ARTIFACT_DIR/sdkconfig"
-          git -C "$ESP32_ARDUINO_CORE_DIR" rev-parse HEAD > "$ARTIFACT_DIR/arduino-esp32-core-commit.txt"
+          cp "$ARDUINO_SKETCHBOOK_DIR/core-manifest.json" "$ARTIFACT_DIR/core-manifest.json"
           cp dwm3000-firmware/flash-windows.ps1 "$ARTIFACT_DIR/flash-windows.ps1"
 
           VERSION="$(tr -d '[:space:]' < dwm3000-firmware/FIRMWARE_VERSION)"
@@ -111,7 +297,8 @@ jobs:
             --arg firmware_version "$VERSION" \
             --arg protocol_version "$PROTOCOL_VERSION" \
             --arg fqbn "$FQBN" \
-            --arg builder_commit "165a3d6e094266eb8c54c96732c0f0cb3e1b3e84" \
+            --arg core_fingerprint "$CORE_FINGERPRINT" \
+            --slurpfile core "$ARTIFACT_DIR/core-manifest.json" \
             '{
               repository: $repository,
               source_commit: $commit,
@@ -120,9 +307,8 @@ jobs:
               protocol_version: ($protocol_version | tonumber),
               build_fqbn: $fqbn,
               chip: "esp32c3",
-              arduino_esp32_builder_commit: $builder_commit,
-              nimble_max_connections: 8,
-              bluetooth_controller_max_activities: 9,
+              core_fingerprint: $core_fingerprint,
+              core: $core[0],
               windows_upload_method: "arduino-cli upload --input-dir build"
             }' > "$ARTIFACT_DIR/manifest.json"
 

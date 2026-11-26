@@ -7,19 +7,24 @@ UWB_NODE_DIR="$FIRMWARE_DIR/UwbNode"
 DRIVER_LIB="$UWB_NODE_DIR/lib/Makerfabs-ESP32-UWB-DW3000"
 REPO_ROOT="$(git -C "$FIRMWARE_DIR" rev-parse --show-toplevel 2>/dev/null || true)"
 
-readonly BUILDER_REPO="https://github.com/PladsElsker/esp32-arduino-lib-builder.git"
-readonly IDF_REPO="https://github.com/espressif/esp-idf.git"
-readonly BUILDER_COMMIT="165a3d6e094266eb8c54c96732c0f0cb3e1b3e84"
-readonly ARDUINO_REPO="https://github.com/espressif/arduino-esp32.git"
-readonly ARDUINO_BRANCH="release/v3.3.x"
-readonly BUILDER_IDF_BRANCH="release/v5.5"
-readonly FQBN="espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin"
-readonly SUBMODULE_PATH="dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"
-
 COMPILE_FIRMWARE=1
 
 log() { printf '\n==> %s\n' "$*"; }
 fail() { printf '\nERROR: %s\n' "$*" >&2; exit 1; }
+
+CORE_CONFIG="$FIRMWARE_DIR/core-build.env"
+[[ -f "$CORE_CONFIG" ]] || fail "Core build configuration is missing: $CORE_CONFIG"
+# This file is a checked-in list of immutable source revisions and build options.
+# shellcheck disable=SC1090
+source "$CORE_CONFIG"
+readonly BUILDER_REPO BUILDER_COMMIT ARDUINO_REPO ARDUINO_BRANCH ARDUINO_COMMIT
+readonly IDF_REPO IDF_BRANCH IDF_COMMIT FQBN NIMBLE_MAX_CONNECTIONS
+readonly BT_CTRL_BLE_MAX_ACT
+readonly SUBMODULE_PATH="dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"
+
+for required_var in BUILDER_REPO BUILDER_COMMIT ARDUINO_REPO ARDUINO_BRANCH ARDUINO_COMMIT IDF_REPO IDF_BRANCH IDF_COMMIT FQBN NIMBLE_MAX_CONNECTIONS BT_CTRL_BLE_MAX_ACT; do
+  [[ -n "${!required_var:-}" ]] || fail "Core configuration variable $required_var is empty."
+done
 
 usage() {
   cat <<USAGE
@@ -151,19 +156,17 @@ log "Library builder: $BUILDER_DIR"
 
 if [[ -e "$CORE_DIR" ]]; then
   check_git_origin "$CORE_DIR" "espressif/arduino-esp32"
-  core_branch="$(git -C "$CORE_DIR" branch --show-current)"
-  [[ "$core_branch" == "$ARDUINO_BRANCH" ]] || fail "The existing Arduino core is on '$core_branch', expected '$ARDUINO_BRANCH'."
   check_core_worktree
-  submodule_status="$(git -C "$CORE_DIR" submodule status --recursive)"
-  if grep -q '^[+U]' <<< "$submodule_status"; then fail "The Arduino core has a submodule checked out at a non-recorded revision or in conflict."; fi
-  if grep -q '^-' <<< "$submodule_status"; then
-    log "Initializing Arduino-ESP32 submodules"
-    git -C "$CORE_DIR" submodule update --init --recursive
-  fi
 else
   log "Cloning Arduino-ESP32 ($ARDUINO_BRANCH)"
-  git clone --branch "$ARDUINO_BRANCH" --recurse-submodules "$ARDUINO_REPO" "$CORE_DIR"
+  git clone --branch "$ARDUINO_BRANCH" "$ARDUINO_REPO" "$CORE_DIR"
 fi
+
+log "Checking out the pinned Arduino-ESP32 revision $ARDUINO_COMMIT"
+git -C "$CORE_DIR" fetch origin "$ARDUINO_BRANCH"
+git -C "$CORE_DIR" checkout -B "$ARDUINO_BRANCH" "$ARDUINO_COMMIT"
+git -C "$CORE_DIR" submodule sync --recursive
+git -C "$CORE_DIR" submodule update --init --recursive
 
 if [[ -e "$BUILDER_DIR" ]]; then
   check_git_origin "$BUILDER_DIR" "PladsElsker/esp32-arduino-lib-builder"
@@ -189,7 +192,7 @@ log "Synchronizing the builder's Arduino-ESP32 source branch"
   # Force upstream Espressif repositories; GitHub Actions sets this variable to
   # the owner of this project, which is not the Arduino platform maintainer.
   unset GITHUB_REPOSITORY_OWNER
-  AR_SOURCE_BRANCH="$ARDUINO_BRANCH" env IDF_BRANCH="$BUILDER_IDF_BRANCH" bash ./tools/install-arduino.sh
+  AR_SOURCE_BRANCH="$ARDUINO_BRANCH" env IDF_BRANCH="$IDF_BRANCH" bash ./tools/install-arduino.sh
 )
 
 BUILDER_ARDUINO_DIR="$BUILDER_DIR/components/arduino"
@@ -198,30 +201,43 @@ if [[ -e "$BUILDER_ARDUINO_DIR" ]]; then
   [[ -z "$(git -C "$BUILDER_ARDUINO_DIR" status --porcelain --untracked-files=no)" ]] || fail "The builder's Arduino source checkout has tracked changes: $BUILDER_ARDUINO_DIR"
 fi
 
+log "Pinning the builder's Arduino source to $ARDUINO_COMMIT"
+git -C "$BUILDER_ARDUINO_DIR" fetch origin "$ARDUINO_BRANCH"
+git -C "$BUILDER_ARDUINO_DIR" checkout -B "$ARDUINO_BRANCH" "$ARDUINO_COMMIT"
+git -C "$BUILDER_ARDUINO_DIR" submodule sync --recursive
+git -C "$BUILDER_ARDUINO_DIR" submodule update --init --recursive
+
 BUILDER_IDF_DIR="$BUILDER_DIR/esp-idf"
 if [[ -e "$BUILDER_IDF_DIR" ]]; then
   check_git_origin "$BUILDER_IDF_DIR" "espressif/esp-idf"
   [[ -z "$(git -C "$BUILDER_IDF_DIR" status --porcelain --untracked-files=no)" ]] || fail "The builder's ESP-IDF checkout has tracked changes: $BUILDER_IDF_DIR"
-  idf_branch="$(git -C "$BUILDER_IDF_DIR" branch --show-current)"
-  [[ "$idf_branch" == "$BUILDER_IDF_BRANCH" ]] || fail "The builder's ESP-IDF checkout is on '$idf_branch', expected '$BUILDER_IDF_BRANCH'."
 else
-  log "Cloning ESP-IDF ($BUILDER_IDF_BRANCH)"
-  git clone --branch "$BUILDER_IDF_BRANCH" "$IDF_REPO" "$BUILDER_IDF_DIR"
+  log "Cloning ESP-IDF ($IDF_BRANCH)"
+  git clone --branch "$IDF_BRANCH" "$IDF_REPO" "$BUILDER_IDF_DIR"
 fi
 
+log "Pinning ESP-IDF to $IDF_COMMIT"
+git -C "$BUILDER_IDF_DIR" fetch origin "$IDF_BRANCH"
+git -C "$BUILDER_IDF_DIR" checkout -B "$IDF_BRANCH" "$IDF_COMMIT"
+IDF_SHA="$(git -C "$BUILDER_IDF_DIR" rev-parse HEAD)"
+[[ "$IDF_SHA" == "$IDF_COMMIT" ]] || fail "ESP-IDF revision ($IDF_SHA) does not match pinned revision ($IDF_COMMIT)."
+
 log "Initializing ESP-IDF submodules"
+git -C "$BUILDER_IDF_DIR" submodule sync --recursive
 git -C "$BUILDER_IDF_DIR" submodule update --init --recursive
 
-BUILDER_ARDUINO_SHA="$(git -C "$BUILDER_DIR/components/arduino" rev-parse HEAD)"
+BUILDER_ARDUINO_SHA="$(git -C "$BUILDER_ARDUINO_DIR" rev-parse HEAD)"
+[[ "$BUILDER_ARDUINO_SHA" == "$ARDUINO_COMMIT" ]] || fail "The builder Arduino revision ($BUILDER_ARDUINO_SHA) does not match pinned revision ($ARDUINO_COMMIT)."
+
 log "Aligning the manual Arduino core to builder source $BUILDER_ARDUINO_SHA"
 git -C "$CORE_DIR" restore -- package/package_esp32_index.template.json
 git -C "$CORE_DIR" fetch origin "$ARDUINO_BRANCH"
-git -C "$CORE_DIR" checkout -B "$ARDUINO_BRANCH" "$BUILDER_ARDUINO_SHA"
+git -C "$CORE_DIR" checkout -B "$ARDUINO_BRANCH" "$ARDUINO_COMMIT"
 git -C "$CORE_DIR" submodule sync --recursive
 git -C "$CORE_DIR" submodule update --init --recursive
 
 CORE_SHA="$(git -C "$CORE_DIR" rev-parse HEAD)"
-[[ "$CORE_SHA" == "$BUILDER_ARDUINO_SHA" ]] || fail "The manual Arduino core revision ($CORE_SHA) does not match the builder source ($BUILDER_ARDUINO_SHA)."
+[[ "$CORE_SHA" == "$ARDUINO_COMMIT" ]] || fail "The manual Arduino core revision ($CORE_SHA) does not match pinned revision ($ARDUINO_COMMIT)."
 
 log "Installing the Arduino-ESP32 platform tools"
 "$PYTHON" "$CORE_DIR/tools/get.py"
@@ -246,21 +262,23 @@ log "Installing ESP-IDF tools and the Python environment for ESP32-C3"
   ./tools/update-components.sh
 
   log "Building and installing the ESP32-C3 libraries with the BLE configuration"
-  bash ./build.sh -s -A "$ARDUINO_BRANCH" -I "$BUILDER_IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
+  bash ./build.sh -s -A "$ARDUINO_BRANCH" -I "$IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
 )
 
-BUILDER_ARDUINO_SHA_AFTER="$(git -C "$BUILDER_DIR/components/arduino" rev-parse HEAD)"
-[[ "$CORE_SHA" == "$BUILDER_ARDUINO_SHA_AFTER" ]] || fail "The builder's Arduino source branch moved during the build."
+BUILDER_ARDUINO_SHA_AFTER="$(git -C "$BUILDER_ARDUINO_DIR" rev-parse HEAD)"
+[[ "$ARDUINO_COMMIT" == "$BUILDER_ARDUINO_SHA_AFTER" ]] || fail "The builder's Arduino source revision changed during the build."
+BUILDER_IDF_SHA_AFTER="$(git -C "$BUILDER_IDF_DIR" rev-parse HEAD)"
+[[ "$IDF_COMMIT" == "$BUILDER_IDF_SHA_AFTER" ]] || fail "The builder's ESP-IDF revision changed during the build."
 
 SDK_DIR="$CORE_DIR/tools/esp32-arduino-libs/esp32c3"
 SDKCONFIG="$SDK_DIR/sdkconfig"
 [[ -f "$SDKCONFIG" ]] || fail "The builder did not produce $SDKCONFIG"
-grep -Eq '^CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8"
-grep -Eq '^CONFIG_BT_CTRL_BLE_MAX_ACT=9$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_CTRL_BLE_MAX_ACT=9"
+grep -Eq '^CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS"
+grep -Eq '^CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT"
 
 header_ok=0
 while IFS= read -r header; do
-  if grep -Eq '^#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS 8$' "$header" && grep -Eq '^#define CONFIG_BT_CTRL_BLE_MAX_ACT 9$' "$header"; then
+  if grep -Eq '^#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS $NIMBLE_MAX_CONNECTIONS$' "$header" && grep -Eq '^#define CONFIG_BT_CTRL_BLE_MAX_ACT $BT_CTRL_BLE_MAX_ACT$' "$header"; then
     header_ok=1
     log "Verified generated SDK header: $header"
   fi
@@ -280,5 +298,5 @@ if ((COMPILE_FIRMWARE)); then
 fi
 
 log "Custom ESP32-C3 core is ready"
-printf 'Host connections:      8\nController activities:  9\nCore path:              %s\n' "$CORE_DIR"
+printf 'Host connections:      %s\nController activities:  %s\nCore path:              %s\n' "$NIMBLE_MAX_CONNECTIONS" "$BT_CTRL_BLE_MAX_ACT" "$CORE_DIR"
 if ((COMPILE_FIRMWARE)); then printf 'Firmware sketch:        %s\n' "$UWB_NODE_DIR"; fi

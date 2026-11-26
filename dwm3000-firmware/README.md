@@ -53,12 +53,15 @@ Requirements: Arduino CLI, Git, Python 3.9 or newer, and the native build prereq
 
 The default core and builder directories can be overridden with `ARDUINO_SKETCHBOOK_DIR`, `ESP32_ARDUINO_CORE_DIR`, and `ESP32_ARDUINO_LIB_BUILDER_DIR`.
 
-After the custom core has been built, subsequent firmware-only builds can use Arduino CLI directly without BLE compiler flag overrides:
+After the custom core has been built, install the firmware's pinned Arduino library dependency and compile without BLE compiler flag overrides:
 
 ```sh
+arduino-cli lib install "NimBLE-Arduino@2.5.0"
 arduino-cli compile --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=builtin \
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
+
+The pinned Arduino Library Manager dependencies are listed in `arduino-libraries.txt`. Install those dependencies when setting up a fresh Arduino sketchbook.
 
 Upload the compiled sketch:
 
