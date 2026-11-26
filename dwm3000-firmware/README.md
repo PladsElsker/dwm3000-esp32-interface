@@ -34,7 +34,7 @@ Use 3.3 V logic and a common ground. GPIO2, GPIO8 and GPIO9 are ESP32-C3 strappi
 
 ## Build and flash firmware locally
 
-Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, and compile the firmware:
+Run the setup script from this directory to create the custom Arduino-ESP32 core, build its ESP32-C3 libraries, verify the selected Arduino CLI platform, install the pinned Arduino libraries (including NimBLE-Arduino 2.5.0), and compile the firmware:
 
 ```sh
 ./setup-custom-arduino-core.sh

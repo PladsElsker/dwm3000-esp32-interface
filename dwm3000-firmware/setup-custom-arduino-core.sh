@@ -141,6 +141,10 @@ else
   fi
 fi
 
+# Keep Arduino CLI itself on the same user directory used for the manual platform
+# and for the versioned sketchbook library dependencies.
+export ARDUINO_DIRECTORIES_USER="$SKETCHBOOK_DIR"
+
 if [[ -n "${ESP32_ARDUINO_CORE_DIR:-}" ]]; then
   CORE_DIR="$(canonicalize_target "$ESP32_ARDUINO_CORE_DIR")"
 else
@@ -311,6 +315,19 @@ SELECTED_PLATFORM="$(cd "$SELECTED_PLATFORM" && pwd -P)"
 [[ "$SELECTED_PLATFORM" == "$CORE_DIR" ]] || fail "Arduino CLI is not selecting the custom core at $CORE_DIR."
 
 if ((COMPILE_FIRMWARE)); then
+  log "Installing the pinned Arduino libraries required by UwbNode"
+  "$ARDUINO_CLI_PATH" lib update-index
+  while IFS= read -r dependency || [[ -n "$dependency" ]]; do
+    [[ -z "$dependency" || "$dependency" == #* ]] && continue
+    "$ARDUINO_CLI_PATH" lib install "$dependency"
+    library_name="${dependency%@*}"
+    library_version="${dependency#*@}"
+    properties="$SKETCHBOOK_DIR/libraries/$library_name/library.properties"
+    [[ -s "$properties" ]] || fail "Arduino library $library_name was not installed at $properties."
+    grep -Fxq "name=$library_name" "$properties" || fail "Installed Arduino library name does not match $library_name."
+    grep -Fxq "version=$library_version" "$properties" || fail "Installed $library_name version is not $library_version."
+  done < "$FIRMWARE_DIR/arduino-libraries.txt"
+
   log "Compiling the firmware with the verified custom core"
   "$ARDUINO_CLI_PATH" compile --fqbn "$FQBN" --libraries "$DRIVER_LIB" "$UWB_NODE_DIR"
 fi
