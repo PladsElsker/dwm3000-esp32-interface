@@ -114,6 +114,59 @@ def test_new_incoming_message_wakes_dispatcher():
         manager.close()
 
 
+def test_pending_inbox_resumes_when_handler_registers():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    manager.start()
+    envelope = {
+        "v": 1, "id": "deferred-message", "kind": "message",
+        "payload": {"move": "left"},
+    }
+    message = BleMessage(
+        peer_id=7, message_id=13,
+        data=json.dumps(envelope).encode("utf-8"), received_at=time.monotonic(),
+    )
+    handled = threading.Event()
+    try:
+        manager.receive_ble_message(message)
+
+        deadline = time.monotonic() + 0.5
+        while time.monotonic() < deadline:
+            with manager.store._lock:
+                row = manager.store._inbox.get((7, "deferred-message"))
+                suspended = row is not None and row["next_dispatch"] is None
+            if suspended:
+                break
+            time.sleep(0.001)
+        assert suspended
+
+        manager.on_message(lambda _message: handled.set())
+        assert handled.wait(timeout=0.5)
+    finally:
+        manager.close()
+
+
+def test_scheduler_does_not_poll_when_idle():
+    manager = CommsManager(FakeBle(), FakeDispatcher())
+    scan_started = threading.Event()
+    scan_count = []
+
+    original_due_outbox = manager.store.due_outbox
+
+    def observe_due_outbox(now, limit=64):
+        scan_count.append(now)
+        scan_started.set()
+        return original_due_outbox(now, limit)
+
+    manager.store.due_outbox = observe_due_outbox
+    manager.start()
+    try:
+        assert scan_started.wait(timeout=0.5)
+        time.sleep(0.08)
+        assert len(scan_count) == 1
+    finally:
+        manager.close()
+
+
 def test_outgoing_message_wakes_transmit_scheduler():
     ble = FakeBle()
     manager = CommsManager(ble, FakeDispatcher())
