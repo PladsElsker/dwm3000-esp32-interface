@@ -124,16 +124,19 @@ jobs:
           BUILDER_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR" rev-parse HEAD)"
           BUILDER_ARDUINO_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/components/arduino" rev-parse HEAD)"
           IDF_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/esp-idf" rev-parse HEAD)"
+          TINYUSB_SHA="$(git -C "$ESP32_ARDUINO_LIB_BUILDER_DIR/components/arduino_tinyusb/tinyusb" rev-parse HEAD)"
           test "$ARDUINO_SHA" = "$ARDUINO_COMMIT"
           test "$BUILDER_SHA" = "$BUILDER_COMMIT"
           test "$BUILDER_ARDUINO_SHA" = "$ARDUINO_COMMIT"
           test "$IDF_SHA" = "$IDF_COMMIT"
+          test "$TINYUSB_SHA" = "$TINYUSB_COMMIT"
 
           jq -n \
             --arg fingerprint "$CORE_FINGERPRINT" \
             --arg builder_commit "$BUILDER_SHA" \
             --arg arduino_commit "$ARDUINO_SHA" \
             --arg idf_commit "$IDF_SHA" \
+            --arg tinyusb_commit "$TINYUSB_SHA" \
             --arg fqbn "$FQBN" \
             --arg arduino_cli_version "$ARDUINO_CLI_VERSION" \
             --arg sdkconfig_sha256 "$(sha256sum "$SDKCONFIG" | awk '{print $1}')" \
@@ -146,6 +149,7 @@ jobs:
               arduino_esp32_builder_commit: $builder_commit,
               arduino_esp32_commit: $arduino_commit,
               esp_idf_commit: $idf_commit,
+              tinyusb_commit: $tinyusb_commit,
               nimble_max_connections: $nimble_max_connections,
               bluetooth_controller_max_activities: $bluetooth_controller_max_activities,
               sdkconfig_sha256: $sdkconfig_sha256
@@ -166,7 +170,7 @@ jobs:
               --repo "$GITHUB_REPOSITORY" \
               --target "$GITHUB_SHA" \
               --title "ESP32-C3 custom core $CORE_FINGERPRINT" \
-              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and setup-custom-arduino-core.sh. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
+              --notes "Versioned custom Arduino-ESP32 core for the DWM3000 firmware. The core fingerprint covers core-build.env and setup-custom-arduino-core.sh, including the pinned TinyUSB revision. See core-manifest.json inside the asset for exact source revisions and validated NimBLE settings." \
               --prerelease
           fi
 
@@ -214,6 +218,7 @@ jobs:
             --arg builder "$BUILDER_COMMIT" \
             --arg arduino "$ARDUINO_COMMIT" \
             --arg idf "$IDF_COMMIT" \
+            --arg tinyusb "$TINYUSB_COMMIT" \
             --arg fqbn "$FQBN" \
             --argjson host_connections "$NIMBLE_MAX_CONNECTIONS" \
             --argjson controller_activities "$BT_CTRL_BLE_MAX_ACT" \
@@ -221,6 +226,7 @@ jobs:
              .arduino_esp32_builder_commit == $builder and
              .arduino_esp32_commit == $arduino and
              .esp_idf_commit == $idf and
+             .tinyusb_commit == $tinyusb and
              .build_fqbn == $fqbn and
              .nimble_max_connections == $host_connections and
              .bluetooth_controller_max_activities == $controller_activities' \

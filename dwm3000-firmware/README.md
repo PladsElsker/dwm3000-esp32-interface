@@ -40,7 +40,7 @@ Run the setup script from this directory to create the custom Arduino-ESP32 core
 ./setup-custom-arduino-core.sh
 ```
 
-The script pins the library builder to commit `165a3d6`, uses the Arduino-ESP32 `release/v3.3.x` branch and ESP-IDF `release/v5.5` branch, and builds with:
+The script pins the library builder, Arduino-ESP32, ESP-IDF, and TinyUSB source revisions in `core-build.env`, and builds with:
 
 ```ini
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8

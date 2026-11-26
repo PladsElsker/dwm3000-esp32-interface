@@ -18,11 +18,11 @@ CORE_CONFIG="$FIRMWARE_DIR/core-build.env"
 # shellcheck disable=SC1090
 source "$CORE_CONFIG"
 readonly BUILDER_REPO BUILDER_COMMIT ARDUINO_REPO ARDUINO_BRANCH ARDUINO_COMMIT
-readonly IDF_REPO IDF_BRANCH IDF_COMMIT FQBN NIMBLE_MAX_CONNECTIONS
+readonly IDF_REPO IDF_BRANCH IDF_COMMIT TINYUSB_COMMIT FQBN NIMBLE_MAX_CONNECTIONS
 readonly BT_CTRL_BLE_MAX_ACT
 readonly SUBMODULE_PATH="dwm3000-firmware/UwbNode/lib/Makerfabs-ESP32-UWB-DW3000"
 
-for required_var in BUILDER_REPO BUILDER_COMMIT ARDUINO_REPO ARDUINO_BRANCH ARDUINO_COMMIT IDF_REPO IDF_BRANCH IDF_COMMIT FQBN NIMBLE_MAX_CONNECTIONS BT_CTRL_BLE_MAX_ACT; do
+for required_var in BUILDER_REPO BUILDER_COMMIT ARDUINO_REPO ARDUINO_BRANCH ARDUINO_COMMIT IDF_REPO IDF_BRANCH IDF_COMMIT TINYUSB_COMMIT FQBN NIMBLE_MAX_CONNECTIONS BT_CTRL_BLE_MAX_ACT; do
   [[ -n "${!required_var:-}" ]] || fail "Core configuration variable $required_var is empty."
 done
 
@@ -261,6 +261,22 @@ log "Installing ESP-IDF tools and the Python environment for ESP32-C3"
   log "Updating ESP-IDF managed components"
   ./tools/update-components.sh
 
+  TINYUSB_DIR="$BUILDER_DIR/components/arduino_tinyusb/tinyusb"
+  check_git_origin "$TINYUSB_DIR" "hathach/tinyusb"
+  log "Pinning TinyUSB to $TINYUSB_COMMIT"
+  git -C "$TINYUSB_DIR" reset --hard
+  git -C "$TINYUSB_DIR" clean -fd
+  git -C "$TINYUSB_DIR" fetch origin "$TINYUSB_COMMIT"
+  git -C "$TINYUSB_DIR" checkout --detach "$TINYUSB_COMMIT"
+  [[ "$(git -C "$TINYUSB_DIR" rev-parse HEAD)" == "$TINYUSB_COMMIT" ]] || fail "TinyUSB revision does not match the pinned commit."
+  for patch in "$BUILDER_DIR/patches/tinyusb"/*.diff; do
+    [[ -e "$patch" ]] || continue
+    if git -C "$TINYUSB_DIR" apply --reverse --check "$patch" 2>/dev/null; then
+      continue
+    fi
+    git -C "$TINYUSB_DIR" apply "$patch"
+  done
+
   log "Building and installing the ESP32-C3 libraries with the BLE configuration"
   bash ./build.sh -s -A "$ARDUINO_BRANCH" -I "$IDF_BRANCH" -t esp32c3 -c "$CORE_DIR"
 )
@@ -269,6 +285,8 @@ BUILDER_ARDUINO_SHA_AFTER="$(git -C "$BUILDER_ARDUINO_DIR" rev-parse HEAD)"
 [[ "$ARDUINO_COMMIT" == "$BUILDER_ARDUINO_SHA_AFTER" ]] || fail "The builder's Arduino source revision changed during the build."
 BUILDER_IDF_SHA_AFTER="$(git -C "$BUILDER_IDF_DIR" rev-parse HEAD)"
 [[ "$IDF_COMMIT" == "$BUILDER_IDF_SHA_AFTER" ]] || fail "The builder's ESP-IDF revision changed during the build."
+TINYUSB_SHA_AFTER="$(git -C "$BUILDER_DIR/components/arduino_tinyusb/tinyusb" rev-parse HEAD)"
+[[ "$TINYUSB_COMMIT" == "$TINYUSB_SHA_AFTER" ]] || fail "The builder's TinyUSB revision changed during the build."
 
 SDK_DIR="$CORE_DIR/tools/esp32-arduino-libs/esp32c3"
 SDKCONFIG="$SDK_DIR/sdkconfig"
