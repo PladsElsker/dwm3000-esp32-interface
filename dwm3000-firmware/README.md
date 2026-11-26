@@ -12,6 +12,7 @@ The firmware README describes how to build, flash, wire, and test the firmware. 
 - `requirements.txt` — Python host-client dependencies
 - `tests/` — host-side protocol tests
 - `FIRMWARE_VERSION` — semantic firmware release version, independent of the wire protocol version
+- `CORE_VERSION` — semantic custom Arduino-ESP32 core release version, independent of the firmware version
 - `flash-windows.ps1` — Windows helper for uploading a CI-precompiled build using Arduino CLI
 
 ## Hardware and pin map
@@ -77,14 +78,14 @@ The CI pipeline keeps the custom ESP32-C3 core separate from the UwbNode firmwar
 
 Before compiling firmware, CI calculates a SHA-256 fingerprint from those two core inputs and looks for the exact matching permanent core package:
 
-- **Core inputs changed:** the fingerprint changes, so CI builds the eight-peer core, validates the NimBLE/controller settings, and publishes a fingerprint-named GitHub Release asset.
+- **Core inputs changed:** the fingerprint changes, so CI builds the eight-peer core, validates the NimBLE/controller settings, and publishes the package in a SemVer-tagged GitHub Release (`esp32c3-core-v<CORE_VERSION>`).
 - **Firmware sources changed only:** the fingerprint is unchanged, so CI downloads and verifies the existing core package. It does not rebuild ESP-IDF or the custom core.
 - **Both changed:** CI builds and publishes the new core first. The firmware job waits for that job to succeed, then compiles using the new core.
 - **Core build failed:** firmware compilation is blocked. CI never silently falls back to an older core.
 
-The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact source commit, builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Before the long build, CI creates or verifies a draft release targeting the repository default branch; this catches release-token restrictions before compilation. After the build it uploads the core asset and then publishes the release. GitHub requires the default-branch target because the Actions GITHUB_TOKEN cannot carry Workflows:write when the target commit changes workflow files; the manifest still preserves the actual build-source commit. Its fingerprinted GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
+The core package contains the custom Arduino-ESP32 platform, its installed platform tools and SDK libraries, and a manifest with the exact source commit, core fingerprint, builder, Arduino-ESP32, ESP-IDF, TinyUSB, FQBN, and BLE configuration revisions. Core releases use the independent `CORE_VERSION` SemVer tag (`esp32c3-core-v<CORE_VERSION>`) and title (`ESP32-C3 custom core v<CORE_VERSION>); the asset filename remains fingerprinted so CI can identify and reuse the exact matching build. The first SemVer release can adopt the existing legacy fingerprint release asset without rebuilding or repacking it. Before creating a new release, CI creates a draft tag targeting the repository default branch; this catches release-token restrictions before the long build. GitHub requires the default-branch target because the Actions GITHUB_TOKEN cannot carry Workflows:write when the target commit changes workflow files; the manifest still preserves the actual build-source commit. The permanent GitHub Release asset is retained independently of the 90-day Actions artifact retention period.
 
-Every successful firmware build publishes the `dwm3000-firmware-esp32c3` Actions artifact. The pinned Arduino Library Manager dependencies, including NimBLE-Arduino 2.5.0, are installed and verified in the firmware job. When `FIRMWARE_VERSION` changes on `main`, the workflow also creates `firmware-v<VERSION>` and a GitHub Release containing the complete firmware ZIP. Routine firmware changes without a version bump do not create a new firmware release.
+Every successful firmware build publishes the `dwm3000-firmware-esp32c3` Actions artifact. Its manifest records both `CORE_VERSION` and `FIRMWARE_VERSION`. The pinned Arduino Library Manager dependencies, including NimBLE-Arduino 2.5.0, are installed and verified in the firmware job. When `FIRMWARE_VERSION` changes on `main`, the workflow also creates `firmware-v<VERSION>` and a GitHub Release containing the complete firmware ZIP. Routine firmware changes without a version bump do not create a new firmware release.
 
 On Windows, install Arduino CLI and the standard Espressif ESP32 board package (for the board definition and Windows upload tools; it is not used to compile this firmware):
 
