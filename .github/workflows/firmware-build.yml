@@ -75,11 +75,29 @@ jobs:
           SOURCE_TAG=""
 
           if gh release view "$TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            ASSETS="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+            RELEASE_INFO="$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft,assets)"
+            IS_DRAFT="$(jq -r '.isDraft' <<< "$RELEASE_INFO")"
+            ASSETS="$(jq -r '.assets[].name' <<< "$RELEASE_INFO")"
             if printf '%s\n' "$ASSETS" | grep -Fxq "$ASSET"; then
-              echo "Reusing SemVer core release $TAG ($ASSET)"
+              if [[ "$IS_DRAFT" == "true" ]]; then
+                PUBLISH_CORE=true
+                SOURCE_TAG="$TAG"
+                echo "Resuming incomplete SemVer draft $TAG using its fingerprint-matched package."
+              else
+                echo "Reusing published SemVer core release $TAG ($ASSET)"
+              fi
+            elif [[ "$IS_DRAFT" == "true" && -z "$ASSETS" ]]; then
+              PUBLISH_CORE=true
+              LEGACY_ASSETS="$(gh release view "$LEGACY_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name' 2>/dev/null || true)"
+              if printf '%s\n' "$LEGACY_ASSETS" | grep -Fxq "$ASSET"; then
+                SOURCE_TAG="$LEGACY_TAG"
+                echo "Resuming draft $TAG by adopting legacy fingerprint package $LEGACY_TAG"
+              else
+                BUILD_CORE=true
+                echo "Resuming draft $TAG by rebuilding the missing core package."
+              fi
             else
-              echo "Core release $TAG already exists for a different fingerprint." >&2
+              echo "Core release $TAG already exists for a different fingerprint or is incomplete but not a draft." >&2
               echo "Bump dwm3000-firmware/CORE_VERSION before publishing changed core inputs." >&2
               exit 1
             fi
@@ -154,16 +172,25 @@ jobs:
           DEFAULT_BRANCH="$REPOSITORY_DEFAULT_BRANCH"
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
           if gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Refusing to modify existing SemVer release $CORE_TAG." >&2
-            exit 1
+            IS_DRAFT="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft')"
+            [[ "$IS_DRAFT" == "true" ]] || {
+              echo "Refusing to modify already-published SemVer release $CORE_TAG." >&2
+              exit 1
+            }
+            echo "Resuming draft core release $CORE_TAG."
+            gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 custom core v$CORE_VERSION" \
+              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --prerelease
+          else
+            echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
+            gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --target "$DEFAULT_BRANCH" \
+              --title "ESP32-C3 custom core v$CORE_VERSION" \
+              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --draft --prerelease
           fi
-
-          echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
-          gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --target "$DEFAULT_BRANCH" \
-            --title "ESP32-C3 custom core v$CORE_VERSION" \
-            --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
-            --draft --prerelease
 
       - name: Build the pinned eight-peer ESP32-C3 core
         if: env.BUILD_CORE == 'true'
@@ -284,8 +311,11 @@ jobs:
           [[ -n "$DEFAULT_BRANCH" ]] || { echo "Default branch was not provided by GitHub." >&2; exit 1; }
 
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
-          gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-            --repo "$GITHUB_REPOSITORY"
+          EXISTING_ASSETS="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fxq "$CORE_ASSET"; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
 
           gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$DEFAULT_BRANCH" \
@@ -295,6 +325,30 @@ jobs:
 
           gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
+
+          # If migrating from the old fingerprint-named release, retire it only
+          # after the SemVer release is published and its archive matches byte-for-byte.
+          if [[ -n "$CORE_SOURCE_TAG" && "$CORE_SOURCE_TAG" != "$CORE_TAG" ]]; then
+            mkdir -p "$RUNNER_TEMP/core-verify"
+            gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-verify"
+            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET" | awk '{print $1}')"
+            RELEASE_SHA="$(sha256sum "$RUNNER_TEMP/core-verify/$CORE_ASSET" | awk '{print $1}')"
+            test "$SOURCE_SHA" = "$RELEASE_SHA"
+            echo "Verified SemVer archive SHA-256: $RELEASE_SHA"
+
+            gh release delete "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
+              --cleanup-tag --yes
+            if gh release view "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Legacy fingerprint release still exists after cleanup." >&2
+              exit 1
+            fi
+            if git ls-remote --exit-code --tags origin "refs/tags/$CORE_SOURCE_TAG" >/dev/null 2>&1; then
+              echo "Legacy fingerprint tag still exists after cleanup." >&2
+              exit 1
+            fi
+            echo "Removed obsolete fingerprint-named release and tag $CORE_SOURCE_TAG"
+          fi
 
   firmware:
     name: Compile and publish DWM3000 firmware
