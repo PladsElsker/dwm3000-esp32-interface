@@ -273,8 +273,8 @@ BUILDER_IDF_SHA_AFTER="$(git -C "$BUILDER_IDF_DIR" rev-parse HEAD)"
 SDK_DIR="$CORE_DIR/tools/esp32-arduino-libs/esp32c3"
 SDKCONFIG="$SDK_DIR/sdkconfig"
 [[ -f "$SDKCONFIG" ]] || fail "The builder did not produce $SDKCONFIG"
-grep -Eq '^CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS"
-grep -Eq '^CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT$' "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT"
+grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS"
+grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG" || fail "The generated sdkconfig does not set CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT"
 
 header_ok=0
 while IFS= read -r header; do
