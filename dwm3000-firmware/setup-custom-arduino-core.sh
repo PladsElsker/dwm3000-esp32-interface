@@ -278,7 +278,7 @@ grep -Eq '^CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT$' "$SDKCONFIG" || fai
 
 header_ok=0
 while IFS= read -r header; do
-  if grep -Eq '^#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS $NIMBLE_MAX_CONNECTIONS$' "$header" && grep -Eq '^#define CONFIG_BT_CTRL_BLE_MAX_ACT $BT_CTRL_BLE_MAX_ACT$' "$header"; then
+  if grep -Fxq "#define CONFIG_BT_NIMBLE_MAX_CONNECTIONS $NIMBLE_MAX_CONNECTIONS" "$header" && grep -Fxq "#define CONFIG_BT_CTRL_BLE_MAX_ACT $BT_CTRL_BLE_MAX_ACT" "$header"; then
     header_ok=1
     log "Verified generated SDK header: $header"
   fi

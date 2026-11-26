@@ -154,7 +154,7 @@ jobs:
           mkdir -p "$RUNNER_TEMP/core-release"
           tar --exclude-vcs -C "$ARDUINO_SKETCHBOOK_DIR" \
             -czf "$RUNNER_TEMP/core-release/$CORE_ASSET" \
-            hardware tools core-manifest.json
+            hardware core-manifest.json
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
@@ -208,16 +208,33 @@ jobs:
           tar -xzf "$RUNNER_TEMP/core-package/$CORE_ASSET" -C "$ARDUINO_SKETCHBOOK_DIR"
 
           CORE_MANIFEST="$ARDUINO_SKETCHBOOK_DIR/core-manifest.json"
-          jq -e --arg fingerprint "$CORE_FINGERPRINT" \
-            '.core_fingerprint == $fingerprint' "$CORE_MANIFEST" >/dev/null
-
           source dwm3000-firmware/core-build.env
+          jq -e \
+            --arg fingerprint "$CORE_FINGERPRINT" \
+            --arg builder "$BUILDER_COMMIT" \
+            --arg arduino "$ARDUINO_COMMIT" \
+            --arg idf "$IDF_COMMIT" \
+            --arg fqbn "$FQBN" \
+            --argjson host_connections "$NIMBLE_MAX_CONNECTIONS" \
+            --argjson controller_activities "$BT_CTRL_BLE_MAX_ACT" \
+            '.core_fingerprint == $fingerprint and
+             .arduino_esp32_builder_commit == $builder and
+             .arduino_esp32_commit == $arduino and
+             .esp_idf_commit == $idf and
+             .build_fqbn == $fqbn and
+             .nimble_max_connections == $host_connections and
+             .bluetooth_controller_max_activities == $controller_activities' \
+            "$CORE_MANIFEST" >/dev/null
+
           CORE_DIR="$ESP32_ARDUINO_CORE_DIR"
           SDKCONFIG="$CORE_DIR/tools/esp32-arduino-libs/esp32c3/sdkconfig"
           test -s "$CORE_DIR/platform.txt"
           test -s "$SDKCONFIG"
           grep -Fxq "CONFIG_BT_NIMBLE_MAX_CONNECTIONS=$NIMBLE_MAX_CONNECTIONS" "$SDKCONFIG"
           grep -Fxq "CONFIG_BT_CTRL_BLE_MAX_ACT=$BT_CTRL_BLE_MAX_ACT" "$SDKCONFIG"
+          EXPECTED_SDKCONFIG_SHA="$(jq -r '.sdkconfig_sha256' "$CORE_MANIFEST")"
+          ACTUAL_SDKCONFIG_SHA="$(sha256sum "$SDKCONFIG" | awk '{print $1}')"
+          test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
 
           SELECTED_PLATFORM="$(arduino-cli board details --fqbn "$FQBN" --show-properties=expanded | sed -n 's/^runtime\.platform\.path=//p' | tail -n 1)"
           test -n "$SELECTED_PLATFORM"
