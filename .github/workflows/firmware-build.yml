@@ -211,7 +211,7 @@ jobs:
             echo "Resuming draft core release $CORE_TAG."
             gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core v$CORE_VERSION" \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
               --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --prerelease
           else
@@ -253,6 +253,7 @@ jobs:
           test "$TINYUSB_SHA" = "$TINYUSB_COMMIT"
 
           jq -n \
+            --arg core_version "$CORE_VERSION" \
             --arg fingerprint "$CORE_FINGERPRINT" \
             --arg source_repository "$GITHUB_REPOSITORY" \
             --arg source_commit "$GITHUB_SHA" \
@@ -267,6 +268,7 @@ jobs:
             --argjson nimble_max_connections "$NIMBLE_MAX_CONNECTIONS" \
             --argjson bluetooth_controller_max_activities "$BT_CTRL_BLE_MAX_ACT" \
             '{
+              core_version: $core_version,
               core_fingerprint: $fingerprint,
               source_repository: $source_repository,
               source_commit: $source_commit,
@@ -294,15 +296,15 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          [[ -n "$CORE_SOURCE_TAG" ]] || { echo "Missing source tag for core package reuse." >&2; exit 1; }
+          [[ -n "$CORE_SOURCE_TAG" && -n "$CORE_SOURCE_ASSET" ]] || { echo "Missing source release or asset for core package reuse." >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/core-source" "$RUNNER_TEMP/core-release"
           gh release download "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-source"
+            --pattern "$CORE_SOURCE_ASSET" --dir "$RUNNER_TEMP/core-source"
 
           source dwm3000-firmware/core-build.env
-          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_ASSET" core-manifest.json \
+          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" core-manifest.json \
             > "$RUNNER_TEMP/core-source/core-manifest.json"
-          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_ASSET" \
+          tar -xOzf "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" \
             hardware/espressif/esp32/tools/esp32-arduino-libs/esp32c3/sdkconfig \
             > "$RUNNER_TEMP/core-source/sdkconfig"
           test -s "$RUNNER_TEMP/core-source/sdkconfig"
@@ -330,8 +332,11 @@ jobs:
           ACTUAL_SDKCONFIG_SHA="$(sha256sum "$RUNNER_TEMP/core-source/sdkconfig" | awk '{print $1}')"
           test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
 
-          cp "$RUNNER_TEMP/core-source/$CORE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          cp "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          jq --arg core_version "$CORE_VERSION" '. + {core_version: $core_version}' \
+            "$RUNNER_TEMP/core-source/core-manifest.json" > "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          test -s "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
       - name: Publish SemVer core release
@@ -347,15 +352,20 @@ jobs:
             gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY"
           fi
+          if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fxq "$CORE_MANIFEST_ASSET"; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
 
           gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$DEFAULT_BRANCH" \
             --draft=false --prerelease \
             --title "ESP32-C3 custom core v$CORE_VERSION" \
-            --notes "SemVer release for custom Arduino-ESP32 core v$CORE_VERSION. The fingerprinted asset filename and core-manifest.json identify the exact build inputs and SDK configuration. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
+            --notes "SemVer prerelease for the ESP32-C3 8-peer core v$CORE_VERSION. The archive filename uses SemVer; core-manifest.json records the full SHA-256 build fingerprint and exact source/configuration provenance. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
 
-          gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
+          VERIFIED_ASSETS="$(gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" --json assets --jq '.assets[].name')"
+          printf '%s\n' "$VERIFIED_ASSETS" | grep -Fxq "$CORE_ASSET"
+          printf '%s\n' "$VERIFIED_ASSETS" | grep -Fxq "$CORE_MANIFEST_ASSET"
 
           # If migrating from the old fingerprint-named release, retire it only
           # after the SemVer release is published and its archive matches byte-for-byte.
@@ -363,7 +373,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/core-verify"
             gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-verify"
-            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET" | awk '{print $1}')"
+            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" | awk '{print $1}')"
             RELEASE_SHA="$(sha256sum "$RUNNER_TEMP/core-verify/$CORE_ASSET" | awk '{print $1}')"
             test "$SOURCE_SHA" = "$RELEASE_SHA"
             echo "Verified SemVer archive SHA-256: $RELEASE_SHA"
