@@ -26,8 +26,11 @@ class EarlyResultTransport:
         message_id = 37
         if self.event_opcode == 0x8D:
             event_payload = struct.pack("<HHH", peer_id, message_id, data_length)
-        else:
+        elif self.event_opcode == 0x8E:
             event_payload = struct.pack("<HH", peer_id, message_id)
+        else:
+            # Sender-side BLE_ERROR: direction=0, final fragment marker=0xFF.
+            event_payload = struct.pack("<BHHBBB", 0, peer_id, message_id, 0xFF, 1, 0)
 
         # This runs before _tx_worker can parse the SEND_TO_PEER response and
         # register the future, reproducing the observed event-router race.
@@ -61,5 +64,44 @@ def test_delivery_result_is_retained_when_event_precedes_ticket_registration(
         assert manager.expired_count == (1 if event_opcode == 0x8E else 0)
         assert (18, 37) not in manager._tickets
         assert (18, 37) not in manager._early_results
+    finally:
+        manager.close()
+
+
+
+def test_sender_ble_error_completes_ticket_when_event_precedes_registration():
+    manager = BleManager(None, FakeDispatcher(), delivery_timeout=5.0)
+    manager.transport = EarlyResultTransport(manager, 0x8C)
+    manager.start()
+    try:
+        ticket = manager.send(18, b"pong")
+        with pytest.raises(
+            ConnectionError,
+            match=r"BLE delivery failed for peer 18, message 37 .*fragment 255, error 1",
+        ):
+            ticket.wait(timeout=1.0)
+
+        assert manager.tx_errors == 1
+        assert manager.expired_count == 0
+        assert (18, 37) not in manager._tickets
+        assert (18, 37) not in manager._early_results
+    finally:
+        manager.close()
+
+
+def test_receiver_ble_error_does_not_complete_outbound_ticket():
+    manager = BleManager(None, FakeDispatcher(), delivery_timeout=5.0)
+    manager.start()
+    try:
+        from concurrent.futures import Future
+
+        future = Future()
+        manager._tickets[(18, 37)] = future
+        payload = struct.pack("<BHHBBB", 1, 18, 37, 0xFF, 1, 0)
+        manager.on_event(Frame(TYPE_EVENT, 0, 0x8C, 0, payload))
+
+        assert not future.done()
+        assert (18, 37) in manager._tickets
+        assert manager.tx_errors == 0
     finally:
         manager.close()
