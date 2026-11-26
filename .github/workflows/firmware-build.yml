@@ -39,9 +39,11 @@ jobs:
       core_fingerprint: ${{ steps.core.outputs.fingerprint }}
       core_tag: ${{ steps.core.outputs.tag }}
       core_asset: ${{ steps.core.outputs.asset }}
+      core_manifest_asset: ${{ steps.core.outputs.manifest_asset }}
       build_core: ${{ steps.core.outputs.build_core }}
       publish_core: ${{ steps.core.outputs.publish_core }}
       core_source_tag: ${{ steps.core.outputs.source_tag }}
+      core_source_asset: ${{ steps.core.outputs.source_asset }}
       arduino_cli_version: ${{ steps.core.outputs.arduino_cli_version }}
       fqbn: ${{ steps.core.outputs.fqbn }}
     steps:
@@ -136,7 +138,9 @@ jobs:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      CORE_MANIFEST_ASSET: ${{ needs.prepare.outputs.core_manifest_asset }}
       CORE_SOURCE_TAG: ${{ needs.prepare.outputs.core_source_tag }}
+      CORE_SOURCE_ASSET: ${{ needs.prepare.outputs.core_source_asset }}
       BUILD_CORE: ${{ needs.prepare.outputs.build_core }}
       FQBN: ${{ needs.prepare.outputs.fqbn }}
     steps:
@@ -180,15 +184,15 @@ jobs:
             echo "Resuming draft core release $CORE_TAG."
             gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core v$CORE_VERSION" \
-              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --prerelease
           else
             echo "Creating draft core release $CORE_TAG on $DEFAULT_BRANCH before publication."
             gh release create "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --target "$DEFAULT_BRANCH" \
-              --title "ESP32-C3 custom core v$CORE_VERSION" \
-              --notes "Draft SemVer release for custom ESP32-C3 core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
+              --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+              --notes "Draft SemVer release for the custom ESP32-C3 8-peer core v$CORE_VERSION. Core fingerprint: $CORE_FINGERPRINT. The exact build source commit and upstream revisions are recorded in core-manifest.json." \
               --draft --prerelease
           fi
 
@@ -255,7 +259,9 @@ jobs:
           tar --exclude-vcs -C "$ARDUINO_SKETCHBOOK_DIR" \
             -czf "$RUNNER_TEMP/core-release/$CORE_ASSET" \
             hardware core-manifest.json
+          cp "$ARDUINO_SKETCHBOOK_DIR/core-manifest.json" "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          test -s "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           du -h "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
       - name: Adopt existing fingerprinted core package
@@ -263,10 +269,10 @@ jobs:
         shell: bash
         run: |
           set -Eeuo pipefail
-          [[ -n "$CORE_SOURCE_TAG" ]] || { echo "Missing source tag for core package reuse." >&2; exit 1; }
+          [[ -n "$CORE_SOURCE_TAG" && -n "$CORE_SOURCE_ASSET" ]] || { echo "Missing source release or asset for core package reuse." >&2; exit 1; }
           mkdir -p "$RUNNER_TEMP/core-source" "$RUNNER_TEMP/core-release"
           gh release download "$CORE_SOURCE_TAG" --repo "$GITHUB_REPOSITORY" \
-            --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-source"
+            --pattern "$CORE_SOURCE_ASSET" --dir "$RUNNER_TEMP/core-source"
 
           source dwm3000-firmware/core-build.env
           tar -xOzf "$RUNNER_TEMP/core-source/$CORE_ASSET" core-manifest.json \
@@ -299,8 +305,10 @@ jobs:
           ACTUAL_SDKCONFIG_SHA="$(sha256sum "$RUNNER_TEMP/core-source/sdkconfig" | awk '{print $1}')"
           test "$ACTUAL_SDKCONFIG_SHA" = "$EXPECTED_SDKCONFIG_SHA"
 
-          cp "$RUNNER_TEMP/core-source/$CORE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          cp "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          cp "$RUNNER_TEMP/core-source/core-manifest.json" "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           test -s "$RUNNER_TEMP/core-release/$CORE_ASSET"
+          test -s "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET"
           sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET"
 
       - name: Publish SemVer core release
@@ -316,12 +324,16 @@ jobs:
             gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_ASSET" \
               --repo "$GITHUB_REPOSITORY"
           fi
+          if ! printf '%s\n' "$EXISTING_ASSETS" | grep -Fxq "$CORE_MANIFEST_ASSET"; then
+            gh release upload "$CORE_TAG" "$RUNNER_TEMP/core-release/$CORE_MANIFEST_ASSET" \
+              --repo "$GITHUB_REPOSITORY"
+          fi
 
           gh release edit "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --target "$DEFAULT_BRANCH" \
             --draft=false --prerelease \
-            --title "ESP32-C3 custom core v$CORE_VERSION" \
-            --notes "SemVer release for custom Arduino-ESP32 core v$CORE_VERSION. The fingerprinted asset filename and core-manifest.json identify the exact build inputs and SDK configuration. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
+            --title "ESP32-C3 8-peer core v$CORE_VERSION" \
+            --notes "SemVer prerelease for the custom ESP32-C3 8-peer core v$CORE_VERSION. The downloadable archive uses the SemVer version; core-manifest.json records the full SHA-256 build fingerprint, exact source and upstream revisions, and SDK configuration. The Git tag targets the repository default branch to satisfy GitHub's workflow-file permission guard; core-manifest.json records the exact build-source commit."
 
           gh release view "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
             --json assets --jq '.assets[].name' | grep -Fxq "$CORE_ASSET"
@@ -332,7 +344,7 @@ jobs:
             mkdir -p "$RUNNER_TEMP/core-verify"
             gh release download "$CORE_TAG" --repo "$GITHUB_REPOSITORY" \
               --pattern "$CORE_ASSET" --dir "$RUNNER_TEMP/core-verify"
-            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-release/$CORE_ASSET" | awk '{print $1}')"
+            SOURCE_SHA="$(sha256sum "$RUNNER_TEMP/core-source/$CORE_SOURCE_ASSET" | awk '{print $1}')"
             RELEASE_SHA="$(sha256sum "$RUNNER_TEMP/core-verify/$CORE_ASSET" | awk '{print $1}')"
             test "$SOURCE_SHA" = "$RELEASE_SHA"
             echo "Verified SemVer archive SHA-256: $RELEASE_SHA"
@@ -366,6 +378,7 @@ jobs:
       CORE_FINGERPRINT: ${{ needs.prepare.outputs.core_fingerprint }}
       CORE_TAG: ${{ needs.prepare.outputs.core_tag }}
       CORE_ASSET: ${{ needs.prepare.outputs.core_asset }}
+      CORE_MANIFEST_ASSET: ${{ needs.prepare.outputs.core_manifest_asset }}
       FQBN: ${{ needs.prepare.outputs.fqbn }}
     steps:
       - name: Check out source and submodules
