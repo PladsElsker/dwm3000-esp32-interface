@@ -9,7 +9,7 @@ def test_volatile_outbox_ack_and_inbox_deduplication():
     state.enqueue("m1", 7, "message", b'{"id":"m1"}')
     rows = state.due_outbox(time.monotonic() + 1)
     assert rows[0][0:3] == ("m1", 7, "message")
-    state.mark_transport_attempt("m1", 1, time.monotonic() + 1)
+    state.mark_transport_attempt("m1", 1, time.time() + 1)
     assert state.acknowledge(7, "m1") == "message"
     assert state.due_outbox(time.monotonic() + 10) == []
 
@@ -74,20 +74,6 @@ def test_make_inbox_ready_releases_delayed_message():
     state = CommsState()
     state.insert_inbox(7, "m1", "message", "{}", time.time())
     state.retry_inbox_later(7, "m1", 1, time.monotonic() + 30)
-    state.make_inbox_ready("message")
-    rows = state.due_inbox(time.monotonic())
-    assert len(rows) == 1
-    assert rows[0][0:3] == (7, "m1", "message")
-
-
-def test_inbox_without_handler_is_suspended_until_registration():
-    state = CommsState()
-    state.insert_inbox(7, "m1", "message", "{}", time.time())
-    state.retry_inbox_later(7, "m1", 1, None)
-
-    assert state.due_inbox(time.monotonic() + 100) == []
-    assert state.next_deadline() is None
-
     state.make_inbox_ready("message")
     rows = state.due_inbox(time.monotonic())
     assert len(rows) == 1

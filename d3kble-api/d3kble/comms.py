@@ -352,6 +352,9 @@ class CommsManager:
         # A response that arrives after the local deadline is deliberately ignored.
         if not self.store.store_response(request_id, serialized, peer_id=peer_id):
             return
+        # The response resolves this request's deadline; recalculate the next
+        # scheduler wake rather than sleeping until the now-obsolete timeout.
+        self._wake_scheduler()
         with self._tickets_lock:
             ticket = self._tickets.get(request_id)
             if ticket:

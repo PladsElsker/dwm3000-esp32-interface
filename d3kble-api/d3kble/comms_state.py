@@ -147,11 +147,7 @@ class CommsState:
             self._check_open()
             rows = []
             for (peer_id, message_id), row in self._inbox.items():
-                if (
-                    not row["processed"]
-                    and row["next_dispatch"] is not None
-                    and row["next_dispatch"] <= now
-                ):
+                if not row["processed"] and row["next_dispatch"] <= now:
                     rows.append((
                         peer_id, message_id, row["kind"], row["envelope"],
                         row["received_at"], row["dispatch_attempts"],
@@ -159,7 +155,7 @@ class CommsState:
             rows.sort(key=lambda row: row[4])
             return rows[:limit]
 
-    def retry_inbox_later(self, peer_id: int, message_id: str, attempts: int, when: float | None):
+    def retry_inbox_later(self, peer_id: int, message_id: str, attempts: int, when: float):
         with self._lock:
             row = self._inbox.get((peer_id, message_id))
             if row is not None and not row["processed"]:
@@ -208,7 +204,7 @@ class CommsState:
             deadlines.extend(
                 row["next_dispatch"]
                 for key, row in self._inbox.items()
-                if not row["processed"] and row["next_dispatch"] is not None and key not in active_inbox
+                if not row["processed"] and key not in active_inbox
             )
             deadlines.extend(
                 row["deadline"]
