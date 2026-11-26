@@ -40,7 +40,7 @@ Run the setup script from this directory to create the custom Arduino-ESP32 core
 ./setup-custom-arduino-core.sh
 ```
 
-The script pins the library builder, Arduino-ESP32, ESP-IDF, and TinyUSB source revisions in `core-build.env`, and builds with:
+The core builder pins the library builder, Arduino-ESP32, ESP-IDF, and TinyUSB source revisions in `core-build.env`. The setup wrapper builds the core, installs the pinned Arduino libraries, and compiles the firmware. The core-only builder is also available directly as `./build-custom-arduino-core.sh`. Both use:
 
 ```ini
 CONFIG_BT_NIMBLE_MAX_CONNECTIONS=8
@@ -61,7 +61,7 @@ arduino-cli compile --fqbn espressif:esp32:esp32c3:CDCOnBoot=cdc,JTAGAdapter=bui
   --libraries "./UwbNode/lib/Makerfabs-ESP32-UWB-DW3000" ./UwbNode
 ```
 
-The pinned Arduino Library Manager dependencies are listed in `arduino-libraries.txt`. Install those dependencies when setting up a fresh Arduino sketchbook.
+The pinned Arduino Library Manager dependencies are listed in `arduino-libraries.txt` and are installed automatically by `setup-custom-arduino-core.sh`. For a separate direct compile, install them with `arduino-cli lib install "NimBLE-Arduino@2.5.0"` first.
 
 Upload the compiled sketch:
 

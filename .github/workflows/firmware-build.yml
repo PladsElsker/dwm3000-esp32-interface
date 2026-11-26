@@ -53,7 +53,7 @@ jobs:
           set -Eeuo pipefail
           source dwm3000-firmware/core-build.env
 
-          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/setup-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
+          FINGERPRINT="$(sha256sum dwm3000-firmware/core-build.env dwm3000-firmware/build-custom-arduino-core.sh | LC_ALL=C sort | sha256sum | awk '{print $1}')"
           TAG="esp32c3-core-$FINGERPRINT"
           ASSET="esp32c3-custom-core-$FINGERPRINT.tar.gz"
 
@@ -105,7 +105,7 @@ jobs:
           df -h /
 
       - name: Build the pinned eight-peer ESP32-C3 core
-        run: ./dwm3000-firmware/setup-custom-arduino-core.sh --core-only
+        run: ./dwm3000-firmware/build-custom-arduino-core.sh
 
       - name: Package and publish the versioned core
         shell: bash
